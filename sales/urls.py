@@ -1,18 +1,19 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    ProductoViewSet, 
-    VentaViewSet, 
-    AccessKeyViewSet, 
-    SaleInitiationViewSet, 
-    PaymentConfirmationView, 
-    EstudianteCursoViewSet, 
-    UnifiedSaleInitiationView, 
-    UnifiedPaymentConfirmationView, 
-    ActivarCursoView, 
+    ProductoViewSet,
+    VentaViewSet,
+    AccessKeyViewSet,
+    SaleInitiationViewSet,
+    PaymentConfirmationView,
+    EstudianteCursoViewSet,
+    UnifiedSaleInitiationView,
+    UnifiedPaymentConfirmationView,
+    ActivarCursoView,
+    CanjearLlaveView,
     EstudianteCursoDetailViewSet,
     EstudiantesCursosActivosPorEscuelaView,
-    CursosDisponiblesParaUsuarioView
+    CursosDisponiblesParaUsuarioView,
 )
 
 router = DefaultRouter()
@@ -28,6 +29,7 @@ urlpatterns = [
     path('pay_init/', UnifiedSaleInitiationView.as_view(), name='pay_init_view'),
     path('pay_confirm/', UnifiedPaymentConfirmationView.as_view(), name='pay_confirm_view'),
     path('activar_curso/', ActivarCursoView.as_view(), name='activar_curso_view'),
+    path('canjear_llave/', CanjearLlaveView.as_view(), name='canjear_llave_view'),
     path('escuelas/<int:escuela_id>/estudiantes-cursos-activos/', EstudiantesCursosActivosPorEscuelaView.as_view(),name='estudiantes_cursos_activos_por_escuela'),
     path(
         "escuelas/<int:escuela_id>/usuario/<int:user_id>/cursos-disponibles/",

@@ -69,6 +69,15 @@ class EstudianteCurso(models.Model):
     curso_id = models.ForeignKey(Curso, on_delete=models.CASCADE)
     access_key_id = models.ForeignKey(AccessKey, on_delete=models.CASCADE)
 
+    class Meta:
+        # Un estudiante no puede tener el mismo curso 2 veces vía llaves distintas.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['estudiante_id', 'curso_id'],
+                name='unique_estudiantecurso_estudiante_curso',
+            ),
+        ]
+
 class TransbankTransaction(models.Model):
     sale = models.OneToOneField(Venta, on_delete=models.CASCADE, related_name="transbank_transaction")
     transaction_date = models.DateTimeField(null=True)

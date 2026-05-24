@@ -57,6 +57,12 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     nombre = models.CharField(max_length=100)
     apellido = models.CharField(max_length=100)
 
+    # Perfil enriquecido (consumido por GET /accounts/me/)
+    rut = models.CharField(max_length=20, blank=True, default='')
+    direccion = models.CharField(max_length=255, blank=True, default='')
+    telefono = models.CharField(max_length=30, blank=True, default='')
+    avatar_url = models.URLField(blank=True, default='')
+
     escuela = models.ForeignKey(Escuela, on_delete=models.SET_NULL, null=True, blank=True)
 
     is_staff = models.BooleanField(default=False)
@@ -68,6 +74,19 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     date_joined = models.DateTimeField(auto_now_add=True, null=True)
 
     activation_token = models.UUIDField(default=uuid.uuid4, editable=False, null=True, blank=True, db_index=True)
+
+    # Gamificación — recursos consumibles
+    hearts = models.IntegerField(default=5)             # vidas; -1 por error en EVALUACIÓN
+    next_heart_regen_at = models.DateTimeField(null=True, blank=True)
+    energy = models.IntegerField(default=5)             # energía; -1 por intentar una PRÁCTICA
+    next_energy_regen_at = models.DateTimeField(null=True, blank=True)
+
+    # Gamificación — progresión
+    xp = models.IntegerField(default=0)                 # acumulado total
+    streak_current = models.IntegerField(default=0)     # días seguidos con actividad
+    streak_longest = models.IntegerField(default=0)
+    last_active_date = models.DateField(null=True, blank=True)
+    streak_frozen_until = models.DateField(null=True, blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['nombre' ,'apellido']
@@ -104,6 +123,74 @@ class Certificado(models.Model):
                 name='unique_certificado_por_estudiante_curso',
             ),
         ]
+
+class PushToken(models.Model):
+    """Token Expo/FCM/APNS registrado por un cliente para recibir push."""
+    PLATFORM_CHOICES = [('ios', 'iOS'), ('android', 'Android'), ('web', 'Web'), ('expo', 'Expo')]
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='push_tokens')
+    token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, default='expo')
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-last_seen_at']
+
+    def __str__(self):
+        return f'{self.usuario.email}:{self.platform}'
+
+
+class Notificacion(models.Model):
+    TIPO_CHOICES = [
+        ('streak_risk', 'Racha en riesgo'),
+        ('new_lesson', 'Nueva lección'),
+        ('certificate_issued', 'Certificado emitido'),
+        ('test_passed', 'Prueba aprobada'),
+        ('hearts_refilled', 'Vidas recuperadas'),
+        ('promo', 'Promoción'),
+        ('info', 'Informativa'),
+    ]
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='notificaciones')
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES, default='info')
+    titulo = models.CharField(max_length=200)
+    mensaje = models.TextField(blank=True, default='')
+    data = models.JSONField(default=dict, blank=True)  # payload arbitrario (ids, urls)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['usuario', '-created_at'])]
+
+    def __str__(self):
+        return f'[{self.tipo}] {self.titulo} -> {self.usuario.email}'
+
+
+class Logro(models.Model):
+    """Catálogo de logros (admin-curado). UsuarioLogro registra ganados."""
+    slug = models.SlugField(unique=True)
+    nombre = models.CharField(max_length=100)
+    descripcion = models.CharField(max_length=255, blank=True, default='')
+    icono = models.CharField(max_length=50, blank=True, default='')  # emoji o key
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return self.nombre
+
+
+class UsuarioLogro(models.Model):
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='logros_obtenidos')
+    logro = models.ForeignKey(Logro, on_delete=models.CASCADE)
+    obtenido_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['usuario', 'logro'], name='unique_logro_usuario'),
+        ]
+        ordering = ['-obtenido_en']
+
 
 class EstudianteLeccion(models.Model):
     estudiante = models.ForeignKey(Usuario, on_delete=models.CASCADE)

@@ -28,6 +28,15 @@ from .views import (
     MisPruebasDetalleView,
     MisCertificadosView,
     VerifyCertificadoView,
+    MeView,
+    MeStatsView,
+    MeAchievementsView,
+    LeaderboardView,
+    PushTokensView,
+    PushTokenDeleteView,
+    NotificacionesView,
+    NotificacionMarcarLeidaView,
+    NotificacionesMarcarTodasView,
 )
 
 router = DefaultRouter()
@@ -64,4 +73,17 @@ urlpatterns = [
     # Certificados
     path("me/certificates/", MisCertificadosView.as_view(), name="mis_certificados"),
     path("certificates/<uuid:codigo>/verify/", VerifyCertificadoView.as_view(), name="verify_certificado"),
+
+    # Perfil + gamificación
+    path("me/", MeView.as_view(), name="me_profile"),
+    path("me/stats/", MeStatsView.as_view(), name="me_stats"),
+    path("me/achievements/", MeAchievementsView.as_view(), name="me_achievements"),
+
+    # Ranking + notificaciones + push
+    path("leaderboard/", LeaderboardView.as_view(), name="leaderboard"),
+    path("me/push-token/", PushTokensView.as_view(), name="me_push_token"),
+    path("me/push-token/<str:token>/", PushTokenDeleteView.as_view(), name="me_push_token_delete"),
+    path("me/notifications/", NotificacionesView.as_view(), name="me_notifications"),
+    path("me/notifications/<int:pk>/read/", NotificacionMarcarLeidaView.as_view(), name="me_notification_read"),
+    path("me/notifications/read-all/", NotificacionesMarcarTodasView.as_view(), name="me_notifications_read_all"),
 ] + router.urls

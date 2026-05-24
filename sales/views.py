@@ -27,6 +27,8 @@ from accounts.permissions import (
 )
 from .services import (
     asignar_llave_y_curso,
+    canjear_access_key,
+    CanjeError,
     registrar_venta_transbank,
     registrar_venta_unificada,
 )
@@ -227,6 +229,54 @@ class CursosDisponiblesParaUsuarioView(APIView):
         )
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class CanjearLlaveView(APIView):
+    """POST /api/v1/sales/canjear_llave/ — estudiante canjea su llave por inscripción.
+
+    Body: {"access_key": "ABC123XYZ", "curso_id": 5}
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def post(self, request):
+        key_str = (request.data.get('access_key') or '').strip()
+        curso_id = request.data.get('curso_id')
+        if not curso_id:
+            return Response({"error": "curso_id requerido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            inscripcion = canjear_access_key(request.user, key_str, int(curso_id))
+        except CanjeError as e:
+            code = e.code
+            http_status = {
+                'missing_key': status.HTTP_400_BAD_REQUEST,
+                'curso_not_found': status.HTTP_404_NOT_FOUND,
+                'key_not_found': status.HTTP_404_NOT_FOUND,
+                'key_inactive': status.HTTP_400_BAD_REQUEST,
+                'key_expired': status.HTTP_400_BAD_REQUEST,
+                'already_enrolled': status.HTTP_409_CONFLICT,
+            }.get(code, status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(e), "code": code}, status=http_status)
+        except (TypeError, ValueError):
+            return Response({"error": "curso_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Notificar
+        try:
+            from accounts.notifications import notificar
+            notificar(
+                request.user, tipo='test_passed',  # reuso slug "actividad"; placeholder
+                titulo='Curso activado',
+                mensaje=f'Tu acceso al curso {inscripcion.curso_id.nombre} fue activado.',
+                data={'curso_id': inscripcion.curso_id_id},
+            )
+        except Exception:
+            pass  # notificación es best-effort, no debe romper canje
+
+        return Response({
+            "message": "Inscripción creada.",
+            "estudiante_curso_id": inscripcion.id,
+            "curso_id": inscripcion.curso_id_id,
+        }, status=status.HTTP_201_CREATED)
+
 
 class ActivarCursoView(APIView):
     """Activación manual de curso para un estudiante.

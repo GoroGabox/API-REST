@@ -1,8 +1,62 @@
 from django.utils import timezone
 from django.db import transaction
 
-from schools.models import Escuela
+from schools.models import Escuela, Curso
 from .models import AccessKey, EstudianteCurso, Venta, TransbankTransaction
+
+
+class CanjeError(Exception):
+    """Error de negocio al canjear una llave de acceso."""
+    def __init__(self, message, code='canje_error'):
+        super().__init__(message)
+        self.code = code
+
+
+@transaction.atomic
+def canjear_access_key(estudiante, key_str: str, curso_id: int) -> EstudianteCurso:
+    """Canjea una AccessKey (entregada por su director) por una inscripción.
+
+    Reglas:
+      - La llave debe existir, estar 'active', y dentro del rango temporal.
+      - El estudiante no debe estar ya inscrito en el curso.
+      - El curso debe existir.
+      - La llave se marca como 'used' tras canjearse (un solo uso).
+
+    Returns el EstudianteCurso creado. Raise CanjeError en cualquier violación.
+    """
+    if not key_str:
+        raise CanjeError("access_key requerida.", 'missing_key')
+
+    try:
+        curso = Curso.objects.get(pk=curso_id)
+    except Curso.DoesNotExist:
+        raise CanjeError("Curso no existe.", 'curso_not_found')
+
+    try:
+        access_key = AccessKey.objects.select_for_update().get(key=key_str)
+    except AccessKey.DoesNotExist:
+        raise CanjeError("Llave no encontrada.", 'key_not_found')
+
+    if access_key.status != 'active':
+        raise CanjeError(f"Llave en estado '{access_key.status}'.", 'key_inactive')
+
+    now = timezone.now()
+    if access_key.valid_until and access_key.valid_until < now:
+        access_key.status = 'revoked'
+        access_key.save(update_fields=['status'])
+        raise CanjeError("Llave expirada.", 'key_expired')
+
+    if EstudianteCurso.objects.filter(estudiante_id=estudiante, curso_id=curso).exists():
+        raise CanjeError("Ya estás inscrito en este curso.", 'already_enrolled')
+
+    inscripcion = EstudianteCurso.objects.create(
+        estudiante_id=estudiante,
+        curso_id=curso,
+        access_key_id=access_key,
+    )
+    access_key.status = 'used'
+    access_key.save(update_fields=['status'])
+    return inscripcion
 
 
 def asignar_llave_y_curso(estudiante, curso, dias):

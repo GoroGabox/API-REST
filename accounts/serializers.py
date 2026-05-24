@@ -3,7 +3,17 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import Group, Permission
-from .models import Usuario, DirectorProfile, EstudianteProfile, Certificado, Prueba, PruebaEjercicio, EstudianteLeccion  # noqa: F401
+from .models import (  # noqa: F401
+    Usuario,
+    DirectorProfile,
+    EstudianteProfile,
+    Certificado,
+    Prueba,
+    PruebaEjercicio,
+    EstudianteLeccion,
+    Notificacion,
+    PushToken,
+)
 
 class UsuariorRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
@@ -50,13 +60,85 @@ class UsuarioSerializer(serializers.ModelSerializer):
             'nombre',
             'apellido',
             'email',
+            'rut',
+            'direccion',
+            'telefono',
+            'avatar_url',
             'escuela',
             'is_director',
             'is_estudiante',
             'is_superuser',
             'is_active',
-            'is_staff'
+            'is_staff',
+            'date_joined',
         ]
+        read_only_fields = ['is_superuser', 'is_staff', 'is_active', 'is_director', 'is_estudiante', 'date_joined', 'email']
+
+
+class UsuarioMeSerializer(serializers.ModelSerializer):
+    """Perfil completo del usuario autenticado + stats de gamificación."""
+    stats = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Usuario
+        fields = [
+            'id', 'nombre', 'apellido', 'email', 'rut', 'direccion',
+            'telefono', 'avatar_url', 'escuela', 'is_director', 'is_estudiante',
+            'date_joined', 'stats',
+        ]
+
+    def get_stats(self, obj):
+        from . import gamification
+        gamification.regenerar_recursos(obj)
+        nivel = gamification.nivel_para_xp(obj.xp)
+        return {
+            'hearts': obj.hearts,
+            'max_hearts': gamification.MAX_HEARTS,
+            'next_heart_regen_at': obj.next_heart_regen_at,
+            'energy': obj.energy,
+            'max_energy': gamification.MAX_ENERGY,
+            'next_energy_regen_at': obj.next_energy_regen_at,
+            'xp': obj.xp,
+            **nivel,
+            'streak_current': obj.streak_current,
+            'streak_longest': obj.streak_longest,
+            'streak_frozen_until': obj.streak_frozen_until,
+            'last_active_date': obj.last_active_date,
+        }
+
+
+class NotificacionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notificacion
+        fields = ['id', 'tipo', 'titulo', 'mensaje', 'data', 'created_at', 'read_at']
+        read_only_fields = fields
+
+
+class PushTokenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PushToken
+        fields = ['id', 'token', 'platform', 'created_at', 'last_seen_at']
+        read_only_fields = ['id', 'created_at', 'last_seen_at']
+
+
+class LeaderboardEntrySerializer(serializers.Serializer):
+    rank = serializers.IntegerField()
+    usuario_id = serializers.IntegerField()
+    nombre = serializers.CharField()
+    apellido = serializers.CharField()
+    avatar_url = serializers.CharField(allow_blank=True)
+    xp = serializers.IntegerField()
+    level = serializers.IntegerField()
+
+
+class LogroSerializer(serializers.Serializer):
+    """Logro del catálogo + si fue obtenido por el usuario actual."""
+    slug = serializers.CharField()
+    nombre = serializers.CharField()
+    descripcion = serializers.CharField()
+    icono = serializers.CharField()
+    obtenido_en = serializers.DateTimeField(allow_null=True)
+    earned = serializers.BooleanField()
 
 class DirectorProfileSerializer(serializers.ModelSerializer):
     class Meta:

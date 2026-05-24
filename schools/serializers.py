@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria
+from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad
 
 class EscuelaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -12,9 +12,33 @@ class CursoSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class LeccionSerializer(serializers.ModelSerializer):
+    """Listado: solo metadatos. Para detalle completo usar LeccionDetalleSerializer."""
     class Meta:
         model = Leccion
-        fields = '__all__'
+        fields = [
+            'id', 'curso', 'unidad', 'categoria', 'nombre', 'posicion',
+            'tipo', 'descripcion', 'duracion_min',
+            'url_video', 'url_audio', 'url_pdf',
+        ]
+
+
+class LeccionDetalleSerializer(serializers.ModelSerializer):
+    """Detalle completo: incluye contenido + transcripción."""
+    class Meta:
+        model = Leccion
+        fields = [
+            'id', 'curso', 'unidad', 'categoria', 'nombre', 'posicion',
+            'tipo', 'descripcion', 'contenido', 'transcripcion',
+            'duracion_min', 'url_video', 'url_audio', 'url_pdf',
+        ]
+
+
+class UnidadSerializer(serializers.ModelSerializer):
+    lecciones = LeccionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Unidad
+        fields = ['id', 'curso', 'orden', 'nombre', 'descripcion', 'lecciones']
 
 class EjercicioSerializer(serializers.ModelSerializer):
     class Meta:

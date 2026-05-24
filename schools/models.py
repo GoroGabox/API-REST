@@ -38,16 +38,51 @@ class Categoria(models.Model):
     color_hex = models.CharField(max_length=10, default="#545050")
     def __str__(self):
         return self.nombre
-    
+
+
+class Unidad(models.Model):
+    """Agrupación de Lecciones dentro de un Curso (ej: 'Unidad 2 - Señales')."""
+    curso = models.ForeignKey(Curso, on_delete=models.CASCADE, related_name='unidades')
+    nombre = models.CharField(max_length=100)
+    orden = models.IntegerField(default=0)
+    descripcion = models.CharField(max_length=255, blank=True, default='')
+
+    class Meta:
+        ordering = ['curso', 'orden', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['curso', 'orden'], name='unique_unidad_orden_por_curso'),
+        ]
+
+    def __str__(self):
+        return f"{self.curso.nombre} / U{self.orden} - {self.nombre}"
+
+
 class Leccion(models.Model):
+    TIPO_CHOICES = [
+        ('video', 'Video'),
+        ('audio', 'Audio'),
+        ('quiz', 'Quiz'),
+        ('drag', 'Drag & Drop'),
+        ('identify', 'Identificar'),
+    ]
+
     id = models.AutoField(primary_key=True, auto_created=True)
     curso = models.ForeignKey(Curso, on_delete=models.CASCADE)
+    unidad = models.ForeignKey(Unidad, on_delete=models.SET_NULL, null=True, blank=True, related_name='lecciones')
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True)
     nombre = models.CharField(max_length=100)
     posicion = models.IntegerField()
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='video')
     descripcion = models.CharField(max_length=255, null=True)
+    contenido = models.TextField(blank=True, default='')          # markdown/HTML para detalle
+    transcripcion = models.TextField(blank=True, default='')
+    duracion_min = models.IntegerField(default=0)                  # minutos estimados
     url_video = models.URLField(default="http://placeholder.url")
     url_audio = models.URLField(default="http://placeholder.url")
+    url_pdf = models.URLField(blank=True, default='')
+
+    class Meta:
+        ordering = ['curso', 'posicion', 'id']
 
     def __str__(self):
         return self.nombre

@@ -22,6 +22,11 @@ from sales.models import EstudianteCurso
 from .serializers import  (
     UsuariorRegisterSerializer,
     UsuarioSerializer,
+    UsuarioMeSerializer,
+    LogroSerializer,
+    LeaderboardEntrySerializer,
+    NotificacionSerializer,
+    PushTokenSerializer,
     DirectorProfileSerializer,
     EstudianteProfileSerializer,
     MyTokenObtainPairSerializer,
@@ -357,6 +362,13 @@ class GenerarPruebaView(APIView):
         if error:
             return Response({"detail": error.detail}, status=error.status)
 
+        # Las prácticas consumen 1 energía al iniciar; las evaluaciones no.
+        if modalidad == 'practica':
+            try:
+                accounts_services.iniciar_prueba_practica(request.user)
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         prueba = accounts_services.crear_prueba_con_ejercicios(
             request.user, ejercicios,
             tipo=tipo.lower().strip(),
@@ -454,6 +466,195 @@ class MisPruebasDetalleView(APIView):
             "prueba": PruebaDetalleSerializer(prueba).data,
             "respuestas": detalles,
         })
+
+
+class MeView(APIView):
+    """GET /api/v1/accounts/me/ — perfil + stats. PATCH para actualizar perfil."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(UsuarioMeSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = UsuarioSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(UsuarioMeSerializer(request.user).data)
+
+
+class MeStatsView(APIView):
+    """GET /api/v1/accounts/me/stats/ — solo el bloque de gamificación."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from . import gamification
+        gamification.regenerar_recursos(request.user)
+        u = request.user
+        u.refresh_from_db()
+        nivel = gamification.nivel_para_xp(u.xp)
+        return Response({
+            'hearts': u.hearts,
+            'max_hearts': gamification.MAX_HEARTS,
+            'next_heart_regen_at': u.next_heart_regen_at,
+            'energy': u.energy,
+            'max_energy': gamification.MAX_ENERGY,
+            'next_energy_regen_at': u.next_energy_regen_at,
+            'xp': u.xp,
+            **nivel,
+            'streak_current': u.streak_current,
+            'streak_longest': u.streak_longest,
+            'streak_frozen_until': u.streak_frozen_until,
+            'last_active_date': u.last_active_date,
+        })
+
+
+class LeaderboardView(APIView):
+    """GET /api/v1/accounts/leaderboard/?scope=global|escuela&limit=20
+
+    Devuelve top-N usuarios por XP + el rank del usuario actual (si no entra
+    en el top). admin: cualquier escuela; director: solo la suya;
+    estudiante: global o su propia escuela.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .gamification import nivel_para_xp
+
+        scope = request.query_params.get('scope', 'global')
+        try:
+            limit = min(100, max(1, int(request.query_params.get('limit', 20))))
+        except (TypeError, ValueError):
+            limit = 20
+
+        qs = Usuario.objects.filter(is_estudiante=True, is_active=True)
+        if scope == 'escuela':
+            escuela_id = request.user.escuela_id
+            if not escuela_id:
+                return Response({"detail": "No perteneces a una escuela."}, status=status.HTTP_400_BAD_REQUEST)
+            if is_director(request.user) or is_admin(request.user):
+                escuela_param = request.query_params.get('escuela_id')
+                if escuela_param and is_admin(request.user):
+                    try:
+                        escuela_id = int(escuela_param)
+                    except (TypeError, ValueError):
+                        return Response({"detail": "escuela_id inválido."}, status=400)
+            qs = qs.filter(escuela_id=escuela_id)
+
+        top = list(qs.order_by('-xp', 'id')[:limit])
+        entries = []
+        for idx, u in enumerate(top, start=1):
+            entries.append({
+                'rank': idx,
+                'usuario_id': u.id,
+                'nombre': u.nombre,
+                'apellido': u.apellido,
+                'avatar_url': u.avatar_url or '',
+                'xp': u.xp,
+                'level': nivel_para_xp(u.xp)['level'],
+            })
+
+        # Rank del usuario actual si quedó fuera del top
+        mi_rank = None
+        if not any(e['usuario_id'] == request.user.id for e in entries):
+            mejor_xp = qs.filter(xp__gt=request.user.xp).count()
+            mi_rank = mejor_xp + 1
+
+        return Response({
+            'scope': scope,
+            'top': LeaderboardEntrySerializer(entries, many=True).data,
+            'me': {
+                'rank': mi_rank,
+                'xp': request.user.xp,
+                'level': nivel_para_xp(request.user.xp)['level'],
+            },
+        })
+
+
+class PushTokensView(APIView):
+    """POST /api/v1/accounts/me/push-token/    registra/actualiza token
+    DELETE /api/v1/accounts/me/push-token/<token>/   elimina
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from .models import PushToken
+        token = (request.data.get('token') or '').strip()
+        platform = (request.data.get('platform') or 'expo').strip()
+        if not token:
+            return Response({"detail": "token requerido."}, status=status.HTTP_400_BAD_REQUEST)
+        obj, _ = PushToken.objects.update_or_create(
+            token=token,
+            defaults={'usuario': request.user, 'platform': platform},
+        )
+        return Response(PushTokenSerializer(obj).data, status=status.HTTP_200_OK)
+
+
+class PushTokenDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, token):
+        from .models import PushToken
+        deleted, _ = PushToken.objects.filter(usuario=request.user, token=token).delete()
+        if not deleted:
+            return Response({"detail": "Token no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NotificacionesView(ListAPIView):
+    """GET /api/v1/accounts/me/notifications/?unread=true"""
+    serializer_class = NotificacionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = self.request.user.notificaciones.all()
+        if (self.request.query_params.get('unread') or '').lower() == 'true':
+            qs = qs.filter(read_at__isnull=True)
+        return qs
+
+
+class NotificacionMarcarLeidaView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from django.utils import timezone as _tz
+        updated = request.user.notificaciones.filter(pk=pk, read_at__isnull=True).update(read_at=_tz.now())
+        if not updated:
+            return Response({"detail": "No encontrada o ya leída."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"ok": True})
+
+
+class NotificacionesMarcarTodasView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from django.utils import timezone as _tz
+        n = request.user.notificaciones.filter(read_at__isnull=True).update(read_at=_tz.now())
+        return Response({"marcadas": n})
+
+
+class MeAchievementsView(APIView):
+    """GET /api/v1/accounts/me/achievements/ — catálogo + flag earned."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .gamification import LOGROS_CATALOGO
+        from .models import UsuarioLogro
+
+        obtenidos = {
+            ul.logro.slug: ul.obtenido_en
+            for ul in UsuarioLogro.objects.filter(usuario=request.user).select_related('logro')
+        }
+        items = []
+        for slug, meta in LOGROS_CATALOGO.items():
+            items.append({
+                'slug': slug,
+                'nombre': meta['nombre'],
+                'descripcion': meta['descripcion'],
+                'icono': meta['icono'],
+                'obtenido_en': obtenidos.get(slug),
+                'earned': slug in obtenidos,
+            })
+        return Response(LogroSerializer(items, many=True).data)
 
 
 class MisCertificadosView(ListAPIView):
