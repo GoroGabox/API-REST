@@ -1,0 +1,591 @@
+import os
+from collections import defaultdict
+from django.http import Http404
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.password_validation import validate_password
+from rest_framework import viewsets, status, permissions
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.generics import CreateAPIView, ListAPIView, RetrieveUpdateDestroyAPIView, RetrieveAPIView
+from django_filters.rest_framework import DjangoFilterBackend
+from .models import  Usuario, DirectorProfile, EstudianteProfile, Certificado, Prueba, PruebaEjercicio, EstudianteLeccion
+from schools.models import Ejercicio, Categoria, Leccion
+from sales.models import EstudianteCurso
+from .serializers import  (
+    UsuariorRegisterSerializer,
+    UsuarioSerializer,
+    DirectorProfileSerializer,
+    EstudianteProfileSerializer,
+    MyTokenObtainPairSerializer,
+    CertificadoSerializer,
+    CertificadoPublicoSerializer,
+    PruebaSerializer,
+    PruebaDetalleSerializer,
+    PruebaEjercicioSerializer,
+    SubmitPruebaSerializer,
+    SendEmailSerializer,
+    ResetPasswordSerializer,
+    GroupSerializer,
+    PermissionSerializer,
+    EstudianteLeccionSerializer,
+    EscuelaConDirectorSerializer,
+)
+from .permissions import (
+    IsAdmin,
+    IsDirector,
+    IsEstudiante,
+    ReadOnlyOrAdmin,
+    IsAdminOrSelf,
+    IsAdminOrOwnerOrDirectorOfSchool,
+    is_admin,
+    is_director,
+    is_estudiante,
+)
+
+class UsuarioRegisterView(CreateAPIView):
+    serializer_class = UsuariorRegisterSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            user = serializer.save()
+            token_serializer = MyTokenObtainPairSerializer.get_token(user)
+            response_data = {
+                    "refresh": str(token_serializer),
+                    "access": str(token_serializer.access_token),
+                }
+            return Response(response_data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class UsuarioListView(ListAPIView):
+    """Admin: ve todos. Director: solo de su escuela. Estudiante: 403."""
+    queryset = Usuario.objects.all()
+    serializer_class = UsuarioSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['escuela', 'is_director', 'is_estudiante', 'is_active']
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if is_admin(user):
+            return Usuario.objects.all()
+        if is_director(user):
+            return Usuario.objects.filter(escuela_id=user.escuela_id, is_estudiante=True)
+        return Usuario.objects.none()
+
+
+class UsuarioRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    queryset = Usuario.objects.all()
+    serializer_class = UsuarioSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrSelf]
+
+
+class EscuelaConDirectorView(APIView):
+    """POST /api/v1/accounts/registrar-escuela-director/ — solo admin."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        serializer = EscuelaConDirectorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        return Response(serializer.to_representation(instance), status=status.HTTP_201_CREATED)
+
+class MyTokenObtainPairView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer
+    permission_classes = [permissions.AllowAny]
+
+class DirectorProfileViewSet(viewsets.ModelViewSet):
+    queryset = DirectorProfile.objects.all()
+    serializer_class = DirectorProfileSerializer
+    permission_classes = [IsAdmin]
+
+
+class EstudianteProfileViewSet(viewsets.ModelViewSet):
+    queryset = EstudianteProfile.objects.all()
+    serializer_class = EstudianteProfileSerializer
+    permission_classes = [IsAdmin]
+
+class LogOutAPIView(APIView):
+    def post(self, request, format=None):
+        try:
+            refresh_token = request.data.get('refresh')
+            token_obj = RefreshToken(refresh_token)
+            token_obj.blacklist()
+            return Response(status=status.HTTP_200_OK)
+        except Exception:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+#cambiar links de retorno
+class PasswordResetRequestView(APIView):
+    serializer_class = SendEmailSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        email = request.data.get('email')
+        user = Usuario.objects.filter(email=email).first()
+        if user:
+            uid = urlsafe_base64_encode(force_bytes(user.id))
+            token = default_token_generator.make_token(user)
+            frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+            password_reset_link = f'{frontend_url}/change-password?uidb64={uid}&token={token}'
+            
+            send_mail(
+                subject='Restablecimiento de contraseña',
+                message='Sigue este enlace para restablecer tu contraseña: {}'.format(password_reset_link),
+                from_email='soporte.autotest@gmail.com',
+                recipient_list=[user.email],
+            )
+            return Response({"mensaje": "Se ha enviado un correo electrónico con instrucciones para restablecer tu contraseña."}, status=status.HTTP_200_OK)
+        return Response({"error": "No se ha encontrado un usuario con ese correo electrónico."}, status=status.HTTP_400_BAD_REQUEST)
+
+class CustomPasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = ResetPasswordSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            uid = urlsafe_base64_decode(request.data.get('uid')).decode()
+            user = Usuario.objects.get(pk=uid)
+            token = default_token_generator.check_token(user, request.data.get('token'))
+
+            if user is not None and token:
+                serializer = self.serializer_class(data=request.data, context={'user': user})
+                serializer.is_valid(raise_exception=True)
+
+                # Establecer la nueva contraseña
+                new_password = serializer.validated_data['new_password']
+                user.set_password(new_password)
+                user.save()
+                return Response({"mensaje": "La contraseña ha sido restablecida con éxito."}, status=status.HTTP_200_OK)
+            else:
+                return Response({"error": "El enlace de restablecimiento no es válido o ha expirado."}, status=status.HTTP_400_BAD_REQUEST)
+        except (TypeError, ValueError, OverflowError, Usuario.DoesNotExist):
+            return Response({"error": "Ha ocurrido un error al procesar la solicitud."}, status=status.HTTP_400_BAD_REQUEST)
+
+def _scope_by_estudiante(qs, user, estudiante_field='estudiante'):
+    """Filtra queryset según rol: admin todo; estudiante solo propios; director solo su escuela."""
+    if is_admin(user):
+        return qs
+    if is_estudiante(user):
+        return qs.filter(**{estudiante_field: user})
+    if is_director(user):
+        return qs.filter(**{f'{estudiante_field}__escuela_id': user.escuela_id})
+    return qs.none()
+
+
+class CertificadoViewSet(viewsets.ModelViewSet):
+    queryset = Certificado.objects.all()
+    serializer_class = CertificadoSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['estudiante', 'curso', 'fecha_emision']
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrDirectorOfSchool]
+
+    def get_queryset(self):
+        return _scope_by_estudiante(Certificado.objects.all(), self.request.user)
+
+
+class PruebaViewSet(viewsets.ModelViewSet):
+    queryset = Prueba.objects.all()
+    serializer_class = PruebaSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['estudiante', 'fecha', 'aprobado']
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrDirectorOfSchool]
+
+    def get_queryset(self):
+        return _scope_by_estudiante(Prueba.objects.all(), self.request.user)
+
+
+class PruebaEjercicioViewSet(viewsets.ModelViewSet):
+    queryset = PruebaEjercicio.objects.all()
+    serializer_class = PruebaEjercicioSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['prueba', 'ejercicio']
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return _scope_by_estudiante(
+            PruebaEjercicio.objects.all(), self.request.user,
+            estudiante_field='prueba__estudiante',
+        )
+
+class SendActivationEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = SendEmailSerializer
+
+    def post(self, request):
+        email = request.data.get('email')
+        try:
+            user = Usuario.objects.get(email=email)
+            if user.is_active:
+                return Response({"detail": "La cuenta ya está activa."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Rotar el token si fue invalidado por un activate previo.
+            if user.activation_token is None:
+                import uuid as _uuid
+                user.activation_token = _uuid.uuid4()
+                user.save(update_fields=['activation_token'])
+
+            activation_url = request.build_absolute_uri(
+                reverse('activate_account', args=[str(user.activation_token)])
+            )
+            send_mail(
+                subject="Activa tu cuenta",
+                message=f"Por favor activa tu cuenta usando el siguiente enlace: {activation_url}",
+                from_email="soporte.autotest@gmail.com",
+                recipient_list=[user.email],
+            )
+            return Response({"detail": "Correo de activación enviado."}, status=status.HTTP_200_OK)
+        except Usuario.DoesNotExist:
+            return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+class ActivateAccountView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token):
+        try:
+            user = Usuario.objects.get(activation_token=token)
+        except (Usuario.DoesNotExist, ValueError, Http404):
+            return Response({"detail": "Token inválido o usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if user.is_active:
+            return Response({"detail": "La cuenta ya está activa."}, status=status.HTTP_200_OK)
+
+        user.is_active = True
+        # Invalidar el token de activación (un solo uso).
+        user.activation_token = None
+        user.save(update_fields=['is_active', 'activation_token'])
+        return Response({"detail": "Cuenta activada con éxito."}, status=status.HTTP_200_OK)
+
+class GroupViewSet(viewsets.ModelViewSet):
+    """Gestión de Grupos — solo admin."""
+    queryset = Group.objects.all()
+    serializer_class = GroupSerializer
+    permission_classes = [IsAdmin]
+
+
+class PermissionViewSet(viewsets.ReadOnlyModelViewSet):
+    """Lectura de permisos — solo admin."""
+    queryset = Permission.objects.all()
+    serializer_class = PermissionSerializer
+    permission_classes = [IsAdmin]
+
+
+class EstudianteLeccionViewSet(viewsets.ModelViewSet):
+    queryset = EstudianteLeccion.objects.all()
+    serializer_class = EstudianteLeccionSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["estudiante", "curso", "leccion"]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = EstudianteLeccion.objects.select_related("estudiante", "curso", "leccion")
+        return _scope_by_estudiante(qs, self.request.user)
+
+    def perform_create(self, serializer):
+        # Estudiante solo puede crear sus propios registros.
+        user = self.request.user
+        if is_estudiante(user):
+            serializer.save(estudiante=user)
+        else:
+            serializer.save()
+
+from . import services as accounts_services
+
+
+class GenerarPruebaView(APIView):
+    """
+    POST /api/pruebas/generar
+    Body:
+    {
+      "tipo": "completa" | "rapida" | "categoria",
+      "categoria_id": 123  # requerido solo si tipo="categoria"
+    }
+
+    Respuesta:
+    {
+      "prueba_id": int,
+      "tipo": str,
+      "preguntas": [
+        {
+          "id": int,
+          "pregunta": str,
+          "imagen": str,
+          "opciones": {
+            "a": str | null,
+            "b": str | null,
+            "c": str | null,
+            "d": str | null,
+            "e": str | null,
+            "f": str | null
+          },
+          "categoria_id": int,
+          "curso_id": int | null,
+          "leccion_id": int | null
+        }, ...
+      ],
+      "total": int
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        tipo = request.data.get('tipo')
+        categoria_id = request.data.get('categoria_id')
+        modalidad = (request.data.get('modalidad') or 'practica').lower().strip()
+        if modalidad not in ('practica', 'evaluacion'):
+            return Response({"detail": "modalidad debe ser 'practica' o 'evaluacion'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        curso = None
+        curso_id = request.data.get('curso_id')
+        if curso_id:
+            from schools.models import Curso as _Curso
+            try:
+                curso = _Curso.objects.get(pk=curso_id)
+            except _Curso.DoesNotExist:
+                return Response({"detail": "Curso no existe."}, status=status.HTTP_404_NOT_FOUND)
+
+        ejercicios, error = accounts_services.seleccionar_ejercicios(tipo, categoria_id)
+        if error:
+            return Response({"detail": error.detail}, status=error.status)
+
+        prueba = accounts_services.crear_prueba_con_ejercicios(
+            request.user, ejercicios,
+            tipo=tipo.lower().strip(),
+            modalidad=modalidad,
+            curso=curso,
+        )
+
+        return Response({
+            "prueba_id": prueba.id,
+            "tipo": prueba.tipo,
+            "modalidad": prueba.modalidad,
+            "curso_id": prueba.curso_id,
+            "preguntas": accounts_services.serializar_preguntas_publicas(ejercicios),
+            "total": len(ejercicios),
+        }, status=status.HTTP_201_CREATED)
+
+
+class SubmitPruebaView(APIView):
+    """POST /api/v1/accounts/tests/<prueba_id>/submit/
+
+    Body: { "respuestas": { pregunta_id: opcion_key ('a'..'f') } }
+
+    Devuelve: aprobado, score, total_correctas, detalles[].
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, prueba_id):
+        try:
+            prueba = Prueba.objects.select_related('estudiante', 'curso').get(pk=prueba_id)
+        except Prueba.DoesNotExist:
+            return Response({"detail": "Prueba no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Solo el dueño o admin pueden enviar.
+        if not is_admin(request.user) and prueba.estudiante_id != request.user.id:
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = SubmitPruebaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        respuestas_raw = serializer.validated_data['respuestas']
+        respuestas = {int(k): v for k, v in respuestas_raw.items()}
+
+        try:
+            resultado = accounts_services.submit_prueba(prueba, respuestas)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Si el signal emitió un certificado, exponerlo.
+        prueba.refresh_from_db()
+        cert = Certificado.objects.filter(prueba=prueba).first()
+        if cert:
+            resultado['certificado'] = {
+                'id': cert.id, 'codigo': str(cert.codigo),
+                'fecha_emision': cert.fecha_emision,
+            }
+        resultado['prueba'] = PruebaDetalleSerializer(prueba).data
+        return Response(resultado, status=status.HTTP_200_OK)
+
+
+class MisPruebasView(ListAPIView):
+    """GET /api/v1/accounts/me/tests/ — historial del estudiante."""
+    serializer_class = PruebaDetalleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Prueba.objects.filter(estudiante=self.request.user).order_by('-fecha', '-id')
+
+
+class MisPruebasDetalleView(APIView):
+    """GET /api/v1/accounts/me/tests/<prueba_id>/ — detalle con respuestas."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, prueba_id):
+        try:
+            prueba = (
+                Prueba.objects
+                .prefetch_related('items__ejercicio')
+                .get(pk=prueba_id)
+            )
+        except Prueba.DoesNotExist:
+            return Response({"detail": "Prueba no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_admin(request.user) and prueba.estudiante_id != request.user.id:
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        detalles = []
+        for item in prueba.items.all():
+            detalles.append({
+                "pregunta_id": item.ejercicio_id,
+                "pregunta": item.ejercicio.pregunta,
+                "respuesta_estudiante": item.respuesta_estudiante,
+                "correcta": item.correcta,
+                "opcion_correcta": accounts_services._opcion_correcta_para(item.ejercicio),
+            })
+        return Response({
+            "prueba": PruebaDetalleSerializer(prueba).data,
+            "respuestas": detalles,
+        })
+
+
+class MisCertificadosView(ListAPIView):
+    """GET /api/v1/accounts/me/certificates/ — certificados del estudiante."""
+    serializer_class = CertificadoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Certificado.objects.filter(estudiante=self.request.user).order_by('-fecha_emision', '-id')
+
+
+class VerifyCertificadoView(APIView):
+    """GET /api/v1/accounts/certificates/<codigo>/verify/ — público (QR scan)."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, codigo):
+        try:
+            cert = Certificado.objects.select_related('estudiante', 'curso').get(codigo=codigo)
+        except (Certificado.DoesNotExist, ValueError):
+            return Response({"valid": False, "detail": "Código no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            "valid": True,
+            **CertificadoPublicoSerializer(cert).data,
+        })
+
+
+class GenerarPruebaGratisView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        tipo = request.data.get('tipo')
+        categoria_id = request.data.get('categoria_id')
+
+        ejercicios, error = accounts_services.seleccionar_ejercicios(tipo, categoria_id)
+        if error:
+            return Response({"detail": error.detail}, status=error.status)
+
+        return Response({
+            "tipo": tipo.lower().strip(),
+            "preguntas": accounts_services.serializar_preguntas_publicas(ejercicios),
+            "total": len(ejercicios),
+        }, status=status.HTTP_201_CREATED)
+
+
+class ProgresoEstudiantesView(APIView):
+    """Progreso agregado de estudiantes por escuela.
+
+    Admin: cualquier escuela. Director: solo la suya. Estudiante: 403.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, escuela_id):
+        if not is_admin(request.user):
+            if not is_director(request.user):
+                return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+            if request.user.escuela_id != int(escuela_id):
+                return Response({"detail": "No autorizado para esa escuela."}, status=status.HTTP_403_FORBIDDEN)
+
+        curso_id = request.query_params.get("curso_id")
+        try:
+            curso_id_int = int(curso_id) if curso_id else None
+        except (TypeError, ValueError):
+            return Response({"detail": "curso_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        estudiantes_qs = Usuario.objects.filter(is_estudiante=True, escuela_id=escuela_id)
+        if curso_id_int is not None:
+            estudiantes_qs = estudiantes_qs.filter(
+                id__in=EstudianteCurso.objects.filter(curso_id=curso_id_int).values("estudiante_id")
+            )
+
+        estudiante_ids = list(estudiantes_qs.values_list("id", flat=True))
+        if not estudiante_ids:
+            return Response([], status=status.HTTP_200_OK)
+
+        # Cursos inscritos por estudiante (filtrados a curso_id si vino).
+        ec_qs = EstudianteCurso.objects.filter(estudiante_id__in=estudiante_ids)
+        if curso_id_int is not None:
+            ec_qs = ec_qs.filter(curso_id=curso_id_int)
+
+        cursos_por_estudiante = defaultdict(set)
+        for est_pk, curso_pk in ec_qs.values_list("estudiante_id", "curso_id"):
+            cursos_por_estudiante[est_pk].add(curso_pk)
+
+        todos_cursos = {c for cs in cursos_por_estudiante.values() for c in cs}
+
+        # Lecciones por curso → contar una sola vez.
+        lecciones_por_curso = defaultdict(int)
+        leccion_pk_por_curso = defaultdict(set)
+        for curso_pk, leccion_pk in Leccion.objects.filter(curso_id__in=todos_cursos).values_list("curso_id", "id"):
+            lecciones_por_curso[curso_pk] += 1
+            leccion_pk_por_curso[curso_pk].add(leccion_pk)
+
+        # Lecciones vistas distintas (estudiante, curso, leccion) en una sola consulta.
+        vistas_qs = (
+            EstudianteLeccion.objects
+            .filter(estudiante_id__in=estudiante_ids, curso_id__in=todos_cursos)
+            .values_list("estudiante_id", "curso_id", "leccion_id")
+            .distinct()
+        )
+        vistas_por_estudiante_curso = defaultdict(set)
+        for est_pk, curso_pk, leccion_pk in vistas_qs:
+            vistas_por_estudiante_curso[(est_pk, curso_pk)].add(leccion_pk)
+
+        # Pruebas totales / aprobadas en una sola consulta agregada.
+        from django.db.models import Count, Q
+        pruebas_agg = (
+            Prueba.objects.filter(estudiante_id__in=estudiante_ids)
+            .values("estudiante_id")
+            .annotate(total=Count("id"), aprobadas=Count("id", filter=Q(aprobado=True)))
+        )
+        pruebas_por_estudiante = {p["estudiante_id"]: (p["total"], p["aprobadas"]) for p in pruebas_agg}
+
+        respuesta = []
+        for est in estudiantes_qs:
+            cursos = cursos_por_estudiante.get(est.id, set())
+            total_lecciones = sum(lecciones_por_curso.get(c, 0) for c in cursos)
+            lecciones_vistas = sum(
+                len(vistas_por_estudiante_curso.get((est.id, c), set()) & leccion_pk_por_curso.get(c, set()))
+                for c in cursos
+            )
+            progreso_pct = round((lecciones_vistas / total_lecciones) * 100) if total_lecciones else 0
+
+            total_p, aprobadas = pruebas_por_estudiante.get(est.id, (0, 0))
+            aprobacion_pct = round((aprobadas / total_p) * 100) if total_p else 0
+
+            respuesta.append({
+                "id": est.id,
+                "nombre": f"{est.nombre} {est.apellido}",
+                "clasesVistas": progreso_pct,
+                "aprobacionPruebas": aprobacion_pct,
+            })
+
+        return Response(respuesta, status=status.HTTP_200_OK)
+
+        return Response(respuesta)
