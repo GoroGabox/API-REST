@@ -8,6 +8,7 @@ from .views import (
     CategoriaViewSet,
     EjercicioViewSet,
     UnidadViewSet,
+    RecursoViewSet,
 )
 
 router = DefaultRouter()
@@ -18,5 +19,6 @@ router.register(r'units', UnidadViewSet)
 router.register(r'glosary', GlosarioViewSet)
 router.register(r'exercices', EjercicioViewSet)
 router.register(r'categories', CategoriaViewSet)
+router.register(r'library', RecursoViewSet)
 
 urlpatterns = router.urls

@@ -95,6 +95,37 @@ class Glosario(models.Model):
     def __str__(self):
         return self.termino
 
+class Recurso(models.Model):
+    """Recursos descargables de la biblioteca (PDFs principalmente).
+
+    `requires_owned_course=True` restringe la visibilidad al estudiante que
+    posee acceso al curso vinculado.
+    """
+    TIPO_CHOICES = [
+        ('pdf', 'PDF'),
+        ('video', 'Video'),
+        ('audio', 'Audio'),
+        ('link', 'Enlace externo'),
+    ]
+    titulo = models.CharField(max_length=200)
+    descripcion = models.CharField(max_length=500, blank=True, default='')
+    categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
+    curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True, related_name='recursos')
+    leccion = models.ForeignKey('Leccion', on_delete=models.SET_NULL, null=True, blank=True, related_name='recursos')
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='pdf')
+    url = models.URLField()
+    paginas = models.IntegerField(null=True, blank=True)
+    size_bytes = models.BigIntegerField(null=True, blank=True)
+    requires_owned_course = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return self.titulo
+
+
 class Ejercicio(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True)

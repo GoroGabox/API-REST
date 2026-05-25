@@ -468,6 +468,40 @@ class MisPruebasDetalleView(APIView):
         })
 
 
+class SocialLoginGoogleView(APIView):
+    """POST /api/v1/accounts/social/google/  Body: { id_token }"""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from . import social
+        id_token = (request.data.get('id_token') or '').strip()
+        if not id_token:
+            return Response({"detail": "id_token requerido."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = social.verify_google_id_token(id_token)
+        except social.SocialAuthError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_401_UNAUTHORIZED)
+        user, _created = social.obtener_o_crear_usuario_social(payload)
+        return Response(social.emitir_jwt_para_usuario(user), status=status.HTTP_200_OK)
+
+
+class SocialLoginAppleView(APIView):
+    """POST /api/v1/accounts/social/apple/  Body: { identity_token }"""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from . import social
+        token = (request.data.get('identity_token') or '').strip()
+        if not token:
+            return Response({"detail": "identity_token requerido."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = social.verify_apple_identity_token(token)
+        except social.SocialAuthError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_401_UNAUTHORIZED)
+        user, _created = social.obtener_o_crear_usuario_social(payload)
+        return Response(social.emitir_jwt_para_usuario(user), status=status.HTTP_200_OK)
+
+
 class MeView(APIView):
     """GET /api/v1/accounts/me/ — perfil + stats. PATCH para actualizar perfil."""
     permission_classes = [permissions.IsAuthenticated]

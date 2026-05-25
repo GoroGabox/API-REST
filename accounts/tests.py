@@ -641,6 +641,176 @@ class CanjearLlaveTests(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_409_CONFLICT)
 
 
+class SocialLoginTests(APITestCase):
+    """Login con Google/Apple usando verifiers mockeados vía settings."""
+
+    def setUp(self):
+        from django.conf import settings
+        self._orig = getattr(settings, 'SOCIAL_AUTH_VERIFIERS', None)
+
+    def tearDown(self):
+        from django.conf import settings
+        if self._orig is None:
+            if hasattr(settings, 'SOCIAL_AUTH_VERIFIERS'):
+                del settings.SOCIAL_AUTH_VERIFIERS
+        else:
+            settings.SOCIAL_AUTH_VERIFIERS = self._orig
+
+    def _set_verifier(self, provider, fn):
+        from django.conf import settings
+        settings.SOCIAL_AUTH_VERIFIERS = {**getattr(settings, 'SOCIAL_AUTH_VERIFIERS', {}), provider: fn}
+
+    def test_login_google_crea_usuario_y_devuelve_jwt(self):
+        from accounts.models import Usuario
+        self._set_verifier('google', lambda tok: {
+            'email': 'g@x.com', 'nombre': 'G', 'apellido': 'X', 'sub': 'sub-1',
+        })
+        r = self.client.post(reverse('social_google'), {"id_token": "FAKE"}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertIn('access', r.data)
+        self.assertIn('refresh', r.data)
+        u = Usuario.objects.get(email='g@x.com')
+        self.assertTrue(u.is_estudiante)
+        self.assertTrue(u.is_active)
+
+    def test_login_google_segunda_vez_no_duplica_usuario(self):
+        from accounts.models import Usuario
+        self._set_verifier('google', lambda tok: {
+            'email': 'g2@x.com', 'nombre': 'G', 'apellido': 'X', 'sub': 'sub-2',
+        })
+        self.client.post(reverse('social_google'), {"id_token": "FAKE"}, format='json')
+        self.client.post(reverse('social_google'), {"id_token": "FAKE"}, format='json')
+        self.assertEqual(Usuario.objects.filter(email='g2@x.com').count(), 1)
+
+    def test_login_google_token_invalido_401(self):
+        from accounts.social import SocialAuthError
+        def bad(tok):
+            raise SocialAuthError("Bad token")
+        self._set_verifier('google', bad)
+        r = self.client.post(reverse('social_google'), {"id_token": "FAKE"}, format='json')
+        self.assertEqual(r.status_code, 401)
+
+    def test_login_apple_funciona_con_verifier_mock(self):
+        self._set_verifier('apple', lambda tok: {
+            'email': 'a@x.com', 'nombre': 'A', 'apellido': 'X', 'sub': 'sub-a',
+        })
+        r = self.client.post(reverse('social_apple'), {"identity_token": "FAKE"}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertIn('access', r.data)
+
+
+class BibliotecaTests(APITestCase):
+    def setUp(self):
+        from schools.models import Curso, Recurso, Categoria
+        from sales.models import AccessKey, EstudianteCurso
+        self.cat = Categoria.objects.create(nombre="Señales")
+        self.curso = Curso.objects.create(nombre="C", descripcion="d")
+        self.curso_otro = Curso.objects.create(nombre="C2", descripcion="d")
+
+        self.pub = Recurso.objects.create(
+            titulo="Manual de conducción", tipo='pdf',
+            url='https://files.example.com/manual.pdf', categoria=self.cat,
+            requires_owned_course=False,
+        )
+        self.priv = Recurso.objects.create(
+            titulo="Guía pro", tipo='pdf',
+            url='https://files.example.com/pro.pdf', curso=self.curso,
+            requires_owned_course=True,
+        )
+        self.priv_otro = Recurso.objects.create(
+            titulo="Guía otra", tipo='pdf',
+            url='https://files.example.com/otra.pdf', curso=self.curso_otro,
+            requires_owned_course=True,
+        )
+
+        self.estudiante = make_user("est@x.com", is_estudiante=True)
+        # Inscripción al curso
+        key = AccessKey.objects.create()
+        EstudianteCurso.objects.create(estudiante_id=self.estudiante, curso_id=self.curso, access_key_id=key)
+
+    def _list(self):
+        r = self.client.get('/api/v1/schools/library/')
+        self.assertEqual(r.status_code, 200, r.data)
+        data = r.data['results'] if isinstance(r.data, dict) and 'results' in r.data else r.data
+        return {x['titulo'] for x in data}
+
+    def test_estudiante_inscrito_ve_priv_solo_de_su_curso(self):
+        self.client.force_authenticate(self.estudiante)
+        titulos = self._list()
+        self.assertIn("Manual de conducción", titulos)
+        self.assertIn("Guía pro", titulos)
+        self.assertNotIn("Guía otra", titulos)
+
+    def test_estudiante_no_inscrito_solo_ve_publicos(self):
+        otro = make_user("nope@x.com", is_estudiante=True)
+        self.client.force_authenticate(otro)
+        titulos = self._list()
+        self.assertEqual(titulos, {"Manual de conducción"})
+
+    def test_admin_ve_todos(self):
+        admin = make_user("ad@x.com", is_admin=True)
+        self.client.force_authenticate(admin)
+        titulos = self._list()
+        self.assertEqual(titulos, {"Manual de conducción", "Guía pro", "Guía otra"})
+
+    def test_admin_puede_crear_recurso(self):
+        admin = make_user("ad2@x.com", is_admin=True)
+        self.client.force_authenticate(admin)
+        r = self.client.post('/api/v1/schools/library/', {
+            "titulo": "Nuevo", "tipo": "pdf",
+            "url": "https://example.com/x.pdf",
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+
+    def test_estudiante_no_puede_crear_recurso(self):
+        self.client.force_authenticate(self.estudiante)
+        r = self.client.post('/api/v1/schools/library/', {
+            "titulo": "X", "tipo": "pdf", "url": "https://example.com/x.pdf",
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_filter_search_por_q(self):
+        self.client.force_authenticate(self.estudiante)
+        r = self.client.get('/api/v1/schools/library/?q=Manual')
+        self.assertEqual(r.status_code, 200)
+        data = r.data['results'] if isinstance(r.data, dict) and 'results' in r.data else r.data
+        self.assertEqual(len(data), 1)
+
+
+class ExpoPushDispatchTests(APITestCase):
+    """_dispatch_push permanece deshabilitado por default; envía si EXPO_PUSH_ENABLED."""
+
+    def test_push_no_se_envia_si_disabled(self):
+        from accounts.models import Notificacion, PushToken
+        from accounts.notifications import _dispatch_push
+        user = make_user("nopush@x.com", is_estudiante=True)
+        PushToken.objects.create(usuario=user, token="t1", platform='expo')
+        notif = Notificacion.objects.create(usuario=user, tipo='info', titulo='X')
+        # No exception, no network call (settings.EXPO_PUSH_ENABLED no set).
+        _dispatch_push(user, notif)
+
+    def test_push_intenta_enviar_si_habilitado(self):
+        from accounts.models import Notificacion, PushToken
+        from accounts.notifications import _dispatch_push, EXPO_PUSH_URL
+        from django.conf import settings
+        from unittest.mock import patch
+
+        user = make_user("yespush@x.com", is_estudiante=True)
+        PushToken.objects.create(usuario=user, token="ExponentPushToken[abc]", platform='expo')
+        notif = Notificacion.objects.create(usuario=user, tipo='info', titulo='Hola')
+
+        with patch.object(settings, 'EXPO_PUSH_ENABLED', True, create=True), \
+             patch('requests.post') as post:
+            post.return_value.status_code = 200
+            _dispatch_push(user, notif)
+            post.assert_called_once()
+            args, kwargs = post.call_args
+            self.assertEqual(args[0], EXPO_PUSH_URL)
+            payloads = kwargs['json']
+            self.assertEqual(payloads[0]['to'], "ExponentPushToken[abc]")
+            self.assertEqual(payloads[0]['title'], 'Hola')
+
+
 class ProgresoEstudiantesScopingTests(APITestCase):
     def setUp(self):
         self.escuela_a = Escuela.objects.create(nombre="A", direccion="x", email="a@a.com", telefono="1")

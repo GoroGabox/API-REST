@@ -37,6 +37,8 @@ from .views import (
     NotificacionesView,
     NotificacionMarcarLeidaView,
     NotificacionesMarcarTodasView,
+    SocialLoginGoogleView,
+    SocialLoginAppleView,
 )
 
 router = DefaultRouter()
@@ -51,6 +53,8 @@ router.register(r'estudiante-leccion', EstudianteLeccionViewSet, basename='estud
 
 urlpatterns = [
     path('login/', MyTokenObtainPairView.as_view(), name='login_view'),
+    path('social/google/', SocialLoginGoogleView.as_view(), name='social_google'),
+    path('social/apple/', SocialLoginAppleView.as_view(), name='social_apple'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh_view'),
     path('logout/', LogOutAPIView.as_view(), name='logout_view'),
     path('register/', UsuarioRegisterView.as_view(), name='user_register_view'),

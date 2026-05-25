@@ -23,20 +23,52 @@ def notificar(user, tipo: str, titulo: str, mensaje: str = '', data: Optional[di
     return notif
 
 
+EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
+
+
 def _dispatch_push(user, notif: Notificacion):
     """Envía push a los PushTokens activos del usuario.
 
-    Hook a integrar con Expo Push API / FCM / APNS. Hoy solo loggea.
-    Sustituir por requests.post('https://exp.host/--/api/v2/push/send', ...) etc.
+    Habilita el envío real con `EXPO_PUSH_ENABLED=True` (settings o env).
+    En desarrollo / tests permanece desactivado para no salir a la red.
     """
+    from django.conf import settings as _settings
+    import os as _os
+
     tokens = list(PushToken.objects.filter(usuario=user).values_list('token', 'platform'))
     if not tokens:
         return
-    logger.info(
-        "push pendiente notif=%s usuario=%s tokens=%d titulo=%s",
-        notif.id, user.id, len(tokens), notif.titulo,
+
+    enabled = bool(
+        getattr(_settings, 'EXPO_PUSH_ENABLED', None)
+        or _os.getenv('EXPO_PUSH_ENABLED', '').lower() in ('1', 'true', 'yes')
     )
-    # TODO integrar Expo Push:
-    # for token, platform in tokens:
-    #     requests.post('https://exp.host/--/api/v2/push/send',
-    #                   json={'to': token, 'title': notif.titulo, 'body': notif.mensaje, 'data': notif.data})
+    if not enabled:
+        logger.info(
+            "push deshabilitado notif=%s usuario=%s tokens=%d titulo=%s",
+            notif.id, user.id, len(tokens), notif.titulo,
+        )
+        return
+
+    try:
+        import requests
+    except ImportError:
+        logger.warning("requests no disponible; push omitido.")
+        return
+
+    payloads = [
+        {
+            'to': token, 'title': notif.titulo, 'body': notif.mensaje,
+            'data': {**(notif.data or {}), 'tipo': notif.tipo},
+            'sound': 'default',
+        }
+        for token, _ in tokens
+    ]
+    try:
+        resp = requests.post(EXPO_PUSH_URL, json=payloads, timeout=5,
+                             headers={'Accept': 'application/json', 'Accept-encoding': 'gzip, deflate',
+                                      'Content-Type': 'application/json'})
+        if resp.status_code >= 400:
+            logger.warning("Expo Push %s -> %s", resp.status_code, resp.text[:300])
+    except Exception as e:
+        logger.warning("Expo Push fallo: %s", e)

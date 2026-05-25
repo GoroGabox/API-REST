@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad
+from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso
 
 class EscuelaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -39,6 +39,19 @@ class UnidadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Unidad
         fields = ['id', 'curso', 'orden', 'nombre', 'descripcion', 'lecciones']
+
+
+class RecursoSerializer(serializers.ModelSerializer):
+    categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
+    curso_nombre = serializers.CharField(source='curso.nombre', read_only=True)
+
+    class Meta:
+        model = Recurso
+        fields = [
+            'id', 'titulo', 'descripcion', 'categoria', 'categoria_nombre',
+            'curso', 'curso_nombre', 'leccion', 'tipo', 'url',
+            'paginas', 'size_bytes', 'requires_owned_course', 'created_at',
+        ]
 
 class EjercicioSerializer(serializers.ModelSerializer):
     class Meta:

@@ -9,3 +9,8 @@ dj-database-url==2.2.0
 psycopg2-binary==2.9.9
 transbank-sdk==6.0.0
 requests==2.32.4
+
+# Social auth (opcional — solo necesarios si se usan los endpoints /social/*)
+google-auth==2.35.0
+PyJWT==2.10.1
+cryptography==44.0.0
