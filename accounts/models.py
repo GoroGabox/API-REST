@@ -193,6 +193,13 @@ class UsuarioLogro(models.Model):
 
 
 class EstudianteLeccion(models.Model):
+    """Registro de "lección vista" por un estudiante.
+
+    La sola existencia del registro indica que el estudiante vio la lección.
+    Es idempotente: solo el primer POST crea fila; reposts de la misma
+    (estudiante, leccion) se rechazan a nivel DB por UniqueConstraint y
+    se manejan idempotentemente en el viewset.
+    """
     estudiante = models.ForeignKey(Usuario, on_delete=models.CASCADE)
     leccion = models.ForeignKey(Leccion, on_delete=models.CASCADE)
     curso = models.ForeignKey(
@@ -204,7 +211,19 @@ class EstudianteLeccion(models.Model):
     )
 
     updated_at = models.DateTimeField(auto_now=True)
-    
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["estudiante", "leccion"],
+                name="unique_estudianteleccion_estudiante_leccion",
+            ),
+        ]
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["estudiante", "curso"]),
+        ]
+
     def __str__(self):
         return f"{self.estudiante} - {self.leccion}"
 

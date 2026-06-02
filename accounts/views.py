@@ -295,13 +295,54 @@ class EstudianteLeccionViewSet(viewsets.ModelViewSet):
         qs = EstudianteLeccion.objects.select_related("estudiante", "curso", "leccion")
         return _scope_by_estudiante(qs, self.request.user)
 
-    def perform_create(self, serializer):
-        # Estudiante solo puede crear sus propios registros.
-        user = self.request.user
-        if is_estudiante(user):
-            serializer.save(estudiante=user)
+    def create(self, request, *args, **kwargs):
+        """POST idempotente.
+
+        Si el estudiante ya tiene un registro para la lección, devolvemos
+        el existente con HTTP 200 (no duplicamos). Sólo la primera vez se
+        crea uno nuevo (HTTP 201). La DB también lo enforce vía
+        `UniqueConstraint(estudiante, leccion)`.
+
+        Implementación: el lookup de existencia se hace ANTES de pasar
+        por `serializer.is_valid()` porque el `UniqueTogetherValidator`
+        del serializer rechazaría duplicados con 400 antes de poder
+        decidir si responder idempotentemente.
+        """
+        data = request.data
+        leccion_id = data.get("leccion")
+
+        # Estudiante: ignora `estudiante` del body y usa request.user.
+        if is_estudiante(request.user):
+            estudiante_id = request.user.id
         else:
-            serializer.save()
+            estudiante_id = data.get("estudiante")
+
+        if not leccion_id or not estudiante_id:
+            return Response(
+                {"detail": "estudiante y leccion son requeridos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = EstudianteLeccion.objects.filter(
+            estudiante_id=estudiante_id, leccion_id=leccion_id,
+        ).first()
+        if existing is not None:
+            return Response(
+                self.get_serializer(existing).data,
+                status=status.HTTP_200_OK,
+            )
+
+        # No existe: validar con serializer (sin disparar uniqueness, porque ya
+        # confirmamos que no hay duplicado) y crear.
+        payload = dict(data)
+        payload["estudiante"] = estudiante_id
+        serializer = self.get_serializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        return Response(
+            self.get_serializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 from . import services as accounts_services
 

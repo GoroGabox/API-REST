@@ -833,3 +833,75 @@ class ProgresoEstudiantesScopingTests(APITestCase):
         self.client.force_authenticate(self.estudiante)
         r = self.client.get(reverse('progreso-estudiantes', args=[self.escuela_a.id]))
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class EstudianteLeccionIdempotenteTests(APITestCase):
+    """POST /accounts/estudiante-leccion/ debe ser idempotente:
+    primera vez crea (201), siguientes devuelven existente (200), nunca duplica.
+    """
+
+    def setUp(self):
+        from schools.models import Curso, Leccion
+        self.user = make_user("luki@x.com", is_estudiante=True)
+        self.client.force_authenticate(self.user)
+        self.curso = Curso.objects.create(nombre="C", descripcion="d")
+        self.leccion = Leccion.objects.create(
+            curso=self.curso, nombre="L1", posicion=1, tipo="video",
+        )
+
+    def _post(self, leccion=None, curso=None):
+        return self.client.post(
+            "/api/v1/accounts/estudiante-leccion/",
+            {
+                "estudiante": self.user.id,
+                "leccion": (leccion or self.leccion).id,
+                "curso": (curso or self.curso).id,
+            },
+            format="json",
+        )
+
+    def test_primer_post_crea_201(self):
+        from accounts.models import EstudianteLeccion
+        r = self._post()
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(EstudianteLeccion.objects.count(), 1)
+
+    def test_segundo_post_devuelve_200_no_duplica(self):
+        from accounts.models import EstudianteLeccion
+        r1 = self._post()
+        r2 = self._post()
+        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.data)
+        self.assertEqual(EstudianteLeccion.objects.count(), 1)
+        self.assertEqual(r1.data["id"], r2.data["id"])
+
+    def test_multiples_posts_no_duplican(self):
+        from accounts.models import EstudianteLeccion
+        for _ in range(5):
+            self._post()
+        self.assertEqual(EstudianteLeccion.objects.count(), 1)
+
+    def test_estudiante_no_puede_registrar_progreso_ajeno(self):
+        """Si pasa otro `estudiante` en el body, se ignora y se usa request.user."""
+        from accounts.models import EstudianteLeccion
+        otro = make_user("otro@x.com", is_estudiante=True)
+        r = self.client.post(
+            "/api/v1/accounts/estudiante-leccion/",
+            {
+                "estudiante": otro.id,
+                "leccion": self.leccion.id,
+                "curso": self.curso.id,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        # El registro debe pertenecer al usuario autenticado, no a `otro`.
+        rec = EstudianteLeccion.objects.get()
+        self.assertEqual(rec.estudiante_id, self.user.id)
+
+    def test_distintas_lecciones_si_se_registran(self):
+        from accounts.models import EstudianteLeccion
+        from schools.models import Leccion
+        l2 = Leccion.objects.create(curso=self.curso, nombre="L2", posicion=2, tipo="video")
+        self._post()
+        self._post(leccion=l2)
+        self.assertEqual(EstudianteLeccion.objects.count(), 2)
