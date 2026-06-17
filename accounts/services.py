@@ -175,18 +175,6 @@ def _opcion_correcta_para(ejercicio) -> Optional[str]:
 
 
 @transaction.atomic
-def iniciar_prueba_practica(user):
-    """Consume 1 energía antes de generar una práctica.
-
-    Raise ValueError si no hay energía.
-    """
-    from . import gamification
-    if not gamification.tiene_energia(user, 1):
-        raise ValueError("No tienes energía suficiente para iniciar una práctica.")
-    gamification.consumir_energia(user, 1)
-
-
-@transaction.atomic
 def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     """Corrige una prueba con las respuestas enviadas y persiste resultados.
 
@@ -244,8 +232,14 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     incorrectas = total - correctas
 
     xp_ganado = 0
+    # Sólo evaluaciones de tipo no-rápido consumen corazones por error.
+    # Rápida = entrenamiento ligero, no debe penalizar vidas.
+    consume_corazones = (
+        prueba.modalidad == 'evaluacion'
+        and prueba.tipo != 'rapida'
+    )
     if prueba.modalidad == 'evaluacion':
-        if incorrectas > 0:
+        if consume_corazones and incorrectas > 0:
             gamification.consumir_corazones(user, incorrectas)
         xp_ganado = correctas * gamification.XP_POR_CORRECTA_EVALUACION
         if aprobado:
@@ -268,7 +262,6 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
         "detalles": detalles,
         "xp_ganado": xp_ganado,
         "corazones_restantes": user.hearts,
-        "energia_restante": user.energy,
         "streak_actual": user.streak_current,
         "logros_nuevos": nuevos_logros,
     }

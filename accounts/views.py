@@ -403,13 +403,8 @@ class GenerarPruebaView(APIView):
         if error:
             return Response({"detail": error.detail}, status=error.status)
 
-        # Las prácticas consumen 1 energía al iniciar; las evaluaciones no.
-        if modalidad == 'practica':
-            try:
-                accounts_services.iniciar_prueba_practica(request.user)
-            except ValueError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
+        # Iniciar pruebas no consume recursos: los clientes pagan por acceso
+        # al generador y la energía como recurso limitado fue eliminada.
         prueba = accounts_services.crear_prueba_con_ejercicios(
             request.user, ejercicios,
             tipo=tipo.lower().strip(),
@@ -571,9 +566,6 @@ class MeStatsView(APIView):
             'hearts': u.hearts,
             'max_hearts': gamification.MAX_HEARTS,
             'next_heart_regen_at': u.next_heart_regen_at,
-            'energy': u.energy,
-            'max_energy': gamification.MAX_ENERGY,
-            'next_energy_regen_at': u.next_energy_regen_at,
             'xp': u.xp,
             **nivel,
             'streak_current': u.streak_current,

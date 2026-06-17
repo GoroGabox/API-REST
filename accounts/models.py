@@ -78,8 +78,6 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     # Gamificación — recursos consumibles
     hearts = models.IntegerField(default=5)             # vidas; -1 por error en EVALUACIÓN
     next_heart_regen_at = models.DateTimeField(null=True, blank=True)
-    energy = models.IntegerField(default=5)             # energía; -1 por intentar una PRÁCTICA
-    next_energy_regen_at = models.DateTimeField(null=True, blank=True)
 
     # Gamificación — progresión
     xp = models.IntegerField(default=0)                 # acumulado total

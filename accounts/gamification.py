@@ -1,7 +1,7 @@
-"""Servicios de gamificación: hearts, energy, XP, streak, logros.
+"""Servicios de gamificación: hearts, XP, streak, logros.
 
 Diseño:
-- Hearts y Energy regeneran 1 unidad cada `*_REGEN_MINUTES`. La regeneración
+- Hearts regeneran 1 unidad cada `HEART_REGEN_MINUTES`. La regeneración
   es perezosa: se llama `regenerar_recursos(user)` antes de consumir, así
   evitamos jobs cron.
 - XP es acumulado; level se deriva con `nivel_para_xp(xp)`.
@@ -10,6 +10,8 @@ Diseño:
   (sin frozen) → resetea a 1.
 - Logros: catalog-driven. `chequear_y_otorgar_logros` se llama tras eventos
   significativos y emite los que correspondan.
+- ENERGY: removida del modelo. Los clientes pagan por acceso al generador de
+  pruebas, así que no tiene sentido un recurso limitado para iniciarlas.
 """
 from datetime import timedelta
 from decimal import Decimal
@@ -23,9 +25,7 @@ from .models import Logro, Usuario, UsuarioLogro
 
 
 HEART_REGEN_MINUTES = 30
-ENERGY_REGEN_MINUTES = 60
 MAX_HEARTS = 5
-MAX_ENERGY = 5
 
 XP_POR_CORRECTA_PRACTICA = 5
 XP_POR_CORRECTA_EVALUACION = 10
@@ -42,7 +42,7 @@ LOGROS_CATALOGO = {
 }
 
 
-# ----------------- Regeneración de recursos -----------------
+# ----------------- Regeneración de hearts -----------------
 
 def _aplicar_regen(actual: int, max_: int, next_at, minutos: int):
     """Calcula cuántas unidades regenerar desde el último 'next_at' a ahora.
@@ -68,16 +68,13 @@ def _aplicar_regen(actual: int, max_: int, next_at, minutos: int):
 
 
 def regenerar_recursos(user: Usuario, save: bool = True) -> Usuario:
-    """Actualiza hearts y energy del user según el tiempo transcurrido."""
+    """Actualiza hearts del user según el tiempo transcurrido."""
     h, h_next = _aplicar_regen(user.hearts, MAX_HEARTS, user.next_heart_regen_at, HEART_REGEN_MINUTES)
-    e, e_next = _aplicar_regen(user.energy, MAX_ENERGY, user.next_energy_regen_at, ENERGY_REGEN_MINUTES)
-    if (h, h_next, e, e_next) != (user.hearts, user.next_heart_regen_at, user.energy, user.next_energy_regen_at):
+    if (h, h_next) != (user.hearts, user.next_heart_regen_at):
         user.hearts = h
         user.next_heart_regen_at = h_next
-        user.energy = e
-        user.next_energy_regen_at = e_next
         if save:
-            user.save(update_fields=['hearts', 'next_heart_regen_at', 'energy', 'next_energy_regen_at'])
+            user.save(update_fields=['hearts', 'next_heart_regen_at'])
     return user
 
 
@@ -93,23 +90,6 @@ def consumir_corazones(user: Usuario, cantidad: int) -> int:
     return user.hearts
 
 
-def consumir_energia(user: Usuario, cantidad: int = 1) -> int:
-    """Resta energy (saturando en 0). Programa next_energy_regen_at si no estaba."""
-    if cantidad <= 0:
-        return user.energy
-    regenerar_recursos(user, save=False)
-    user.energy = max(0, user.energy - cantidad)
-    if user.next_energy_regen_at is None and user.energy < MAX_ENERGY:
-        user.next_energy_regen_at = timezone.now() + timedelta(minutes=ENERGY_REGEN_MINUTES)
-    user.save(update_fields=['energy', 'next_energy_regen_at'])
-    return user.energy
-
-
-def tiene_energia(user: Usuario, cantidad: int = 1) -> bool:
-    regenerar_recursos(user, save=False)
-    return user.energy >= cantidad
-
-
 # ----------------- XP / Nivel -----------------
 
 def nivel_para_xp(xp: int) -> dict:
@@ -123,7 +103,6 @@ def nivel_para_xp(xp: int) -> dict:
         return {'level': 1, 'xp_para_nivel_actual': 0, 'xp_para_proximo_nivel': 100, 'progreso_pct': 0}
     n = int((-1 + math.sqrt(1 + 8 * xp / 100)) / 2)
     n = max(1, n)
-    xp_inicio = 50 * n * (n + 1) - 50 * n * 2  # = 50 * n * (n-1)
     xp_inicio = 50 * n * (n - 1)
     xp_proximo = 50 * (n + 1) * n
     rango = max(1, xp_proximo - xp_inicio)
@@ -147,14 +126,7 @@ def otorgar_xp(user: Usuario, cantidad: int, source: str = '') -> int:
 # ----------------- Streak -----------------
 
 def actualizar_streak(user: Usuario) -> int:
-    """Llamar cuando hay actividad relevante (submit de prueba).
-
-    Lógica:
-      - hoy ya activo  -> no-op
-      - ayer activo    -> +1
-      - frozen_until cubre el gap -> +1
-      - cualquier otro caso -> reset a 1
-    """
+    """Llamar cuando hay actividad relevante (submit de prueba)."""
     hoy = timezone.localdate()
     last = user.last_active_date
 
@@ -167,7 +139,6 @@ def actualizar_streak(user: Usuario) -> int:
         if gap == 1:
             nuevo_current = user.streak_current + 1
         elif gap > 1 and user.streak_frozen_until and user.streak_frozen_until >= hoy:
-            # frozen evita el reset
             nuevo_current = user.streak_current + 1
         else:
             nuevo_current = 1
@@ -196,11 +167,7 @@ def _otorgar_logro(user: Usuario, slug: str) -> bool:
 
 
 def chequear_y_otorgar_logros(user: Usuario, contexto: dict = None) -> List[str]:
-    """Evalúa todas las condiciones y otorga los logros nuevos. Idempotente.
-
-    `contexto` puede traer pistas (ej. ultima_prueba) para evitar queries.
-    Devuelve lista de slugs recién otorgados.
-    """
+    """Evalúa todas las condiciones y otorga los logros nuevos. Idempotente."""
     nuevos = []
     contexto = contexto or {}
 
