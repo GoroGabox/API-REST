@@ -11,6 +11,7 @@ from .serializers import (
     LeccionSerializer,
     LeccionDetalleSerializer,
     EjercicioSerializer,
+    EjercicioConRespuestaSerializer,
     GlosarioSerializer,
     CategoriaSerializer,
     UnidadSerializer,
@@ -84,6 +85,15 @@ class EjercicioViewSet(viewsets.ModelViewSet):
     queryset = Ejercicio.objects.all()
     serializer_class = EjercicioSerializer
     permission_classes = [ReadOnlyOrAdmin]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['categoria', 'curso', 'leccion']
+
+    def get_serializer_class(self):
+        """Admin ve y escribe `respuesta`; el resto recibe el serializer
+        público que oculta la respuesta correcta."""
+        if is_admin(self.request.user):
+            return EjercicioConRespuestaSerializer
+        return EjercicioSerializer
 
 
 class GlosarioViewSet(viewsets.ModelViewSet):

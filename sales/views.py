@@ -345,6 +345,103 @@ class ActivarCursoView(APIView):
             "valid_until": access_key.valid_until,
         }, status=status.HTTP_201_CREATED)
 
+class ExtenderLlaveView(APIView):
+    """Extiende la fecha de validez de una `AccessKey` existente.
+
+    Reglas:
+    - admin: puede extender cualquier llave sin tocar saldo.
+    - director: solo llaves de estudiantes de su escuela, y consume **1**
+      llave del saldo (`basic_key` o `professional_key` según el curso
+      asociado a la llave a través de `EstudianteCurso`). Atómico con
+      `select_for_update` para evitar carreras.
+    - estudiante: 403.
+
+    Body:
+      access_key_id: UUID o id de la AccessKey
+      days: int (días a sumar; si la llave ya expiró, se cuenta desde hoy)
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def post(self, request):
+        if is_estudiante(request.user) or not (is_admin(request.user) or is_director(request.user)):
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        access_key_id = request.data.get("access_key_id")
+        days = request.data.get("days")
+        if not access_key_id:
+            return Response({"error": "access_key_id requerido."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            days = int(days) if days else 30
+            if days <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"error": "days debe ser un entero positivo."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            access_key = AccessKey.objects.get(pk=access_key_id)
+        except (AccessKey.DoesNotExist, ValueError):
+            return Response({"error": "Llave no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Necesitamos saber el curso asociado para decidir basic vs professional.
+        inscripcion = EstudianteCurso.objects.select_related("curso_id", "estudiante_id").filter(
+            access_key_id=access_key,
+        ).first()
+        if inscripcion is None:
+            return Response({"error": "La llave no está asociada a una inscripción."}, status=status.HTTP_400_BAD_REQUEST)
+
+        curso = inscripcion.curso_id
+        estudiante = inscripcion.estudiante_id
+
+        if is_director(request.user):
+            if estudiante.escuela_id != request.user.escuela_id:
+                return Response(
+                    {"error": "Solo puedes extender llaves de estudiantes de tu escuela."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        from django.utils import timezone
+        from datetime import timedelta
+
+        with db_transaction.atomic():
+            if is_director(request.user):
+                escuela_locked = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
+                if curso.is_profesional:
+                    if escuela_locked.professional_key <= 0:
+                        return Response(
+                            {"error": "Tu escuela no tiene llaves profesionales disponibles."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    escuela_locked.professional_key -= 1
+                else:
+                    if escuela_locked.basic_key <= 0:
+                        return Response(
+                            {"error": "Tu escuela no tiene llaves básicas disponibles."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    escuela_locked.basic_key -= 1
+                escuela_locked.save()
+
+            now = timezone.now()
+            if access_key.valid_until and access_key.valid_until >= now:
+                # Aún activa: sumar a la fecha actual de expiración.
+                access_key.valid_until = access_key.valid_until + timedelta(days=days)
+            else:
+                # Expirada: reiniciar desde hoy.
+                access_key.valid_from = now
+                access_key.valid_until = now + timedelta(days=days)
+                access_key.status = "active"
+            access_key.save()
+
+        return Response({
+            "message": "Llave extendida con éxito.",
+            "access_key_id": str(access_key.id),
+            "access_key": access_key.key,
+            "valid_from": access_key.valid_from,
+            "valid_until": access_key.valid_until,
+            "status": access_key.status,
+        }, status=status.HTTP_200_OK)
+
+
 #Solo TransBank
 class SaleInitiationViewSet(APIView):
     permission_classes = [drf_permissions.IsAuthenticated]

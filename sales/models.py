@@ -77,6 +77,7 @@ class EstudianteCurso(models.Model):
                 name='unique_estudiantecurso_estudiante_curso',
             ),
         ]
+        ordering = ['id']
 
 class TransbankTransaction(models.Model):
     sale = models.OneToOneField(Venta, on_delete=models.CASCADE, related_name="transbank_transaction")
