@@ -281,12 +281,26 @@ class CanjearLlaveView(APIView):
 class ActivarCursoView(APIView):
     """Activación manual de curso para un estudiante.
 
-    Reglas:
-    - admin: puede activar cualquier curso para cualquier estudiante.
-    - director: solo puede activar para estudiantes de SU escuela, y solo
-      si su escuela tiene saldo de llaves comprado (basic_key o
-      professional_key > 0 según el curso). El contador se decrementa.
+    Body:
+      user_id: int
+      curso_id: int
+      days: int (opcional, default 30) — solo aplica a source='key'
+      source: 'key' | 'seat' | 'auto' (opcional, default 'auto')
+
+    Reglas por rol:
+    - admin: activa sin descontar saldo (source='key' crea AccessKey
+      temporal con expiración; source='seat' crea AccessKey sin expiración
+      pero NO descuenta seats — se asume decisión administrativa).
+    - director:
+        * source='auto' (default): usa seat si suscripción activa y quedan
+          cupos; sino usa key si hay saldo; sino 400.
+        * source='seat': falla si sin suscripción o sin cupos.
+        * source='key': falla si sin llaves.
+      Descuenta atómicamente con select_for_update.
     - estudiante: 403.
+
+    Response 201:
+      { message, access_key, valid_until, origen }
     """
     serializer_class = ActivarCursoSerializer
     permission_classes = [drf_permissions.IsAuthenticated]
@@ -300,6 +314,9 @@ class ActivarCursoView(APIView):
         user_id = request.data.get("user_id")
         curso_id = request.data.get("curso_id")
         days = request.data.get("days")
+        source = (request.data.get("source") or "auto").lower().strip()
+        if source not in ("auto", "key", "seat"):
+            return Response({"error": "source debe ser 'auto', 'key' o 'seat'."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             user = Usuario.objects.get(id=user_id)
@@ -310,40 +327,114 @@ class ActivarCursoView(APIView):
         except Usuario.DoesNotExist:
             return Response({"error": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Restricciones de director: estudiante debe ser de su escuela y debe
-        # tener saldo de llaves del tipo correspondiente al curso.
-        if is_director(request.user):
-            if user.escuela_id != request.user.escuela_id:
+        # Admin sin escuela objetivo: siempre usa key (no toca saldos).
+        if is_admin(request.user):
+            resolved_source = "seat" if source == "seat" else "key"
+            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
+            return Response({
+                "message": "Clave activada con éxito.",
+                "access_key": access_key.key,
+                "valid_until": access_key.valid_until,
+                "origen": access_key.origen,
+            }, status=status.HTTP_201_CREATED)
+
+        # Director: valida escuela + saldo/cupos con lock.
+        if user.escuela_id != request.user.escuela_id:
+            return Response(
+                {"error": "Solo puedes activar cursos para estudiantes de tu escuela."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        is_pro = bool(curso.is_profesional)
+        with db_transaction.atomic():
+            escuela = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
+            resolved_source = _resolver_source_director(escuela, is_pro, source)
+            if resolved_source is None:
                 return Response(
-                    {"error": "Solo puedes activar cursos para estudiantes de tu escuela."},
-                    status=status.HTTP_403_FORBIDDEN,
+                    {"error": _mensaje_sin_saldo(is_pro, source)},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            with db_transaction.atomic():
-                escuela_locked = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-                if curso.is_profesional:
-                    if escuela_locked.professional_key <= 0:
-                        return Response(
-                            {"error": "Tu escuela no tiene llaves profesionales disponibles."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    escuela_locked.professional_key -= 1
-                else:
-                    if escuela_locked.basic_key <= 0:
-                        return Response(
-                            {"error": "Tu escuela no tiene llaves básicas disponibles."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    escuela_locked.basic_key -= 1
-                escuela_locked.save()
-                access_key = asignar_llave_y_curso(user, curso, days)
-        else:
-            access_key = asignar_llave_y_curso(user, curso, days)
+            _decrementar_saldo(escuela, is_pro, resolved_source)
+            escuela.save()
+            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
 
         return Response({
             "message": "Clave activada con éxito.",
             "access_key": access_key.key,
             "valid_until": access_key.valid_until,
+            "origen": access_key.origen,
         }, status=status.HTTP_201_CREATED)
+
+
+# ---- helpers para activación con seat/key ----
+
+def _resolver_source_director(escuela, is_pro, source):
+    """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela."""
+    if source == "seat":
+        return "seat" if _tiene_seat(escuela, is_pro) else None
+    if source == "key":
+        return "key" if _tiene_key(escuela, is_pro) else None
+    # auto: seat primero (más barato), luego key.
+    if _tiene_seat(escuela, is_pro):
+        return "seat"
+    if _tiene_key(escuela, is_pro):
+        return "key"
+    return None
+
+
+def _tiene_seat(escuela, is_pro):
+    if is_pro:
+        return escuela.professional_access and escuela.professional_seats_used < escuela.professional_seats_max
+    return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
+
+
+def _tiene_key(escuela, is_pro):
+    return (escuela.professional_key if is_pro else escuela.basic_key) > 0
+
+
+def _decrementar_saldo(escuela, is_pro, resolved_source):
+    if resolved_source == "seat":
+        if is_pro:
+            escuela.professional_seats_used += 1
+        else:
+            escuela.basic_seats_used += 1
+    else:  # key
+        if is_pro:
+            escuela.professional_key -= 1
+        else:
+            escuela.basic_key -= 1
+
+
+def _mensaje_sin_saldo(is_pro, source):
+    tier = "profesional" if is_pro else "básico"
+    if source == "seat":
+        return f"Tu escuela no tiene cupos {tier}es en la suscripción."
+    if source == "key":
+        return f"Tu escuela no tiene llaves {tier}es disponibles."
+    return f"Tu escuela no tiene ni cupos ni llaves {tier}es disponibles."
+
+
+def _asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None):
+    """Crea AccessKey + EstudianteCurso según el origen."""
+    from django.utils import timezone
+    from datetime import timedelta
+    with db_transaction.atomic():
+        if resolved_source == "seat":
+            access_key = AccessKey.objects.create(
+                valid_until=None,
+                origen="seat",
+            )
+        else:
+            access_key = AccessKey.objects.create(
+                valid_until=timezone.now() + timedelta(days=days),
+                origen="key",
+            )
+        EstudianteCurso.objects.create(
+            estudiante_id=estudiante,
+            curso_id=curso,
+            access_key_id=access_key,
+        )
+    return access_key
 
 class ExtenderLlaveView(APIView):
     """Extiende la fecha de validez de una `AccessKey` existente.
@@ -381,6 +472,13 @@ class ExtenderLlaveView(APIView):
             access_key = AccessKey.objects.get(pk=access_key_id)
         except (AccessKey.DoesNotExist, ValueError):
             return Response({"error": "Llave no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Los seats no tienen expiración: no pueden extenderse.
+        if access_key.origen == "seat":
+            return Response(
+                {"error": "Los cupos de suscripción no tienen expiración; extender no aplica."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Necesitamos saber el curso asociado para decidir basic vs professional.
         inscripcion = EstudianteCurso.objects.select_related("curso_id", "estudiante_id").filter(
@@ -739,3 +837,156 @@ class UnifiedPaymentConfirmationView(APIView):
         elif method_name == "mercadopago":
             return MercadoPagoPaymentStrategy()
         raise ValueError("Método de pago no soportado")
+
+
+# ============================================================
+# Gestión de suscripción (cupos)
+# ============================================================
+
+class SubscriptionStatusView(APIView):
+    """GET /api/v1/schools/<school_id>/subscription-status/
+
+    Resumen de la licencia de la escuela: llaves + suscripciones (con cupos
+    y disponibilidad). Auth: admin (cualquier escuela) o director (solo la suya).
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def get(self, request, school_id):
+        try:
+            school_id = int(school_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "school_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not is_admin(request.user):
+            if not is_director(request.user) or request.user.escuela_id != school_id:
+                return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            escuela = Escuela.objects.get(pk=school_id)
+        except Escuela.DoesNotExist:
+            return Response({"detail": "Escuela no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        def tier(access, seats_used, seats_max, keys):
+            return {
+                "access": bool(access),
+                "seats_max": int(seats_max),
+                "seats_used": int(seats_used),
+                "seats_available": max(0, int(seats_max) - int(seats_used)),
+                "keys_available": int(keys),
+            }
+
+        return Response({
+            "escuela_id": escuela.id,
+            "basic": tier(
+                escuela.basic_access, escuela.basic_seats_used, escuela.basic_seats_max, escuela.basic_key,
+            ),
+            "professional": tier(
+                escuela.professional_access, escuela.professional_seats_used, escuela.professional_seats_max, escuela.professional_key,
+            ),
+        })
+
+
+class SubscriptionSeatsView(APIView):
+    """GET  /api/v1/schools/<school_id>/subscription-seats/
+    DELETE /api/v1/schools/<school_id>/subscription-seats/<estudiante_curso_id>/
+
+    GET: lista los EstudianteCurso que ocupan un seat (AccessKey.origen='seat').
+    DELETE: libera el seat revocando el acceso (marca la key como revoked,
+    borra el EstudianteCurso, decrementa `*_seats_used`).
+
+    Permisos: admin (cualquier escuela) o director (solo la suya).
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def _authz(self, request, school_id):
+        try:
+            school_id = int(school_id)
+        except (TypeError, ValueError):
+            return None, Response({"detail": "school_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+        if not is_admin(request.user):
+            if not is_director(request.user) or request.user.escuela_id != school_id:
+                return None, Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+        return school_id, None
+
+    def get(self, request, school_id, estudiante_curso_id=None):
+        school_id, err = self._authz(request, school_id)
+        if err is not None:
+            return err
+
+        qs = (
+            EstudianteCurso.objects
+            .filter(
+                estudiante_id__escuela_id=school_id,
+                access_key_id__origen="seat",
+            )
+            .select_related("estudiante_id", "curso_id", "access_key_id")
+            .order_by("id")
+        )
+
+        results = [
+            {
+                "id": ec.id,
+                "estudiante": {
+                    "id": ec.estudiante_id_id,
+                    "nombre": f"{ec.estudiante_id.nombre} {ec.estudiante_id.apellido}".strip(),
+                    "email": ec.estudiante_id.email,
+                },
+                "curso": {
+                    "id": ec.curso_id_id,
+                    "nombre": ec.curso_id.nombre,
+                    "is_profesional": ec.curso_id.is_profesional,
+                },
+                "access_key": {
+                    "id": str(ec.access_key_id.id),
+                    "status": ec.access_key_id.status,
+                    "valid_from": ec.access_key_id.valid_from,
+                },
+            }
+            for ec in qs
+        ]
+        return Response({"count": len(results), "results": results})
+
+    def delete(self, request, school_id, estudiante_curso_id):
+        school_id, err = self._authz(request, school_id)
+        if err is not None:
+            return err
+
+        try:
+            estudiante_curso_id = int(estudiante_curso_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "estudiante_curso_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with db_transaction.atomic():
+            ec = (
+                EstudianteCurso.objects
+                .select_related("access_key_id", "curso_id", "estudiante_id")
+                .filter(pk=estudiante_curso_id)
+                .first()
+            )
+            if ec is None:
+                return Response({"detail": "Inscripción no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+            if ec.estudiante_id.escuela_id != school_id:
+                return Response({"detail": "La inscripción no pertenece a esta escuela."}, status=status.HTTP_404_NOT_FOUND)
+
+            access_key = ec.access_key_id
+            if access_key.origen != "seat":
+                return Response(
+                    {"detail": "Esta inscripción no ocupa un cupo de suscripción; usa el flujo de llaves."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            escuela = Escuela.objects.select_for_update().get(pk=school_id)
+            is_pro = bool(ec.curso_id.is_profesional)
+            if is_pro:
+                if escuela.professional_seats_used > 0:
+                    escuela.professional_seats_used -= 1
+            else:
+                if escuela.basic_seats_used > 0:
+                    escuela.basic_seats_used -= 1
+            escuela.save()
+
+            access_key.status = "revoked"
+            access_key.save(update_fields=["status"])
+            ec.delete()
+
+        return Response({"status": "released"}, status=status.HTTP_200_OK)

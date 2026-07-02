@@ -293,3 +293,243 @@ class ExtenderLlaveTests(APITestCase):
         self.client.force_authenticate(self.dir_a)
         r = self._post("00000000-0000-0000-0000-000000000000")
         self.assertEqual(r.status_code, 404)
+
+
+class ActivarCursoConSeatsTests(APITestCase):
+    """Modelo híbrido: seat consume cupo, key consume llave. Source auto/key/seat."""
+
+    def setUp(self):
+        self.escuela = Escuela.objects.create(
+            nombre="Sub", direccion="x", email="s@s.com", telefono="1",
+            basic_key=3, professional_key=0,
+            basic_access=True, basic_seats_max=2, basic_seats_used=0,
+            professional_access=False,
+        )
+        self.dir_ = make_user("dsub@x.com", is_director=True, escuela=self.escuela)
+        self.est = make_user("esub@x.com", is_estudiante=True, escuela=self.escuela)
+        self.curso_basico = Curso.objects.create(nombre="B", descripcion="d", is_profesional=False)
+        self.curso_pro = Curso.objects.create(nombre="P", descripcion="d", is_profesional=True)
+        self.client.force_authenticate(self.dir_)
+
+    def _post(self, curso, source=None, days=None):
+        body = {"user_id": self.est.id, "curso_id": curso.id}
+        if days is not None: body["days"] = days
+        if source: body["source"] = source
+        return self.client.post("/api/v1/sales/activar_curso/", body, format="json")
+
+    def test_auto_prefiere_seat_cuando_esta_disponible(self):
+        r = self._post(self.curso_basico)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["origen"], "seat")
+        self.assertIsNone(r.data["valid_until"])
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)
+        self.assertEqual(self.escuela.basic_key, 3)  # no toca llaves
+
+    def test_auto_cae_a_key_si_no_hay_seat(self):
+        self.escuela.basic_seats_used = self.escuela.basic_seats_max
+        self.escuela.save()
+        r = self._post(self.curso_basico)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["origen"], "key")
+        self.assertIsNotNone(r.data["valid_until"])
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_key, 2)
+
+    def test_source_seat_falla_si_no_hay_cupo(self):
+        self.escuela.basic_seats_used = self.escuela.basic_seats_max
+        self.escuela.save()
+        r = self._post(self.curso_basico, source="seat")
+        self.assertEqual(r.status_code, 400, r.data)
+
+    def test_source_key_ignora_seat_disponible(self):
+        r = self._post(self.curso_basico, source="key")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["origen"], "key")
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 0)
+        self.assertEqual(self.escuela.basic_key, 2)
+
+    def test_source_seat_para_curso_pro_sin_suscripcion_falla(self):
+        # No hay professional_access
+        r = self._post(self.curso_pro, source="seat")
+        self.assertEqual(r.status_code, 400)
+
+    def test_pro_sin_llaves_ni_seats_falla_400(self):
+        r = self._post(self.curso_pro)
+        self.assertEqual(r.status_code, 400)
+
+    def test_source_invalido(self):
+        r = self._post(self.curso_basico, source="banana")
+        self.assertEqual(r.status_code, 400)
+
+
+class ExtenderSeatRechazaTests(APITestCase):
+    """Seats (sin expiración) no se pueden extender."""
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        self.escuela = Escuela.objects.create(
+            nombre="E", direccion="x", email="e@e.com", telefono="1",
+            basic_key=5,
+        )
+        self.dir_ = make_user("dext_seat@x.com", is_director=True, escuela=self.escuela)
+        self.est = make_user("eext_seat@x.com", is_estudiante=True, escuela=self.escuela)
+        self.curso = Curso.objects.create(nombre="C", descripcion="d", is_profesional=False)
+        # Simula una activación por seat manualmente.
+        self.key_seat = AccessKey.objects.create(valid_until=None, origen="seat")
+        EstudianteCurso.objects.create(
+            estudiante_id=self.est, curso_id=self.curso, access_key_id=self.key_seat,
+        )
+        self.client.force_authenticate(self.dir_)
+
+    def test_extender_seat_devuelve_400(self):
+        r = self.client.post(
+            "/api/v1/sales/extender_llave/",
+            {"access_key_id": str(self.key_seat.id), "days": 30},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+
+
+class SubscriptionStatusTests(APITestCase):
+    def setUp(self):
+        self.escuela = Escuela.objects.create(
+            nombre="E", direccion="x", email="e@e.com", telefono="1",
+            basic_key=3, professional_key=1,
+            basic_access=True, basic_seats_max=10, basic_seats_used=4,
+            professional_access=True, professional_seats_max=5, professional_seats_used=2,
+        )
+        self.escuela_b = Escuela.objects.create(
+            nombre="B", direccion="x", email="b@e.com", telefono="1",
+        )
+        self.admin = make_user("adm_ss@x.com", is_admin=True)
+        self.dir_ = make_user("dir_ss@x.com", is_director=True, escuela=self.escuela)
+        self.dir_b = make_user("dir_ssb@x.com", is_director=True, escuela=self.escuela_b)
+        self.est = make_user("est_ss@x.com", is_estudiante=True, escuela=self.escuela)
+
+    def _get(self, school_id=None):
+        return self.client.get(f"/api/v1/schools/{school_id or self.escuela.id}/subscription-status/")
+
+    def test_director_ve_status_de_su_escuela(self):
+        self.client.force_authenticate(self.dir_)
+        r = self._get()
+        self.assertEqual(r.status_code, 200, r.data)
+        b = r.data["basic"]
+        self.assertEqual(b["seats_max"], 10)
+        self.assertEqual(b["seats_used"], 4)
+        self.assertEqual(b["seats_available"], 6)
+        self.assertEqual(b["keys_available"], 3)
+        self.assertTrue(b["access"])
+        p = r.data["professional"]
+        self.assertEqual(p["seats_available"], 3)
+
+    def test_director_otra_escuela_403(self):
+        self.client.force_authenticate(self.dir_b)
+        r = self._get(self.escuela.id)
+        self.assertEqual(r.status_code, 403)
+
+    def test_admin_ve_cualquiera(self):
+        self.client.force_authenticate(self.admin)
+        r = self._get(self.escuela.id)
+        self.assertEqual(r.status_code, 200)
+
+    def test_estudiante_403(self):
+        self.client.force_authenticate(self.est)
+        r = self._get()
+        self.assertEqual(r.status_code, 403)
+
+
+class SubscriptionSeatsTests(APITestCase):
+    """GET + DELETE de cupos ocupados por estudiantes."""
+
+    def setUp(self):
+        self.escuela = Escuela.objects.create(
+            nombre="E", direccion="x", email="e@e.com", telefono="1",
+            basic_access=True, basic_seats_max=5, basic_seats_used=0,
+        )
+        self.escuela_b = Escuela.objects.create(
+            nombre="B", direccion="y", email="b@b.com", telefono="1",
+        )
+        self.admin = make_user("adm_sea@x.com", is_admin=True)
+        self.dir_ = make_user("dir_sea@x.com", is_director=True, escuela=self.escuela)
+        self.dir_b = make_user("dir_seab@x.com", is_director=True, escuela=self.escuela_b)
+        self.est_1 = make_user("e1_sea@x.com", is_estudiante=True, escuela=self.escuela)
+        self.est_2 = make_user("e2_sea@x.com", is_estudiante=True, escuela=self.escuela)
+        self.curso = Curso.objects.create(nombre="C", descripcion="d", is_profesional=False)
+
+        # Ocupamos 2 seats via activar_curso
+        self.client.force_authenticate(self.dir_)
+        self.client.post("/api/v1/sales/activar_curso/", {
+            "user_id": self.est_1.id, "curso_id": self.curso.id, "source": "seat",
+        }, format="json")
+        self.client.post("/api/v1/sales/activar_curso/", {
+            "user_id": self.est_2.id, "curso_id": self.curso.id, "source": "seat",
+        }, format="json")
+
+    def test_list_devuelve_solo_seats(self):
+        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["count"], 2)
+        emails = {row["estudiante"]["email"] for row in r.data["results"]}
+        self.assertEqual(emails, {self.est_1.email, self.est_2.email})
+
+    def test_director_otra_escuela_403(self):
+        self.client.force_authenticate(self.dir_b)
+        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        self.assertEqual(r.status_code, 403)
+
+    def test_delete_libera_seat(self):
+        r_list = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        ec_id = r_list.data["results"][0]["id"]
+        self.escuela.refresh_from_db()
+        seats_before = self.escuela.basic_seats_used
+
+        r_del = self.client.delete(
+            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec_id}/"
+        )
+        self.assertEqual(r_del.status_code, 200, r_del.data)
+        self.assertEqual(r_del.data["status"], "released")
+
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, seats_before - 1)
+        # La inscripción fue borrada.
+        from sales.models import EstudianteCurso
+        self.assertFalse(EstudianteCurso.objects.filter(pk=ec_id).exists())
+
+    def test_delete_de_inscripcion_key_devuelve_400(self):
+        from sales.models import AccessKey, EstudianteCurso
+        from datetime import timedelta
+        from django.utils import timezone
+        # Nueva inscripción vía key
+        est3 = make_user("e3_sea@x.com", is_estudiante=True, escuela=self.escuela)
+        k = AccessKey.objects.create(
+            valid_until=timezone.now() + timedelta(days=30), origen="key",
+        )
+        ec = EstudianteCurso.objects.create(
+            estudiante_id=est3, curso_id=self.curso, access_key_id=k,
+        )
+        r = self.client.delete(
+            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec.id}/"
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_delete_inscripcion_de_otra_escuela_404(self):
+        # Preparar seat en escuela B usando admin
+        self.escuela_b.basic_access = True
+        self.escuela_b.basic_seats_max = 3
+        self.escuela_b.save()
+        est_b = make_user("eb_sea@x.com", is_estudiante=True, escuela=self.escuela_b)
+        self.client.force_authenticate(self.admin)
+        self.client.post("/api/v1/sales/activar_curso/", {
+            "user_id": est_b.id, "curso_id": self.curso.id, "source": "seat",
+        }, format="json")
+        r_list = self.client.get(f"/api/v1/schools/{self.escuela_b.id}/subscription-seats/")
+        ec_id_b = r_list.data["results"][0]["id"]
+
+        self.client.force_authenticate(self.dir_)
+        r = self.client.delete(
+            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec_id_b}/"
+        )
+        self.assertEqual(r.status_code, 404)

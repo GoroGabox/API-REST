@@ -13,6 +13,10 @@ from .views import (
     ProgresoEstudianteDetalleView,
     CertificadosPorEscuelaView,
 )
+# Vistas de suscripción viven en `sales/views.py` porque manipulan
+# EstudianteCurso/AccessKey, pero se exponen bajo el árbol de schools para
+# consistencia con el spec del frontend.
+from sales.views import SubscriptionStatusView, SubscriptionSeatsView
 
 router = DefaultRouter()
 router.register(r'schools', EscuelaViewSet)
@@ -39,6 +43,21 @@ urlpatterns = [
         "<int:school_id>/certificados/",
         CertificadosPorEscuelaView.as_view(),
         name="certificados_por_escuela",
+    ),
+    path(
+        "<int:school_id>/subscription-status/",
+        SubscriptionStatusView.as_view(),
+        name="subscription_status",
+    ),
+    path(
+        "<int:school_id>/subscription-seats/",
+        SubscriptionSeatsView.as_view(),
+        name="subscription_seats_list",
+    ),
+    path(
+        "<int:school_id>/subscription-seats/<int:estudiante_curso_id>/",
+        SubscriptionSeatsView.as_view(),
+        name="subscription_seats_detail",
     ),
     *router.urls,
 ]

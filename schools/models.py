@@ -3,15 +3,32 @@ from django.db import models
 
 # Create your models here.
 class Escuela(models.Model):
+    """Modelo de licencia mixto:
+
+    - **Llaves** (`basic_key`, `professional_key`): acceso TEMPORAL. Cada
+      activación descuenta 1 llave y crea una AccessKey con expiración.
+    - **Suscripción** (`basic_access`, `professional_access`): acceso
+      ILIMITADO en tiempo, pero acotado por cupos (`basic_seats_max`,
+      `professional_seats_max`). Cada activación descuenta 1 seat; liberar
+      un estudiante restituye el seat. No consume llaves.
+    """
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)
     direccion = models.CharField(max_length=200)
     email = models.EmailField()
     telefono = models.CharField(max_length=20)
+
+    # Llaves (unidades reservables con expiración)
     basic_key = models.IntegerField(default=0)
     professional_key = models.IntegerField(default=0)
+
+    # Suscripciones (acceso ilimitado en tiempo con tope de cupos)
     basic_access = models.BooleanField(default=False)
     professional_access = models.BooleanField(default=False)
+    basic_seats_max = models.IntegerField(default=0)
+    basic_seats_used = models.IntegerField(default=0)
+    professional_seats_max = models.IntegerField(default=0)
+    professional_seats_used = models.IntegerField(default=0)
 
     def __str__(self):
         return self.nombre

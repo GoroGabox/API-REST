@@ -46,19 +46,30 @@ class AccessKey(models.Model):
         ('used', 'Used'),
         ('revoked', 'Revoked'),
     ]
+    ORIGEN_CHOICES = [
+        ('key', 'Llave temporal'),
+        ('seat', 'Cupo de suscripción'),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.CharField(max_length=64, unique=True, blank=True, null=True)
     valid_from = models.DateTimeField(auto_now_add=True, null=True)
-    valid_until = models.DateTimeField(null=True)
+    # NULL = sin expiración (típico de origen='seat').
+    valid_until = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
+    origen = models.CharField(max_length=10, choices=ORIGEN_CHOICES, default='key')
 
     def __str__(self):
         return f"Key {self.key}"
-    
+
     def is_valid(self):
         now = timezone.now()
-        return self.status == 'active' and self.valid_from <= now <= self.valid_until
-    
+        if self.status != 'active':
+            return False
+        # Seat: sin fecha de expiración.
+        if self.valid_until is None:
+            return self.valid_from is None or self.valid_from <= now
+        return self.valid_from <= now <= self.valid_until
+
     def save(self, *args, **kwargs):
         if not self.key:
             self.key = uuid.uuid4().hex[:12].upper()
