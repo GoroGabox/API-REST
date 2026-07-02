@@ -210,9 +210,11 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
             correctas += 1
         detalles.append({
             "pregunta_id": item.ejercicio_id,
+            "pregunta": item.ejercicio.pregunta,
             "correcta": es_correcta,
             "opcion_correcta": opcion_correcta,
             "respuesta_estudiante": respuesta_enviada,
+            "explicacion": item.ejercicio.explicacion or "",
         })
 
     PruebaEjercicio.objects.bulk_update(actualizar, ['respuesta_estudiante', 'correcta'], batch_size=100)

@@ -140,6 +140,7 @@ class Ejercicio(models.Model):
     opcion_e = models.CharField(max_length=255, null=True, blank=True)
     opcion_f = models.CharField(max_length=255, null=True, blank=True)
     respuesta = models.CharField(max_length=255, null=True)
+    explicacion = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ['id']

@@ -76,7 +76,7 @@ class UsuarioListView(ListAPIView):
     queryset = Usuario.objects.all()
     serializer_class = UsuarioSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['escuela', 'is_director', 'is_estudiante', 'is_active']
+    filterset_fields = ['escuela', 'is_director', 'is_estudiante', 'is_active', 'email']
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -151,6 +151,63 @@ class PasswordResetRequestView(APIView):
             )
             return Response({"mensaje": "Se ha enviado un correo electrónico con instrucciones para restablecer tu contraseña."}, status=status.HTTP_200_OK)
         return Response({"error": "No se ha encontrado un usuario con ese correo electrónico."}, status=status.HTTP_400_BAD_REQUEST)
+
+class PasswordResetInviteView(APIView):
+    """POST /api/v1/accounts/password-reset-invite/<user_id>/
+
+    Genera un enlace de reset y lo envía por email al usuario indicado.
+    Pensado para el flujo director/admin: tras crear/vincular un estudiante,
+    disparar este endpoint para que el usuario defina su propia password
+    sin exponer credenciales temporales.
+
+    Permisos:
+    - admin: cualquier usuario.
+    - director: solo estudiantes de su escuela.
+    - estudiante: 403.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, user_id):
+        if not (is_admin(request.user) or is_director(request.user)):
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            target = Usuario.objects.get(pk=user_id)
+        except Usuario.DoesNotExist:
+            return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if is_director(request.user):
+            if target.escuela_id != request.user.escuela_id:
+                return Response({"detail": "No autorizado sobre ese usuario."}, status=status.HTTP_403_FORBIDDEN)
+            if target.is_staff or target.is_superuser or target.is_director:
+                return Response({"detail": "No autorizado sobre ese usuario."}, status=status.HTTP_403_FORBIDDEN)
+
+        uid = urlsafe_base64_encode(force_bytes(target.id))
+        token = default_token_generator.make_token(target)
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        link = f'{frontend_url}/change-password?uidb64={uid}&token={token}'
+
+        try:
+            send_mail(
+                subject='Configura tu contraseña — AutoTest',
+                message=(
+                    f'Hola {target.nombre or ""},\n\n'
+                    f'Tu cuenta AutoTest ha sido creada. Define tu contraseña '
+                    f'accediendo al siguiente enlace:\n\n{link}\n\n'
+                    f'Si no reconoces esta invitación, ignora este correo.'
+                ),
+                from_email='soporte.autotest@gmail.com',
+                recipient_list=[target.email],
+                fail_silently=True,
+            )
+        except Exception:
+            pass
+
+        return Response(
+            {"status": "sent", "user_id": target.id, "email": target.email},
+            status=status.HTTP_200_OK,
+        )
+
 
 class CustomPasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -497,6 +554,7 @@ class MisPruebasDetalleView(APIView):
                 "respuesta_estudiante": item.respuesta_estudiante,
                 "correcta": item.correcta,
                 "opcion_correcta": accounts_services._opcion_correcta_para(item.ejercicio),
+                "explicacion": item.ejercicio.explicacion or "",
             })
         return Response({
             "prueba": PruebaDetalleSerializer(prueba).data,

@@ -9,6 +9,9 @@ from .views import (
     EjercicioViewSet,
     UnidadViewSet,
     RecursoViewSet,
+    VincularEstudianteView,
+    ProgresoEstudianteDetalleView,
+    CertificadosPorEscuelaView,
 )
 
 router = DefaultRouter()
@@ -21,4 +24,21 @@ router.register(r'exercices', EjercicioViewSet)
 router.register(r'categories', CategoriaViewSet)
 router.register(r'library', RecursoViewSet)
 
-urlpatterns = router.urls
+urlpatterns = [
+    path(
+        "vincular-estudiante/",
+        VincularEstudianteView.as_view(),
+        name="vincular_estudiante",
+    ),
+    path(
+        "<int:school_id>/estudiantes/<int:user_id>/progreso/",
+        ProgresoEstudianteDetalleView.as_view(),
+        name="progreso_estudiante_detalle",
+    ),
+    path(
+        "<int:school_id>/certificados/",
+        CertificadosPorEscuelaView.as_view(),
+        name="certificados_por_escuela",
+    ),
+    *router.urls,
+]
