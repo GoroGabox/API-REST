@@ -13,22 +13,28 @@ class CursoSerializer(serializers.ModelSerializer):
 
 class LeccionSerializer(serializers.ModelSerializer):
     """Listado: solo metadatos. Para detalle completo usar LeccionDetalleSerializer."""
+    unidad_orden = serializers.IntegerField(source='unidad.orden', read_only=True)
+    unidad_nombre = serializers.CharField(source='unidad.nombre', read_only=True)
+
     class Meta:
         model = Leccion
         fields = [
-            'id', 'curso', 'unidad', 'categoria', 'nombre', 'posicion',
-            'tipo', 'descripcion', 'duracion_min',
+            'id', 'curso', 'unidad', 'unidad_orden', 'unidad_nombre',
+            'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'duracion_min',
             'url_video', 'url_audio', 'url_pdf',
         ]
 
 
 class LeccionDetalleSerializer(serializers.ModelSerializer):
     """Detalle completo: incluye contenido + transcripción."""
+    unidad_orden = serializers.IntegerField(source='unidad.orden', read_only=True)
+    unidad_nombre = serializers.CharField(source='unidad.nombre', read_only=True)
+
     class Meta:
         model = Leccion
         fields = [
-            'id', 'curso', 'unidad', 'categoria', 'nombre', 'posicion',
-            'tipo', 'descripcion', 'contenido', 'transcripcion',
+            'id', 'curso', 'unidad', 'unidad_orden', 'unidad_nombre',
+            'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'contenido', 'transcripcion',
             'duracion_min', 'url_video', 'url_audio', 'url_pdf',
         ]
 

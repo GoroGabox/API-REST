@@ -1,0 +1,2957 @@
+[
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Los accidentes de tránsito",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0042",
+        "score": 0.4088,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: accidentes, transito"
+      },
+      {
+        "segment_id": "seg_0044",
+        "score": 0.378,
+        "page_start": 174,
+        "page_end": 177,
+        "reason": "Coinciden términos: accidentes, transito"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3704,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: accidentes, transito"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Factores que intervienen en los accidentes",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0042",
+        "score": 0.4265,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: accidentes, factores, intervienen"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3865,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: accidentes, factores, intervienen"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Otros factores",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3733,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: factores, otros"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3729,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: factores, otros"
+      },
+      {
+        "segment_id": "seg_0025",
+        "score": 0.3697,
+        "page_start": 100,
+        "page_end": 103,
+        "reason": "Coinciden términos: factores, otros"
+      },
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3693,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: factores, otros"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3663,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: factores, otros"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Tiempo de reacción, distancia de frenado y distancia de detención",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0043",
+        "score": 0.4482,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: detencion, distancia, frenado, reaccion, tiempo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Grupos vulnerables",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3895,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: grupos, vulnerables"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Responsabilidad por los accidentes",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0044",
+        "score": 0.3879,
+        "page_start": 174,
+        "page_end": 177,
+        "reason": "Coinciden términos: accidentes, responsabilidad"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Infracciones, delitos y cuasidelitos relacionados con el tránsito. Sanciones",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0033",
+        "score": 0.4106,
+        "page_start": 130,
+        "page_end": 133,
+        "reason": "Coinciden términos: cuasidelitos, delitos, infracciones, relacionados, sanciones, transito"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Suspensión, cancelación e inhabilitación de la licencia de conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0035",
+        "score": 0.43,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: cancelacion, conductor, inhabilitacion, licencia, suspension"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Conducción bajo la influencia del alcohol, en estado de ebriedad o bajo la influencia de las drogas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0035",
+        "score": 0.4691,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: alcohol, bajo, conduccion, drogas, ebriedad, estado"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 1,
+    "unidad_nombre": "Legislación de Tránsito",
+    "tema": "Personas responsables",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0035",
+        "score": 0.3757,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: personas, responsables"
+      },
+      {
+        "segment_id": "seg_0003",
+        "score": 0.3654,
+        "page_start": 12,
+        "page_end": 19,
+        "reason": "Coinciden términos: personas, responsables"
+      },
+      {
+        "segment_id": "seg_0027",
+        "score": 0.3632,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: personas, responsables"
+      },
+      {
+        "segment_id": "seg_0021",
+        "score": 0.3594,
+        "page_start": 85,
+        "page_end": 89,
+        "reason": "Coinciden términos: personas, responsables"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Utilización de la vía",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0058",
+        "score": 0.3812,
+        "page_start": 226,
+        "page_end": 229,
+        "reason": "Coinciden términos: utilizacion, via"
+      },
+      {
+        "segment_id": "seg_0082",
+        "score": 0.3752,
+        "page_start": 328,
+        "page_end": 331,
+        "reason": "Coinciden términos: utilizacion, via"
+      },
+      {
+        "segment_id": "seg_0066",
+        "score": 0.3743,
+        "page_start": 258,
+        "page_end": 261,
+        "reason": "Coinciden términos: utilizacion, via"
+      },
+      {
+        "segment_id": "seg_0067",
+        "score": 0.3729,
+        "page_start": 262,
+        "page_end": 265,
+        "reason": "Coinciden términos: utilizacion, via"
+      },
+      {
+        "segment_id": "seg_0081",
+        "score": 0.3712,
+        "page_start": 324,
+        "page_end": 327,
+        "reason": "Coinciden términos: utilizacion, via"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Circulación en rotondas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3806,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: circulacion, rotondas"
+      },
+      {
+        "segment_id": "seg_0039",
+        "score": 0.3742,
+        "page_start": 154,
+        "page_end": 157,
+        "reason": "Coinciden términos: circulacion, rotondas"
+      },
+      {
+        "segment_id": "seg_0082",
+        "score": 0.3723,
+        "page_start": 328,
+        "page_end": 331,
+        "reason": "Coinciden términos: circulacion, rotondas"
+      },
+      {
+        "segment_id": "seg_0056",
+        "score": 0.3666,
+        "page_start": 220,
+        "page_end": 223,
+        "reason": "Coinciden términos: circulacion, rotondas"
+      },
+      {
+        "segment_id": "seg_0004",
+        "score": 0.3652,
+        "page_start": 20,
+        "page_end": 25,
+        "reason": "Coinciden términos: circulacion, rotondas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "La velocidad",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0036",
+        "score": 0.3828,
+        "page_start": 142,
+        "page_end": 145,
+        "reason": "Coinciden términos: velocidad"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3817,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: velocidad"
+      },
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3807,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: velocidad"
+      },
+      {
+        "segment_id": "seg_0056",
+        "score": 0.3801,
+        "page_start": 220,
+        "page_end": 223,
+        "reason": "Coinciden términos: velocidad"
+      },
+      {
+        "segment_id": "seg_0058",
+        "score": 0.3798,
+        "page_start": 226,
+        "page_end": 229,
+        "reason": "Coinciden términos: velocidad"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Distancia entre vehículos",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3809,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: distancia, vehiculos"
+      },
+      {
+        "segment_id": "seg_0006",
+        "score": 0.3803,
+        "page_start": 31,
+        "page_end": 34,
+        "reason": "Coinciden términos: distancia, vehiculos"
+      },
+      {
+        "segment_id": "seg_0058",
+        "score": 0.3715,
+        "page_start": 226,
+        "page_end": 229,
+        "reason": "Coinciden términos: distancia, vehiculos"
+      },
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3708,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: distancia, vehiculos"
+      },
+      {
+        "segment_id": "seg_0022",
+        "score": 0.3692,
+        "page_start": 89,
+        "page_end": 93,
+        "reason": "Coinciden términos: distancia, vehiculos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Maniobras",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0006",
+        "score": 0.3653,
+        "page_start": 31,
+        "page_end": 34,
+        "reason": "Coinciden términos: maniobras"
+      },
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3634,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: maniobras"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3628,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: maniobras"
+      },
+      {
+        "segment_id": "seg_0038",
+        "score": 0.3628,
+        "page_start": 150,
+        "page_end": 153,
+        "reason": "Coinciden términos: maniobras"
+      },
+      {
+        "segment_id": "seg_0062",
+        "score": 0.3626,
+        "page_start": 239,
+        "page_end": 243,
+        "reason": "Coinciden términos: maniobras"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Detención y estacionamiento",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0007",
+        "score": 0.3854,
+        "page_start": 35,
+        "page_end": 37,
+        "reason": "Coinciden términos: detencion, estacionamiento"
+      },
+      {
+        "segment_id": "seg_0080",
+        "score": 0.3692,
+        "page_start": 317,
+        "page_end": 323,
+        "reason": "Coinciden términos: detencion, estacionamiento"
+      },
+      {
+        "segment_id": "seg_0003",
+        "score": 0.3678,
+        "page_start": 12,
+        "page_end": 19,
+        "reason": "Coinciden términos: detencion, estacionamiento"
+      },
+      {
+        "segment_id": "seg_0004",
+        "score": 0.366,
+        "page_start": 20,
+        "page_end": 25,
+        "reason": "Coinciden términos: detencion, estacionamiento"
+      },
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3645,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: detencion, estacionamiento"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Marcha atrás",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0007",
+        "score": 0.3842,
+        "page_start": 35,
+        "page_end": 37,
+        "reason": "Coinciden términos: atras, marcha"
+      },
+      {
+        "segment_id": "seg_0068",
+        "score": 0.3757,
+        "page_start": 266,
+        "page_end": 269,
+        "reason": "Coinciden términos: atras, marcha"
+      },
+      {
+        "segment_id": "seg_0040",
+        "score": 0.3756,
+        "page_start": 158,
+        "page_end": 161,
+        "reason": "Coinciden términos: atras, marcha"
+      },
+      {
+        "segment_id": "seg_0069",
+        "score": 0.3697,
+        "page_start": 270,
+        "page_end": 273,
+        "reason": "Coinciden términos: atras, marcha"
+      },
+      {
+        "segment_id": "seg_0039",
+        "score": 0.3678,
+        "page_start": 154,
+        "page_end": 157,
+        "reason": "Coinciden términos: atras, marcha"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Derecho preferente de paso",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0007",
+        "score": 0.4063,
+        "page_start": 35,
+        "page_end": 37,
+        "reason": "Coinciden términos: derecho, paso, preferente"
+      },
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3942,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: derecho, paso, preferente"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3837,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: derecho, paso, preferente"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Pistas de emergencia",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3874,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: emergencia, pistas"
+      },
+      {
+        "segment_id": "seg_0079",
+        "score": 0.3771,
+        "page_start": 312,
+        "page_end": 317,
+        "reason": "Coinciden términos: emergencia, pistas"
+      },
+      {
+        "segment_id": "seg_0041",
+        "score": 0.3724,
+        "page_start": 162,
+        "page_end": 164,
+        "reason": "Coinciden términos: emergencia, pistas"
+      },
+      {
+        "segment_id": "seg_0081",
+        "score": 0.3723,
+        "page_start": 324,
+        "page_end": 327,
+        "reason": "Coinciden términos: emergencia, pistas"
+      },
+      {
+        "segment_id": "seg_0006",
+        "score": 0.3722,
+        "page_start": 31,
+        "page_end": 34,
+        "reason": "Coinciden términos: emergencia, pistas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Restricciones en las vías",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3948,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: restricciones, vias"
+      },
+      {
+        "segment_id": "seg_0076",
+        "score": 0.3823,
+        "page_start": 294,
+        "page_end": 299,
+        "reason": "Coinciden términos: restricciones, vias"
+      },
+      {
+        "segment_id": "seg_0078",
+        "score": 0.3783,
+        "page_start": 303,
+        "page_end": 311,
+        "reason": "Coinciden términos: restricciones, vias"
+      },
+      {
+        "segment_id": "seg_0073",
+        "score": 0.3715,
+        "page_start": 284,
+        "page_end": 287,
+        "reason": "Coinciden términos: restricciones, vias"
+      },
+      {
+        "segment_id": "seg_0083",
+        "score": 0.3682,
+        "page_start": 332,
+        "page_end": 337,
+        "reason": "Coinciden términos: restricciones, vias"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Vehículos hechizos",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3887,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: hechizos, vehiculos"
+      },
+      {
+        "segment_id": "seg_0062",
+        "score": 0.3777,
+        "page_start": 239,
+        "page_end": 243,
+        "reason": "Coinciden términos: hechizos, vehiculos"
+      },
+      {
+        "segment_id": "seg_0075",
+        "score": 0.3772,
+        "page_start": 290,
+        "page_end": 293,
+        "reason": "Coinciden términos: hechizos, vehiculos"
+      },
+      {
+        "segment_id": "seg_0071",
+        "score": 0.3739,
+        "page_start": 278,
+        "page_end": 280,
+        "reason": "Coinciden términos: hechizos, vehiculos"
+      },
+      {
+        "segment_id": "seg_0074",
+        "score": 0.3725,
+        "page_start": 287,
+        "page_end": 290,
+        "reason": "Coinciden términos: hechizos, vehiculos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Peatones",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0082",
+        "score": 0.3751,
+        "page_start": 328,
+        "page_end": 331,
+        "reason": "Coinciden términos: peatones"
+      },
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3716,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: peatones"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3696,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: peatones"
+      },
+      {
+        "segment_id": "seg_0003",
+        "score": 0.3695,
+        "page_start": 12,
+        "page_end": 19,
+        "reason": "Coinciden términos: peatones"
+      },
+      {
+        "segment_id": "seg_0040",
+        "score": 0.3694,
+        "page_start": 158,
+        "page_end": 161,
+        "reason": "Coinciden términos: peatones"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Documentación del vehículo",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3778,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: documentacion, vehiculo"
+      },
+      {
+        "segment_id": "seg_0038",
+        "score": 0.3745,
+        "page_start": 150,
+        "page_end": 153,
+        "reason": "Coinciden términos: documentacion, vehiculo"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3685,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: documentacion, vehiculo"
+      },
+      {
+        "segment_id": "seg_0074",
+        "score": 0.3684,
+        "page_start": 287,
+        "page_end": 290,
+        "reason": "Coinciden términos: documentacion, vehiculo"
+      },
+      {
+        "segment_id": "seg_0076",
+        "score": 0.3674,
+        "page_start": 294,
+        "page_end": 299,
+        "reason": "Coinciden términos: documentacion, vehiculo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Pesos y dimensiones máximos",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0009",
+        "score": 0.418,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: dimensiones, maximos, pesos"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.37,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: dimensiones, maximos, pesos"
+      },
+      {
+        "segment_id": "seg_0078",
+        "score": 0.3664,
+        "page_start": 303,
+        "page_end": 311,
+        "reason": "Coinciden términos: dimensiones, maximos, pesos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Luces y señales",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0082",
+        "score": 0.3757,
+        "page_start": 328,
+        "page_end": 331,
+        "reason": "Coinciden términos: luces, senales"
+      },
+      {
+        "segment_id": "seg_0076",
+        "score": 0.374,
+        "page_start": 294,
+        "page_end": 299,
+        "reason": "Coinciden términos: luces, senales"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3723,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: luces, senales"
+      },
+      {
+        "segment_id": "seg_0077",
+        "score": 0.3716,
+        "page_start": 299,
+        "page_end": 303,
+        "reason": "Coinciden términos: luces, senales"
+      },
+      {
+        "segment_id": "seg_0083",
+        "score": 0.3709,
+        "page_start": 332,
+        "page_end": 337,
+        "reason": "Coinciden términos: luces, senales"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Señales sonoras",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3756,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: senales, sonoras"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3756,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: senales, sonoras"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 2,
+    "unidad_nombre": "Normativa vigente sobre el uso de infraestructura vial",
+    "tema": "Elementos obligatorios",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3778,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: elementos, obligatorios"
+      },
+      {
+        "segment_id": "seg_0062",
+        "score": 0.368,
+        "page_start": 239,
+        "page_end": 243,
+        "reason": "Coinciden términos: elementos, obligatorios"
+      },
+      {
+        "segment_id": "seg_0023",
+        "score": 0.3672,
+        "page_start": 93,
+        "page_end": 95,
+        "reason": "Coinciden términos: elementos, obligatorios"
+      },
+      {
+        "segment_id": "seg_0008",
+        "score": 0.3632,
+        "page_start": 38,
+        "page_end": 41,
+        "reason": "Coinciden términos: elementos, obligatorios"
+      },
+      {
+        "segment_id": "seg_0077",
+        "score": 0.3611,
+        "page_start": 299,
+        "page_end": 303,
+        "reason": "Coinciden términos: elementos, obligatorios"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Licencias de conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0053",
+        "score": 0.3969,
+        "page_start": 208,
+        "page_end": 211,
+        "reason": "Coinciden términos: conductor, licencias"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3895,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: conductor, licencias"
+      },
+      {
+        "segment_id": "seg_0054",
+        "score": 0.3764,
+        "page_start": 211,
+        "page_end": 215,
+        "reason": "Coinciden términos: conductor, licencias"
+      },
+      {
+        "segment_id": "seg_0035",
+        "score": 0.3735,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: conductor, licencias"
+      },
+      {
+        "segment_id": "seg_0042",
+        "score": 0.3693,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: conductor, licencias"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Requisitos de los postulantes",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0053",
+        "score": 0.3983,
+        "page_start": 208,
+        "page_end": 211,
+        "reason": "Coinciden términos: postulantes, requisitos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Vigencia de la licencia de conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0053",
+        "score": 0.4171,
+        "page_start": 208,
+        "page_end": 211,
+        "reason": "Coinciden términos: conductor, licencia, vigencia"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Registros obligatorios",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0053",
+        "score": 0.3929,
+        "page_start": 208,
+        "page_end": 211,
+        "reason": "Coinciden términos: obligatorios, registros"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3822,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: obligatorios, registros"
+      },
+      {
+        "segment_id": "seg_0023",
+        "score": 0.3721,
+        "page_start": 93,
+        "page_end": 95,
+        "reason": "Coinciden términos: obligatorios, registros"
+      },
+      {
+        "segment_id": "seg_0073",
+        "score": 0.3713,
+        "page_start": 284,
+        "page_end": 287,
+        "reason": "Coinciden términos: obligatorios, registros"
+      },
+      {
+        "segment_id": "seg_0054",
+        "score": 0.3708,
+        "page_start": 211,
+        "page_end": 215,
+        "reason": "Coinciden términos: obligatorios, registros"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Pasajeros de taxis: básicos, colectivos y de turismo",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0072",
+        "score": 0.4189,
+        "page_start": 280,
+        "page_end": 283,
+        "reason": "Coinciden términos: basicos, colectivos, pasajeros, taxis, turismo"
+      },
+      {
+        "segment_id": "seg_0070",
+        "score": 0.4078,
+        "page_start": 274,
+        "page_end": 277,
+        "reason": "Coinciden términos: basicos, colectivos, pasajeros, taxis, turismo"
+      },
+      {
+        "segment_id": "seg_0053",
+        "score": 0.379,
+        "page_start": 208,
+        "page_end": 211,
+        "reason": "Coinciden términos: basicos, colectivos, pasajeros, taxis, turismo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Otros servicios",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0074",
+        "score": 0.3914,
+        "page_start": 287,
+        "page_end": 290,
+        "reason": "Coinciden términos: otros, servicios"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3889,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: otros, servicios"
+      },
+      {
+        "segment_id": "seg_0073",
+        "score": 0.3877,
+        "page_start": 284,
+        "page_end": 287,
+        "reason": "Coinciden términos: otros, servicios"
+      },
+      {
+        "segment_id": "seg_0070",
+        "score": 0.3874,
+        "page_start": 274,
+        "page_end": 277,
+        "reason": "Coinciden términos: otros, servicios"
+      },
+      {
+        "segment_id": "seg_0069",
+        "score": 0.3828,
+        "page_start": 270,
+        "page_end": 273,
+        "reason": "Coinciden términos: otros, servicios"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Manual ABC",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0075",
+        "score": 0.413,
+        "page_start": 290,
+        "page_end": 293,
+        "reason": "Coinciden términos: abc, manual"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 3,
+    "unidad_nombre": "Reglamentación aplicada al transporte de pasajeros",
+    "tema": "Infracciones y sanciones a servicios de transporte de pasajeros",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0075",
+        "score": 0.4286,
+        "page_start": 290,
+        "page_end": 293,
+        "reason": "Coinciden términos: infracciones, pasajeros, sanciones, servicios, transporte"
+      },
+      {
+        "segment_id": "seg_0035",
+        "score": 0.3951,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: infracciones, pasajeros, sanciones, servicios, transporte"
+      },
+      {
+        "segment_id": "seg_0054",
+        "score": 0.3936,
+        "page_start": 211,
+        "page_end": 215,
+        "reason": "Coinciden términos: infracciones, pasajeros, sanciones, servicios, transporte"
+      },
+      {
+        "segment_id": "seg_0076",
+        "score": 0.3715,
+        "page_start": 294,
+        "page_end": 299,
+        "reason": "Coinciden términos: infracciones, pasajeros, sanciones, servicios, transporte"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Primeros auxilios",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0045",
+        "score": 0.3839,
+        "page_start": 178,
+        "page_end": 179,
+        "reason": "Coinciden términos: auxilios, primeros"
+      },
+      {
+        "segment_id": "seg_0046",
+        "score": 0.3794,
+        "page_start": 180,
+        "page_end": 183,
+        "reason": "Coinciden términos: auxilios, primeros"
+      },
+      {
+        "segment_id": "seg_0079",
+        "score": 0.3707,
+        "page_start": 312,
+        "page_end": 317,
+        "reason": "Coinciden términos: auxilios, primeros"
+      },
+      {
+        "segment_id": "seg_0007",
+        "score": 0.3682,
+        "page_start": 35,
+        "page_end": 37,
+        "reason": "Coinciden términos: auxilios, primeros"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Actuación ante los heridos",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0046",
+        "score": 0.3904,
+        "page_start": 180,
+        "page_end": 183,
+        "reason": "Coinciden términos: actuacion, heridos"
+      },
+      {
+        "segment_id": "seg_0047",
+        "score": 0.389,
+        "page_start": 183,
+        "page_end": 187,
+        "reason": "Coinciden términos: actuacion, heridos"
+      },
+      {
+        "segment_id": "seg_0050",
+        "score": 0.3839,
+        "page_start": 196,
+        "page_end": 199,
+        "reason": "Coinciden términos: actuacion, heridos"
+      },
+      {
+        "segment_id": "seg_0048",
+        "score": 0.3753,
+        "page_start": 188,
+        "page_end": 191,
+        "reason": "Coinciden términos: actuacion, heridos"
+      },
+      {
+        "segment_id": "seg_0075",
+        "score": 0.3732,
+        "page_start": 290,
+        "page_end": 293,
+        "reason": "Coinciden términos: actuacion, heridos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Circulación sanguínea",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0048",
+        "score": 0.3793,
+        "page_start": 188,
+        "page_end": 191,
+        "reason": "Coinciden términos: circulacion, sanguinea"
+      },
+      {
+        "segment_id": "seg_0031",
+        "score": 0.3685,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: circulacion, sanguinea"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Shock o colapso",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0048",
+        "score": 0.1973,
+        "page_start": 188,
+        "page_end": 191,
+        "reason": "Mejor coincidencia bajo el umbral; revisar manualmente. Coinciden términos: shock",
+        "below_min_score": true
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Evaluación secundaria",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0047",
+        "score": 0.3661,
+        "page_start": 183,
+        "page_end": 187,
+        "reason": "Coinciden términos: evaluacion, secundaria"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Protección vertebral",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0048",
+        "score": 0.3757,
+        "page_start": 188,
+        "page_end": 191,
+        "reason": "Coinciden términos: proteccion, vertebral"
+      },
+      {
+        "segment_id": "seg_0051",
+        "score": 0.3595,
+        "page_start": 199,
+        "page_end": 201,
+        "reason": "Coinciden términos: proteccion, vertebral"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 4,
+    "unidad_nombre": "Primeros Auxilios",
+    "tema": "Lesiones traumáticas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0048",
+        "score": 0.3796,
+        "page_start": 188,
+        "page_end": 191,
+        "reason": "Coinciden términos: lesiones, traumaticas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "El motor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3922,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: motor"
+      },
+      {
+        "segment_id": "seg_0024",
+        "score": 0.3908,
+        "page_start": 96,
+        "page_end": 99,
+        "reason": "Coinciden términos: motor"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3819,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: motor"
+      },
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3817,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: motor"
+      },
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3792,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: motor"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Elementos de un motor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0011",
+        "score": 0.3874,
+        "page_start": 50,
+        "page_end": 53,
+        "reason": "Coinciden términos: elementos, motor"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3839,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: elementos, motor"
+      },
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3791,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: elementos, motor"
+      },
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3786,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: elementos, motor"
+      },
+      {
+        "segment_id": "seg_0015",
+        "score": 0.371,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: elementos, motor"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Comparación de los dos motores",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0011",
+        "score": 0.3937,
+        "page_start": 50,
+        "page_end": 53,
+        "reason": "Coinciden términos: comparacion, motores"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistemas de alimentación",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3859,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: alimentacion, sistemas"
+      },
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3782,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: alimentacion, sistemas"
+      },
+      {
+        "segment_id": "seg_0050",
+        "score": 0.3717,
+        "page_start": 196,
+        "page_end": 199,
+        "reason": "Coinciden términos: alimentacion, sistemas"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3643,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: alimentacion, sistemas"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3583,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: alimentacion, sistemas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Par motor y potencia",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0012",
+        "score": 0.4271,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: motor, par, potencia"
+      },
+      {
+        "segment_id": "seg_0019",
+        "score": 0.3856,
+        "page_start": 79,
+        "page_end": 81,
+        "reason": "Coinciden términos: motor, par, potencia"
+      },
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3838,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: motor, par, potencia"
+      },
+      {
+        "segment_id": "seg_0039",
+        "score": 0.3763,
+        "page_start": 154,
+        "page_end": 157,
+        "reason": "Coinciden términos: motor, par, potencia"
+      },
+      {
+        "segment_id": "seg_0040",
+        "score": 0.3731,
+        "page_start": 158,
+        "page_end": 161,
+        "reason": "Coinciden términos: motor, par, potencia"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Mantenimiento",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3715,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: mantenimiento"
+      },
+      {
+        "segment_id": "seg_0042",
+        "score": 0.3634,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: mantenimiento"
+      },
+      {
+        "segment_id": "seg_0040",
+        "score": 0.3627,
+        "page_start": 158,
+        "page_end": 161,
+        "reason": "Coinciden términos: mantenimiento"
+      },
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3615,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: mantenimiento"
+      },
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3603,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: mantenimiento"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de lubricación",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3961,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: lubricacion, sistema"
+      },
+      {
+        "segment_id": "seg_0011",
+        "score": 0.3872,
+        "page_start": 50,
+        "page_end": 53,
+        "reason": "Coinciden términos: lubricacion, sistema"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.382,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: lubricacion, sistema"
+      },
+      {
+        "segment_id": "seg_0024",
+        "score": 0.3792,
+        "page_start": 96,
+        "page_end": 99,
+        "reason": "Coinciden términos: lubricacion, sistema"
+      },
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3775,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: lubricacion, sistema"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de refrigeración",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3867,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: refrigeracion, sistema"
+      },
+      {
+        "segment_id": "seg_0019",
+        "score": 0.3812,
+        "page_start": 79,
+        "page_end": 81,
+        "reason": "Coinciden términos: refrigeracion, sistema"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3807,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: refrigeracion, sistema"
+      },
+      {
+        "segment_id": "seg_0020",
+        "score": 0.37,
+        "page_start": 82,
+        "page_end": 85,
+        "reason": "Coinciden términos: refrigeracion, sistema"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3693,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: refrigeracion, sistema"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de dirección",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3806,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: direccion, sistema"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3804,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: direccion, sistema"
+      },
+      {
+        "segment_id": "seg_0024",
+        "score": 0.3744,
+        "page_start": 96,
+        "page_end": 99,
+        "reason": "Coinciden términos: direccion, sistema"
+      },
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3721,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: direccion, sistema"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3693,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: direccion, sistema"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de transmisión",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0015",
+        "score": 0.3812,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: sistema, transmision"
+      },
+      {
+        "segment_id": "seg_0019",
+        "score": 0.3767,
+        "page_start": 79,
+        "page_end": 81,
+        "reason": "Coinciden términos: sistema, transmision"
+      },
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3766,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: sistema, transmision"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3749,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: sistema, transmision"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3744,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: sistema, transmision"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "El tacómetro",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0014",
+        "score": 0.3763,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: tacometro"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "La caja de cambio de velocidades",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0014",
+        "score": 0.4368,
+        "page_start": 60,
+        "page_end": 63,
+        "reason": "Coinciden términos: caja, cambio, velocidades"
+      },
+      {
+        "segment_id": "seg_0015",
+        "score": 0.3955,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: caja, cambio, velocidades"
+      },
+      {
+        "segment_id": "seg_0019",
+        "score": 0.38,
+        "page_start": 79,
+        "page_end": 81,
+        "reason": "Coinciden términos: caja, cambio, velocidades"
+      },
+      {
+        "segment_id": "seg_0056",
+        "score": 0.3665,
+        "page_start": 220,
+        "page_end": 223,
+        "reason": "Coinciden términos: caja, cambio, velocidades"
+      },
+      {
+        "segment_id": "seg_0007",
+        "score": 0.3646,
+        "page_start": 35,
+        "page_end": 37,
+        "reason": "Coinciden términos: caja, cambio, velocidades"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "El árbol o eje de transmisión",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0015",
+        "score": 0.3977,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: arbol, eje, transmision"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Diferencial o grupo cónico",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0015",
+        "score": 0.4032,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: conico, diferencial, grupo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Configuración de los ejes de tracción",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0015",
+        "score": 0.4085,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: configuracion, ejes, traccion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de suspensión",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0016",
+        "score": 0.4049,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: sistema, suspension"
+      },
+      {
+        "segment_id": "seg_0075",
+        "score": 0.3821,
+        "page_start": 290,
+        "page_end": 293,
+        "reason": "Coinciden términos: sistema, suspension"
+      },
+      {
+        "segment_id": "seg_0024",
+        "score": 0.3768,
+        "page_start": 96,
+        "page_end": 99,
+        "reason": "Coinciden términos: sistema, suspension"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3747,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: sistema, suspension"
+      },
+      {
+        "segment_id": "seg_0017",
+        "score": 0.372,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: sistema, suspension"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema de escape",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3958,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: escape, sistema"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3901,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: escape, sistema"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3884,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: escape, sistema"
+      },
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3873,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: escape, sistema"
+      },
+      {
+        "segment_id": "seg_0011",
+        "score": 0.385,
+        "page_start": 50,
+        "page_end": 53,
+        "reason": "Coinciden términos: escape, sistema"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Sistema eléctrico",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3791,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: electrico, sistema"
+      },
+      {
+        "segment_id": "seg_0050",
+        "score": 0.3607,
+        "page_start": 196,
+        "page_end": 199,
+        "reason": "Coinciden términos: electrico, sistema"
+      },
+      {
+        "segment_id": "seg_0032",
+        "score": 0.3587,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: electrico, sistema"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Seguridad activa y pasiva",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0017",
+        "score": 0.4265,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: activa, pasiva, seguridad"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Luces",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3718,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: luces"
+      },
+      {
+        "segment_id": "seg_0037",
+        "score": 0.3651,
+        "page_start": 146,
+        "page_end": 149,
+        "reason": "Coinciden términos: luces"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3641,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: luces"
+      },
+      {
+        "segment_id": "seg_0082",
+        "score": 0.3639,
+        "page_start": 328,
+        "page_end": 331,
+        "reason": "Coinciden términos: luces"
+      },
+      {
+        "segment_id": "seg_0016",
+        "score": 0.3625,
+        "page_start": 68,
+        "page_end": 71,
+        "reason": "Coinciden términos: luces"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Ruedas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0057",
+        "score": 0.3637,
+        "page_start": 224,
+        "page_end": 225,
+        "reason": "Coinciden términos: ruedas"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3632,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: ruedas"
+      },
+      {
+        "segment_id": "seg_0004",
+        "score": 0.3616,
+        "page_start": 20,
+        "page_end": 25,
+        "reason": "Coinciden términos: ruedas"
+      },
+      {
+        "segment_id": "seg_0015",
+        "score": 0.3616,
+        "page_start": 64,
+        "page_end": 67,
+        "reason": "Coinciden términos: ruedas"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3614,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: ruedas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Seguridad pasiva",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3732,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: pasiva, seguridad"
+      },
+      {
+        "segment_id": "seg_0022",
+        "score": 0.3712,
+        "page_start": 89,
+        "page_end": 93,
+        "reason": "Coinciden términos: pasiva, seguridad"
+      },
+      {
+        "segment_id": "seg_0033",
+        "score": 0.3642,
+        "page_start": 130,
+        "page_end": 133,
+        "reason": "Coinciden términos: pasiva, seguridad"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Dispositivos para casos de emergencia",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0023",
+        "score": 0.3848,
+        "page_start": 93,
+        "page_end": 95,
+        "reason": "Coinciden términos: casos, dispositivos, emergencia"
+      },
+      {
+        "segment_id": "seg_0069",
+        "score": 0.369,
+        "page_start": 270,
+        "page_end": 273,
+        "reason": "Coinciden términos: casos, dispositivos, emergencia"
+      },
+      {
+        "segment_id": "seg_0006",
+        "score": 0.3633,
+        "page_start": 31,
+        "page_end": 34,
+        "reason": "Coinciden términos: casos, dispositivos, emergencia"
+      },
+      {
+        "segment_id": "seg_0034",
+        "score": 0.3618,
+        "page_start": 134,
+        "page_end": 136,
+        "reason": "Coinciden términos: casos, dispositivos, emergencia"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 5,
+    "unidad_nombre": "Mecánica y Mantención Preventiva",
+    "tema": "Controles mensuales",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0024",
+        "score": 0.3838,
+        "page_start": 96,
+        "page_end": 99,
+        "reason": "Coinciden términos: controles, mensuales"
+      },
+      {
+        "segment_id": "seg_0054",
+        "score": 0.3591,
+        "page_start": 211,
+        "page_end": 215,
+        "reason": "Coinciden términos: controles, mensuales"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Reacción en caso de incendio",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0049",
+        "score": 0.3851,
+        "page_start": 191,
+        "page_end": 195,
+        "reason": "Coinciden términos: caso, incendio, reaccion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Actuación del conductor en un incendio",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0050",
+        "score": 0.4051,
+        "page_start": 196,
+        "page_end": 199,
+        "reason": "Coinciden términos: actuacion, conductor, incendio"
+      },
+      {
+        "segment_id": "seg_0019",
+        "score": 0.3727,
+        "page_start": 79,
+        "page_end": 81,
+        "reason": "Coinciden términos: actuacion, conductor, incendio"
+      },
+      {
+        "segment_id": "seg_0046",
+        "score": 0.3699,
+        "page_start": 180,
+        "page_end": 183,
+        "reason": "Coinciden términos: actuacion, conductor, incendio"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Evacuación de los ocupantes",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0051",
+        "score": 0.3975,
+        "page_start": 199,
+        "page_end": 201,
+        "reason": "Coinciden términos: evacuacion, ocupantes"
+      },
+      {
+        "segment_id": "seg_0050",
+        "score": 0.3959,
+        "page_start": 196,
+        "page_end": 199,
+        "reason": "Coinciden términos: evacuacion, ocupantes"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Protocolo para la evacuación si el vehículo no ha sufrido un accidente",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0051",
+        "score": 0.362,
+        "page_start": 199,
+        "page_end": 201,
+        "reason": "Coinciden términos: evacuacion, protocolo, sufrido, vehiculo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Protocolo para la evacuación si el vehículo ha sufrido un accidente",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0051",
+        "score": 0.3537,
+        "page_start": 199,
+        "page_end": 201,
+        "reason": "Coinciden términos: evacuacion, protocolo, sufrido, vehiculo"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Prevención de riesgos laborales",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0030",
+        "score": 0.3862,
+        "page_start": 118,
+        "page_end": 121,
+        "reason": "Coinciden términos: laborales, prevencion, riesgos"
+      },
+      {
+        "segment_id": "seg_0031",
+        "score": 0.381,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: laborales, prevencion, riesgos"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.354,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: laborales, prevencion, riesgos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Reacción en caso de agresión",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0030",
+        "score": 0.4103,
+        "page_start": 118,
+        "page_end": 121,
+        "reason": "Coinciden términos: agresion, caso, reaccion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Accidentalidad en el transporte",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0031",
+        "score": 0.3861,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: accidentalidad, transporte"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Equipos de Protección Individual",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0031",
+        "score": 0.424,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: equipos, individual, proteccion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Ergonomía aplicada al transporte",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0031",
+        "score": 0.4027,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: aplicada, ergonomia, transporte"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Diseño de interiores",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3608,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: diseno, interiores"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Prevención de lesiones musculoesqueléticas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0031",
+        "score": 0.2675,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: lesiones, prevencion"
+      },
+      {
+        "segment_id": "seg_0030",
+        "score": 0.2567,
+        "page_start": 118,
+        "page_end": 121,
+        "reason": "Coinciden términos: lesiones, prevencion"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.2413,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: lesiones, prevencion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Posturas incorrectas en la conducción",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0031",
+        "score": 0.4013,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: conduccion, incorrectas, posturas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Colocación del cinturón de seguridad",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0032",
+        "score": 0.3892,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: cinturon, colocacion, seguridad"
+      },
+      {
+        "segment_id": "seg_0031",
+        "score": 0.3775,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: cinturon, colocacion, seguridad"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Regulación de los espejos retrovisores",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0032",
+        "score": 0.393,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: espejos, regulacion, retrovisores"
+      },
+      {
+        "segment_id": "seg_0010",
+        "score": 0.3743,
+        "page_start": 46,
+        "page_end": 49,
+        "reason": "Coinciden términos: espejos, regulacion, retrovisores"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Posición correcta al volante",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0032",
+        "score": 0.4009,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: correcta, posicion, volante"
+      },
+      {
+        "segment_id": "seg_0051",
+        "score": 0.3637,
+        "page_start": 199,
+        "page_end": 201,
+        "reason": "Coinciden términos: correcta, posicion, volante"
+      },
+      {
+        "segment_id": "seg_0023",
+        "score": 0.3603,
+        "page_start": 93,
+        "page_end": 95,
+        "reason": "Coinciden términos: correcta, posicion, volante"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Otras consideraciones",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0032",
+        "score": 0.3717,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: consideraciones, otras"
+      },
+      {
+        "segment_id": "seg_0009",
+        "score": 0.3553,
+        "page_start": 42,
+        "page_end": 45,
+        "reason": "Coinciden términos: consideraciones, otras"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Manipulación correcta de cargas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0032",
+        "score": 0.3984,
+        "page_start": 126,
+        "page_end": 129,
+        "reason": "Coinciden términos: cargas, correcta, manipulacion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 6,
+    "unidad_nombre": "Prevención de Riesgos y Combate de Incendios",
+    "tema": "Ejercicios para prevenir lesiones",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0033",
+        "score": 0.3914,
+        "page_start": 130,
+        "page_end": 133,
+        "reason": "Coinciden términos: ejercicios, lesiones, prevenir"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3748,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: ejercicios, lesiones, prevenir"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "El conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0059",
+        "score": 0.3811,
+        "page_start": 230,
+        "page_end": 233,
+        "reason": "Coinciden términos: conductor"
+      },
+      {
+        "segment_id": "seg_0069",
+        "score": 0.3803,
+        "page_start": 270,
+        "page_end": 273,
+        "reason": "Coinciden términos: conductor"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3766,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: conductor"
+      },
+      {
+        "segment_id": "seg_0042",
+        "score": 0.3765,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: conductor"
+      },
+      {
+        "segment_id": "seg_0035",
+        "score": 0.3746,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: conductor"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Factores que influyen en las capacidades del conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0043",
+        "score": 0.4079,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: capacidades, conductor, factores, influyen"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Las drogas",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0026",
+        "score": 0.3801,
+        "page_start": 104,
+        "page_end": 107,
+        "reason": "Coinciden términos: drogas"
+      },
+      {
+        "segment_id": "seg_0035",
+        "score": 0.3749,
+        "page_start": 136,
+        "page_end": 141,
+        "reason": "Coinciden términos: drogas"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3748,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: drogas"
+      },
+      {
+        "segment_id": "seg_0025",
+        "score": 0.3678,
+        "page_start": 100,
+        "page_end": 103,
+        "reason": "Coinciden términos: drogas"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.367,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: drogas"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "La fatiga",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0026",
+        "score": 0.3939,
+        "page_start": 104,
+        "page_end": 107,
+        "reason": "Coinciden términos: fatiga"
+      },
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3765,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: fatiga"
+      },
+      {
+        "segment_id": "seg_0038",
+        "score": 0.3754,
+        "page_start": 150,
+        "page_end": 153,
+        "reason": "Coinciden términos: fatiga"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3741,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: fatiga"
+      },
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3727,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: fatiga"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "El sueño",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0026",
+        "score": 0.3863,
+        "page_start": 104,
+        "page_end": 107,
+        "reason": "Coinciden términos: sueno"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3794,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: sueno"
+      },
+      {
+        "segment_id": "seg_0027",
+        "score": 0.3763,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: sueno"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3761,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: sueno"
+      },
+      {
+        "segment_id": "seg_0038",
+        "score": 0.3758,
+        "page_start": 150,
+        "page_end": 153,
+        "reason": "Coinciden términos: sueno"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Las enfermedades y los medicamentos",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0027",
+        "score": 0.423,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: enfermedades, medicamentos"
+      },
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3937,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: enfermedades, medicamentos"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3843,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: enfermedades, medicamentos"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Las alergias",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0027",
+        "score": 0.3861,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: alergias"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "El estrés",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3796,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: estres"
+      },
+      {
+        "segment_id": "seg_0030",
+        "score": 0.3785,
+        "page_start": 118,
+        "page_end": 121,
+        "reason": "Coinciden términos: estres"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.377,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: estres"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3759,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: estres"
+      },
+      {
+        "segment_id": "seg_0017",
+        "score": 0.3739,
+        "page_start": 72,
+        "page_end": 75,
+        "reason": "Coinciden términos: estres"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "La depresión",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3894,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: depresion"
+      },
+      {
+        "segment_id": "seg_0027",
+        "score": 0.3733,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: depresion"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3686,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: depresion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Otras enfermedades",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3814,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: enfermedades, otras"
+      },
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3798,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: enfermedades, otras"
+      },
+      {
+        "segment_id": "seg_0027",
+        "score": 0.3688,
+        "page_start": 108,
+        "page_end": 111,
+        "reason": "Coinciden términos: enfermedades, otras"
+      },
+      {
+        "segment_id": "seg_0043",
+        "score": 0.3648,
+        "page_start": 168,
+        "page_end": 173,
+        "reason": "Coinciden términos: enfermedades, otras"
+      },
+      {
+        "segment_id": "seg_0031",
+        "score": 0.3622,
+        "page_start": 121,
+        "page_end": 125,
+        "reason": "Coinciden términos: enfermedades, otras"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Actitudes saludables para la prevención de enfermedades y del estrés",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.4124,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: actitudes, enfermedades, estres, prevencion, saludables"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "La distracción",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3906,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: distraccion"
+      },
+      {
+        "segment_id": "seg_0026",
+        "score": 0.3803,
+        "page_start": 104,
+        "page_end": 107,
+        "reason": "Coinciden términos: distraccion"
+      },
+      {
+        "segment_id": "seg_0003",
+        "score": 0.3671,
+        "page_start": 12,
+        "page_end": 19,
+        "reason": "Coinciden términos: distraccion"
+      },
+      {
+        "segment_id": "seg_0044",
+        "score": 0.3664,
+        "page_start": 174,
+        "page_end": 177,
+        "reason": "Coinciden términos: distraccion"
+      },
+      {
+        "segment_id": "seg_0028",
+        "score": 0.3647,
+        "page_start": 112,
+        "page_end": 114,
+        "reason": "Coinciden términos: distraccion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Fumar",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3742,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: fumar"
+      },
+      {
+        "segment_id": "seg_0046",
+        "score": 0.3663,
+        "page_start": 180,
+        "page_end": 183,
+        "reason": "Coinciden términos: fumar"
+      },
+      {
+        "segment_id": "seg_0071",
+        "score": 0.3654,
+        "page_start": 278,
+        "page_end": 280,
+        "reason": "Coinciden términos: fumar"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Usar teléfono celular",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.4126,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: celular, telefono, usar"
+      },
+      {
+        "segment_id": "seg_0037",
+        "score": 0.3658,
+        "page_start": 146,
+        "page_end": 149,
+        "reason": "Coinciden términos: celular, telefono, usar"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Utilizar el navegador",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0029",
+        "score": 0.402,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: navegador, utilizar"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "La alimentación",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0030",
+        "score": 0.3927,
+        "page_start": 118,
+        "page_end": 121,
+        "reason": "Coinciden términos: alimentacion"
+      },
+      {
+        "segment_id": "seg_0004",
+        "score": 0.3741,
+        "page_start": 20,
+        "page_end": 25,
+        "reason": "Coinciden términos: alimentacion"
+      },
+      {
+        "segment_id": "seg_0012",
+        "score": 0.3702,
+        "page_start": 54,
+        "page_end": 56,
+        "reason": "Coinciden términos: alimentacion"
+      },
+      {
+        "segment_id": "seg_0013",
+        "score": 0.3686,
+        "page_start": 56,
+        "page_end": 59,
+        "reason": "Coinciden términos: alimentacion"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3673,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: alimentacion"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "La importancia de la imagen",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0059",
+        "score": 0.4158,
+        "page_start": 230,
+        "page_end": 233,
+        "reason": "Coinciden términos: imagen, importancia"
+      }
+    ]
+  },
+  {
+    "unidad_orden": 7,
+    "unidad_nombre": "Aspectos Psicológicos del Conductor, Relaciones Humanas y Comunicación",
+    "tema": "Actitudes del conductor",
+    "matched_segments": [
+      {
+        "segment_id": "seg_0059",
+        "score": 0.3815,
+        "page_start": 230,
+        "page_end": 233,
+        "reason": "Coinciden términos: actitudes, conductor"
+      },
+      {
+        "segment_id": "seg_0029",
+        "score": 0.3663,
+        "page_start": 114,
+        "page_end": 117,
+        "reason": "Coinciden términos: actitudes, conductor"
+      },
+      {
+        "segment_id": "seg_0042",
+        "score": 0.3601,
+        "page_start": 165,
+        "page_end": 168,
+        "reason": "Coinciden términos: actitudes, conductor"
+      },
+      {
+        "segment_id": "seg_0033",
+        "score": 0.3567,
+        "page_start": 130,
+        "page_end": 133,
+        "reason": "Coinciden términos: actitudes, conductor"
+      }
+    ]
+  }
+]

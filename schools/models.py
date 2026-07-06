@@ -1,4 +1,4 @@
-from django.db import models
+﻿from django.db import models
 
 
 # Create your models here.
@@ -6,10 +6,10 @@ class Escuela(models.Model):
     """Modelo de licencia mixto:
 
     - **Llaves** (`basic_key`, `professional_key`): acceso TEMPORAL. Cada
-      activación descuenta 1 llave y crea una AccessKey con expiración.
-    - **Suscripción** (`basic_access`, `professional_access`): acceso
+      activacion descuenta 1 llave y crea una AccessKey con expiracion.
+    - **Suscripcion** (`basic_access`, `professional_access`): acceso
       ILIMITADO en tiempo, pero acotado por cupos (`basic_seats_max`,
-      `professional_seats_max`). Cada activación descuenta 1 seat; liberar
+      `professional_seats_max`). Cada activacion descuenta 1 seat; liberar
       un estudiante restituye el seat. No consume llaves.
     """
     id = models.AutoField(primary_key=True, auto_created=True)
@@ -18,7 +18,7 @@ class Escuela(models.Model):
     email = models.EmailField()
     telefono = models.CharField(max_length=20)
 
-    # Llaves (unidades reservables con expiración)
+    # Llaves (unidades reservables con expiracion)
     basic_key = models.IntegerField(default=0)
     professional_key = models.IntegerField(default=0)
 
@@ -58,7 +58,7 @@ class Categoria(models.Model):
 
 
 class Unidad(models.Model):
-    """Agrupación de Lecciones dentro de un Curso (ej: 'Unidad 2 - Señales')."""
+    """Agrupacion de Lecciones dentro de un Curso (ej: 'Unidad 2 - Senales')."""
     curso = models.ForeignKey(Curso, on_delete=models.CASCADE, related_name='unidades')
     nombre = models.CharField(max_length=100)
     orden = models.IntegerField(default=0)
@@ -76,6 +76,7 @@ class Unidad(models.Model):
 
 class Leccion(models.Model):
     TIPO_CHOICES = [
+        ('texto', 'Texto / Lectura'),
         ('video', 'Video'),
         ('audio', 'Audio'),
         ('quiz', 'Quiz'),
@@ -103,6 +104,22 @@ class Leccion(models.Model):
 
     def __str__(self):
         return self.nombre
+
+
+class LeccionFuente(models.Model):
+    leccion = models.ForeignKey(Leccion, on_delete=models.CASCADE, related_name="fuentes")
+    fuente_nombre = models.CharField(max_length=255)
+    pagina_inicio = models.IntegerField()
+    pagina_fin = models.IntegerField()
+    tema_regulatorio = models.CharField(max_length=255, blank=True, default='')
+    fragmento_resumen = models.TextField(blank=True, default='')
+    hash_fragmento = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['leccion', 'pagina_inicio']
+
+    def __str__(self):
+        return f"{self.leccion.nombre} / {self.fuente_nombre} pp. {self.pagina_inicio}-{self.pagina_fin}"
 
 class Glosario(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
@@ -164,4 +181,5 @@ class Ejercicio(models.Model):
 
     def __str__(self):
         return self.pregunta
+
 

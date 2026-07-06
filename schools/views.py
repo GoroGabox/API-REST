@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db import transaction as db_transaction
+from django.db.models import Prefetch
 from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import ReadOnlyOrAdmin, is_admin, is_director, is_estudiante
@@ -19,6 +20,9 @@ from .serializers import (
     UnidadSerializer,
     RecursoSerializer,
 )
+
+
+LECCION_ORDERING = ('curso_id', 'unidad__orden', 'unidad_id', 'posicion', 'id')
 
 
 # Campos que un director puede modificar en su propia Escuela via PATCH.
@@ -419,9 +423,10 @@ class CursoViewSet(viewsets.ModelViewSet):
     def units(self, request, pk=None):
         """GET /api/v1/schools/courses/<id>/units/ — unidades del curso con sus lecciones."""
         curso = self.get_object()
+        lecciones_ordenadas = Leccion.objects.select_related('categoria').order_by('posicion', 'id')
         unidades = (
             Unidad.objects.filter(curso=curso)
-            .prefetch_related('lecciones')
+            .prefetch_related(Prefetch('lecciones', queryset=lecciones_ordenadas))
             .order_by('orden', 'id')
         )
         return Response(UnidadSerializer(unidades, many=True).data)
@@ -433,10 +438,19 @@ class LeccionViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['curso', 'unidad', 'posicion', 'tipo']
     permission_classes = [ReadOnlyOrAdmin]
+    pagination_class = None
+
+    def get_queryset(self):
+        return (
+            Leccion.objects
+            .select_related('curso', 'unidad', 'categoria')
+            .order_by(*LECCION_ORDERING)
+        )
 
     def get_serializer_class(self):
-        # Detalle (retrieve) trae contenido completo + transcripción.
-        if self.action == 'retrieve':
+        # El frontend del curso consume /lessons/?curso=<id> como la lista completa.
+        # En ese caso devolvemos contenido para evitar un fetch adicional por lección.
+        if self.action == 'retrieve' or (self.action == 'list' and self.request.query_params.get('curso')):
             return LeccionDetalleSerializer
         return LeccionSerializer
 
@@ -515,3 +529,4 @@ class RecursoViewSet(viewsets.ModelViewSet):
             )
 
         return qs.none()
+
