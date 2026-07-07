@@ -13,6 +13,17 @@
 ## Advertencias
 - Ninguna
 
+# Validación pedagógica
+
+## Lecciones publicables
+- 256 lecciones pasan validación.
+
+## Lecciones no publicables
+- Ninguna
+
+## Warnings pedagógicos
+- Ninguno
+
 ## Duración por unidad
 - U1 Legislación de Tránsito: 1185 min / objetivo 1200 min
 - U2 Normativa vigente sobre el uso de infraestructura vial: 977 min / objetivo 960 min

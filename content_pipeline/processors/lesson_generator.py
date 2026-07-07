@@ -1,19 +1,87 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
 from content_pipeline.processors.clean_text import (
     extract_keywords,
     hash_text_fragment,
-    normalize_for_matching,
     shorten_text,
     unique_preserve_order,
 )
 
 SOURCE_NAME = "Libro del Nuevo Conductor Clase A2"
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+LOW_VALUE_CONCEPTS = {
+    "capitulo",
+    "clase",
+    "conaset",
+    "conductor",
+    "conductores",
+    "contenido",
+    "debe",
+    "deben",
+    "generalidades",
+    "libro",
+    "mayor",
+    "ninos",
+    "niños",
+    "tienen",
+    "pueden",
+    "distintas",
+    "caracteristicas",
+    "producen",
+    "pagina",
+    "paginas",
+    "profesional",
+    "profesionales",
+    "referencia",
+    "tema",
+    "transito",
+    "vehiculo",
+    "vehiculos",
+}
+
+ROAD_CONTEXT_TERMS = {
+    "accidente",
+    "accidentes",
+    "alcohol",
+    "auxilios",
+    "cinturon",
+    "cruce",
+    "distancia",
+    "emergencia",
+    "estacionamiento",
+    "fatiga",
+    "frenado",
+    "incendio",
+    "licencia",
+    "luces",
+    "maniobra",
+    "pasajeros",
+    "peatones",
+    "riesgo",
+    "rotonda",
+    "señales",
+    "siniestros",
+    "velocidad",
+    "via",
+}
+
+
+@dataclass(frozen=True)
+class LessonContext:
+    title: str
+    tema: str
+    unidad_nombre: str
+    part_index: int
+    part_count: int
+    sources: list[dict[str, object]]
+    concepts: list[str]
+    source_ideas: list[str]
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
@@ -50,12 +118,76 @@ def _segments_for_part(
 ) -> list[dict[str, object]]:
     if not segments:
         return []
-    if len(segments) <= part_count:
+    if part_count <= 1:
         return segments
-    chunk_size = ceil(len(segments) / part_count)
+    chunk_size = max(1, ceil(len(segments) / part_count))
     start = part_index * chunk_size
     end = start + chunk_size
-    return segments[start:end] or segments[:1]
+    return segments[start:end] or segments[-1:]
+
+
+def _combined_text(segments: list[dict[str, object]]) -> str:
+    return "\n\n".join(str(segment.get("text", "")) for segment in segments)
+
+
+def _sentence_candidates(segments: list[dict[str, object]]) -> list[str]:
+    candidates: list[str] = []
+    for segment in segments:
+        text = re.sub(r"\s+", " ", str(segment.get("text", ""))).strip()
+        for sentence in SENTENCE_SPLIT_RE.split(text):
+            sentence = re.sub(r"\s+", " ", sentence).strip()
+            if 65 <= len(sentence) <= 260 and not sentence.endswith(":"):
+                candidates.append(sentence)
+    return candidates
+
+
+def _clean_sentence(sentence: str) -> str:
+    sentence = re.sub(r"\b\d{1,3}\s+Libro del Nuevo Conductor Profesional\s+-\s+CONASET\b", "", sentence)
+    sentence = re.sub(r"\bCap[ií]tulo\s+\d+\b", "", sentence, flags=re.IGNORECASE)
+    sentence = re.sub(r"\bFuente:\s*[^.]+", "", sentence, flags=re.IGNORECASE)
+    sentence = re.sub(r"\s+", " ", sentence).strip(" -")
+    return shorten_text(sentence, 180)
+
+
+def _concept_words(tema: str, segments: list[dict[str, object]]) -> list[str]:
+    text = tema + " " + " ".join(str(segment.get("text", ""))[:3000] for segment in segments)
+    candidates = extract_keywords(text, max_keywords=18)
+    concepts = [
+        keyword
+        for keyword in candidates
+        if keyword not in LOW_VALUE_CONCEPTS and len(keyword) >= 4
+    ]
+    topic_keywords = [
+        keyword
+        for keyword in extract_keywords(tema, max_keywords=8)
+        if keyword not in LOW_VALUE_CONCEPTS and len(keyword) >= 4
+    ]
+    return unique_preserve_order(topic_keywords + concepts)[:7] or ["riesgo", "seguridad", "pasajeros"]
+
+
+def _source_ideas(
+    tema: str,
+    segments: list[dict[str, object]],
+    max_items: int = 3,
+) -> list[str]:
+    if not segments:
+        return []
+    terms = set(extract_keywords(tema, max_keywords=10))
+    terms.update(_concept_words(tema, segments))
+    scored: list[tuple[int, str]] = []
+    for sentence in _sentence_candidates(segments):
+        lowered = sentence.lower()
+        matches = [term for term in terms if term in lowered]
+        road_matches = [term for term in ROAD_CONTEXT_TERMS if term in lowered]
+        if not matches and not road_matches:
+            continue
+        cleaned = _clean_sentence(sentence)
+        if len(cleaned) < 45:
+            continue
+        score = (len(matches) * 12) + (len(road_matches) * 8) + min(len(cleaned), 160)
+        scored.append((score, cleaned))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return unique_preserve_order([idea for _score, idea in scored])[:max_items]
 
 
 def _sources_for_segments(segments: list[dict[str, object]], tema: str) -> list[dict[str, object]]:
@@ -63,13 +195,12 @@ def _sources_for_segments(segments: list[dict[str, object]], tema: str) -> list[
         return []
     page_start = min(int(segment.get("page_start", 0)) for segment in segments)
     page_end = max(int(segment.get("page_end", 0)) for segment in segments)
-    text = "\n\n".join(str(segment.get("text", "")) for segment in segments)
-    keywords = extract_keywords(text, max_keywords=8)
-    key_text = ", ".join(keywords[:6]) if keywords else tema
-    source_ideas = "; ".join(_source_ideas(tema, segments, max_items=2))
-    summary = f"Material de referencia asociado a {tema}; conceptos destacados: {key_text}."
-    if source_ideas:
-        summary = f"{summary} Señales usadas para la lección: {source_ideas}"
+    text = _combined_text(segments)
+    ideas = _source_ideas(tema, segments, max_items=2)
+    if ideas:
+        summary = f"Referencia tecnica usada para redactar el tema {tema}: {' '.join(ideas)}"
+    else:
+        summary = f"Referencia tecnica usada para redactar el tema {tema}."
     return [
         {
             "fuente_nombre": SOURCE_NAME,
@@ -98,101 +229,95 @@ def _lesson_title(tema: str, part_index: int, part_count: int) -> str:
 
 def _lesson_description(tema: str, unidad_nombre: str) -> str:
     return shorten_text(
-        f"Explica {tema.lower()} en el contexto de {unidad_nombre.lower()} para conductores profesionales Clase A2.",
+        f"Estudia el tema de {tema.lower()} y aplica criterios preventivos en {unidad_nombre.lower()} para la conducción profesional Clase A2.",
         240,
     )
 
 
-def _concept_words(tema: str, segments: list[dict[str, object]]) -> list[str]:
-    text = tema + " " + " ".join(str(segment.get("text", ""))[:3000] for segment in segments)
-    keywords = extract_keywords(text, max_keywords=8)
-    return keywords or extract_keywords(tema, max_keywords=5) or ["seguridad", "norma", "conducción"]
+def _human_list(values: list[str], fallback: str) -> str:
+    values = [value for value in values if value]
+    if not values:
+        return fallback
+    if len(values) == 1:
+        return values[0]
+    return ", ".join(values[:-1]) + f" y {values[-1]}"
 
 
-def _segment_titles(segments: list[dict[str, object]]) -> list[str]:
-    titles = [
-        shorten_text(str(segment.get("title", "")).strip(), 70)
-        for segment in segments
-        if str(segment.get("title", "")).strip()
+def _part_focus(tema: str, part_index: int, part_count: int) -> str:
+    if part_count == 1:
+        return f"comprender {tema.lower()} y aplicarlo antes de que el riesgo aumente"
+    focuses = [
+        f"reconocer situaciones donde aparece {tema.lower()}",
+        "identificar factores que aumentan el riesgo en la vía",
+        "elegir medidas preventivas durante el servicio",
+        "revisar la responsabilidad del conductor con pasajeros y usuarios vulnerables",
     ]
-    return unique_preserve_order(titles)[:3]
+    return focuses[min(part_index, len(focuses) - 1)]
 
 
-def _sentence_candidates(segments: list[dict[str, object]]) -> list[str]:
-    candidates: list[str] = []
-    for segment in segments:
-        text = re.sub(r"\s+", " ", str(segment.get("text", ""))).strip()
-        for sentence in SENTENCE_SPLIT_RE.split(text):
-            sentence = re.sub(r"\s+", " ", sentence).strip()
-            if 45 <= len(sentence) <= 260 and not sentence.endswith(":"):
-                candidates.append(sentence)
-    return candidates
-
-
-def _source_ideas(
-    tema: str,
-    segments: list[dict[str, object]],
-    max_items: int = 4,
-) -> list[str]:
-    if not segments:
-        return []
-    terms = set(extract_keywords(tema, max_keywords=10))
-    terms.update(_concept_words(tema, segments)[:8])
-    scored: list[tuple[int, str]] = []
-    for sentence in _sentence_candidates(segments):
-        normalized = normalize_for_matching(sentence)
-        matches = [term for term in terms if term in normalized]
-        if not matches:
-            continue
-        score = (len(matches) * 10) + min(len(sentence), 180)
-        matched_terms = ", ".join(matches[:3])
-        idea = (
-            f"Relaciona {matched_terms} con una conducta observable: "
-            f"{shorten_text(sentence, 150)}"
-        )
-        scored.append((score, idea))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return unique_preserve_order([idea for _score, idea in scored])[:max_items]
-
-
-def _learning_points(tema: str, concepts: list[str], source_ideas: list[str]) -> list[str]:
-    main = concepts[:5] or extract_keywords(tema, max_keywords=5) or ["seguridad"]
-    points = [
-        "Ubica el tema en una decisión concreta de conducción: qué observar, cuándo actuar y qué evitar.",
-        f"Conecta {', '.join(main[:3])} con el riesgo para pasajeros, peatones y otros usuarios.",
-        "Aplica la regla antes de ejecutar la maniobra, no después de detectar el conflicto.",
-    ]
-    if source_ideas:
-        points.append("Contrasta la explicación con las páginas fuente y registra el criterio operativo que se repite.")
-    else:
-        points.append("Cuando la fuente sea escasa, estudia el tema como criterio mínimo de seguridad profesional.")
-    return points
-
-
-def _professional_example(tema: str, concepts: list[str], source_ideas: list[str]) -> str:
-    concept = concepts[0] if concepts else tema.lower()
-    source_hint = (
-        "La situación debe resolverse aplicando la señal principal de la fuente y verificando el entorno inmediato."
-        if source_ideas
-        else "La situación debe resolverse con criterio preventivo y cumplimiento normativo."
-    )
+def _intro_paragraphs(context: LessonContext) -> str:
+    focus = _part_focus(context.tema, context.part_index, context.part_count)
     return (
-        f"Durante un servicio de transporte de pasajeros, aparece una condición vinculada con {concept}. "
-        "El conductor reduce la improvisación: observa la vía, anticipa la reacción de terceros, comunica su maniobra "
-        f"y elige la opción más segura antes de que el riesgo aumente. {source_hint}"
+        f"El tema de {context.tema.lower()} es importante dentro de {context.unidad_nombre.lower()} porque influye directamente en la forma de conducir, anticipar riesgos y proteger a otras personas en la vía.\n\n"
+        f"Para un conductor profesional Clase A2, no basta con conocer la regla en abstracto. El trabajo diario exige {focus}, especialmente cuando se transportan pasajeros en calles con tráfico, paraderos, cruces peatonales y cambios constantes en el entorno."
     )
 
 
-def _frequent_errors(tema: str, concepts: list[str]) -> list[str]:
-    concept = concepts[0] if concepts else tema.lower()
+def _development_paragraphs(context: LessonContext) -> str:
+    return (
+        "Este tema debe entenderse como una herramienta para decidir mejor durante la conducción. En la práctica, se relaciona con la forma en que el conductor observa la vía, controla la velocidad, mantiene distancia y responde ante cambios del tránsito.\n\n"
+        "La tarea del conductor profesional es observar antes de actuar. Eso significa mantener una velocidad compatible con el entorno, conservar una distancia suficiente, mirar más allá del vehículo de adelante y evitar maniobras bruscas que puedan afectar a pasajeros o peatones.\n\n"
+        "Cuando el riesgo aumenta, la respuesta correcta no es improvisar. Primero se reduce la velocidad si corresponde, luego se asegura espacio, se comunica la maniobra con anticipación y se elige la alternativa que cause menos peligro para quienes viajan y para quienes comparten la vía."
+    )
+
+
+def _professional_application(context: LessonContext) -> str:
+    return (
+        "En taxi, transporte escolar, transporte urbano o servicio interurbano, este conocimiento se aplica antes de llegar al punto crítico. Si hay pasajeros subiendo o bajando, peatones cerca de un cruce, vehículos detenidos, lluvia, mala visibilidad o tráfico denso, el conductor debe ajustar su conducción de inmediato.\n\n"
+        "La conducción profesional se diferencia de una conducción improvisada porque anticipa. El conductor no espera a que aparezca una emergencia: lee la vía, calcula espacio, protege a sus pasajeros y evita decisiones que sorprendan a otros usuarios."
+    )
+
+
+def _key_points(context: LessonContext) -> list[str]:
     return [
-        f"Tratar {concept} como una definición aislada y no como una decisión en ruta.",
-        "Esperar a que el riesgo sea evidente antes de ajustar velocidad, distancia o posición.",
-        "Olvidar que en Clase A2 la maniobra afecta también a pasajeros y usuarios vulnerables.",
+        f"El tema de {context.tema.lower()} debe aplicarse a situaciones reales de tránsito, no memorizarse como una definición aislada.",
+        "La velocidad, la distancia y la atención determinan cuánto margen tiene el conductor para reaccionar.",
+        "Transportar pasajeros aumenta la responsabilidad: una frenada o maniobra brusca también puede causar daño dentro del vehículo.",
+        "El conductor debe reconocer el riesgo con anticipación y actuar antes de que el peligro sea evidente.",
+        "La prevención comienza con observar, reducir riesgos y mantener una conducción previsible.",
     ]
 
 
-def _lesson_markdown(
+def _applied_example(context: LessonContext) -> str:
+    return (
+        "Un conductor Clase A2 circula por una avenida con pasajeros a bordo. Más adelante ve un paradero con personas esperando, un vehículo detenido parcialmente sobre la pista y peatones que podrían cruzar entre autos. En lugar de mantener la velocidad o adelantar de inmediato, reduce gradualmente, aumenta la distancia con el vehículo de adelante y prepara una detención segura.\n\n"
+        "Esa decisión protege a los pasajeros, evita una maniobra repentina y le da más tiempo para responder si un peatón cruza o si el vehículo detenido vuelve a incorporarse."
+    )
+
+
+def _frequent_errors(context: LessonContext) -> list[str]:
+    return [
+        "Confiarse porque se conoce la ruta o porque el tráfico parece habitual.",
+        "Mantener la misma velocidad aunque cambien el clima, la visibilidad o la presencia de peatones.",
+        "Reducir la distancia de seguimiento para avanzar más rápido en tráfico denso.",
+        "Reaccionar tarde por mirar el teléfono, conversar demasiado o distraerse con pasajeros.",
+        "Olvidar que una maniobra brusca puede lesionar o asustar a quienes viajan en el vehículo.",
+    ]
+
+
+def _activity(context: LessonContext) -> str:
+    return (
+        f"Imagina que conduces con pasajeros y aparece una situación relacionada con {context.tema.lower()} cerca de un cruce peatonal. ¿Qué observas primero, cómo ajustas la velocidad y qué maniobra evitarías para no aumentar el riesgo?"
+    )
+
+
+def _summary(context: LessonContext) -> str:
+    return (
+        f"El tema de {context.tema.lower()} se estudia para actuar mejor en la vía. Un conductor profesional Clase A2 debe anticipar riesgos, adaptar velocidad y distancia, proteger a sus pasajeros y responder con calma antes de que una situación se transforme en emergencia."
+    )
+
+
+def build_lesson_context(
     title: str,
     tema: str,
     unidad_nombre: str,
@@ -200,59 +325,60 @@ def _lesson_markdown(
     part_count: int,
     segments: list[dict[str, object]],
     sources: list[dict[str, object]],
-) -> str:
-    concepts = _concept_words(tema, segments)
-    concept_phrase = ", ".join(concepts[:5])
-    titles = _segment_titles(segments)
-    title_phrase = ", ".join(titles) if titles else "las páginas trazadas del libro"
-    source_ideas = _source_ideas(tema, segments)
-    source_block = "\n".join(f"- {idea}" for idea in source_ideas) or (
-        "- La fuente disponible se usa como respaldo de páginas y conceptos; se recomienda revisión manual si el mapeo fue de baja confianza."
+) -> LessonContext:
+    return LessonContext(
+        title=title,
+        tema=tema,
+        unidad_nombre=unidad_nombre,
+        part_index=part_index,
+        part_count=part_count,
+        sources=sources,
+        concepts=_concept_words(tema, segments),
+        source_ideas=_source_ideas(tema, segments),
     )
-    key_points = "\n".join(f"- {point}" for point in _learning_points(tema, concepts, source_ideas))
-    frequent_errors = "\n".join(f"- {error}" for error in _frequent_errors(tema, concepts))
-    focus = (
-        "identificar la regla, aplicarla en la vía y anticipar riesgos para pasajeros y terceros"
-        if part_count == 1
-        else f"profundizar el aspecto {part_index + 1} de {part_count}, conectando la norma con decisiones de conducción profesional"
-    )
-    return f"""# {title}
+
+
+def render_student_lesson(context: LessonContext) -> str:
+    key_points = "\n".join(f"- {point}" for point in _key_points(context))
+    frequent_errors = "\n".join(f"- {error}" for error in _frequent_errors(context))
+    return f"""# {context.title}
 
 ## Objetivo
-Al finalizar esta lección, el estudiante podrá explicar {tema.lower()} y usarlo para tomar decisiones seguras durante la conducción profesional Clase A2.
+Al finalizar esta lección, podrás reconocer el riesgo asociado a {context.tema.lower()}, explicar cómo influye en la seguridad vial y aplicar medidas preventivas durante la conducción profesional Clase A2.
 
-## Explicación
-Este contenido pertenece a la unidad {unidad_nombre}. La idea central es {focus}. En la práctica, el conductor debe relacionar la norma con el entorno real: condición de la vía, pasajeros, peatones, estado del vehículo y capacidad de reacción.
+## Introducción
+{_intro_paragraphs(context)}
 
-Los conceptos de referencia para estudiar este tema son: {concept_phrase}. El mapeo tomó como base {title_phrase}. No basta con memorizar una definición; el objetivo es reconocer cuándo aparece la situación, qué conducta exige y qué consecuencia puede tener una decisión tardía o incorrecta.
+## Desarrollo
+{_development_paragraphs(context)}
 
-## Señales desde la fuente
-{source_block}
+## Aplicación en la conducción profesional
+{_professional_application(context)}
 
 ## Puntos clave
 {key_points}
 
-## Ejemplo aplicado a Clase A2
-{_professional_example(tema, concepts, source_ideas)}
+## Ejemplo aplicado
+{_applied_example(context)}
 
 ## Errores frecuentes
 {frequent_errors}
 
 ## Actividad breve
-Piensa en una situación real de conducción profesional donde aparezca {tema.lower()}. Anota tres señales que observarías antes de actuar, la decisión más segura para tus pasajeros y la conducta que evitarías.
+{_activity(context)}
 
 ## Resumen
-{tema} debe estudiarse como una herramienta práctica: permite anticipar riesgos, cumplir la normativa y sostener una conducción profesional responsable a partir de evidencias trazables.
+{_summary(context)}
 
 ## Fuente
-{_source_markdown(sources)}
+{_source_markdown(context.sources)}
 """.strip()
 
 
-def _transcription(title: str, tema: str) -> str:
+def _transcription(context: LessonContext) -> str:
     return (
-        f"En esta lección revisarás {title}. La meta es comprender {tema.lower()} "
-        "y llevarlo a decisiones concretas de conducción profesional Clase A2."
+        f"El tema de {context.tema.lower()} no es solo un concepto del curso. Para un conductor profesional Clase A2, es una guía para anticipar riesgos, cuidar a los pasajeros y actuar con margen antes de que aparezca una emergencia. "
+        "En esta clase veremos cómo observar la vía, ajustar velocidad y distancia, y elegir una respuesta segura frente a situaciones reales de tránsito."
     )
 
 
@@ -282,12 +408,12 @@ def _quiz_content(temas: list[str]) -> dict[str, Any]:
                 "question": f"¿Qué debe priorizar un conductor Clase A2 al aplicar el tema: {tema}?",
                 "options": [
                     "Memorizar la frase sin conectarla con la vía",
-                    "Aplicar la norma con anticipación y criterio de seguridad",
+                    "Anticipar riesgos y proteger a pasajeros y otros usuarios",
                     "Esperar a que otro usuario indique qué hacer",
                     "Ignorar el contexto si ya conoce la ruta",
                 ],
                 "correct_index": 1,
-                "explanation": "La conducción profesional exige anticipar, aplicar la norma y proteger a pasajeros y terceros.",
+                "explanation": "La conducción profesional exige anticipar, aplicar la regla y proteger a pasajeros, peatones y otros usuarios.",
             }
         )
     return {"questions": questions, "passing_score": 75}
@@ -329,6 +455,15 @@ def generate_lessons(
                 sources = _sources_for_segments(part_segments, tema)
                 unit_sources.extend(sources)
                 title = _lesson_title(tema, part_index, part_count)
+                context = build_lesson_context(
+                    title,
+                    tema,
+                    unidad_nombre,
+                    part_index,
+                    part_count,
+                    part_segments,
+                    sources,
+                )
                 lessons.append(
                     {
                         "unidad_orden": orden,
@@ -340,16 +475,8 @@ def generate_lessons(
                         "tipo": "texto",
                         "descripcion": _lesson_description(tema, unidad_nombre),
                         "duracion_min": duration,
-                        "contenido": _lesson_markdown(
-                            title,
-                            tema,
-                            unidad_nombre,
-                            part_index,
-                            part_count,
-                            part_segments,
-                            sources,
-                        ),
-                        "transcripcion": _transcription(title, tema),
+                        "contenido": render_student_lesson(context),
+                        "transcripcion": _transcription(context),
                         "fuentes": sources,
                     }
                 )
@@ -373,3 +500,5 @@ def generate_lessons(
         )
 
     return lessons
+
+

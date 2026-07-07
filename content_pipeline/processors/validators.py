@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,90 @@ class ValidationResult:
     @property
     def is_valid(self) -> bool:
         return not self.errors
+
+
+REQUIRED_STUDENT_SECTIONS = [
+    "## Objetivo",
+    "## Introducción",
+    "## Desarrollo",
+    "## Aplicación en la conducción profesional",
+    "## Puntos clave",
+    "## Ejemplo aplicado",
+    "## Errores frecuentes",
+    "## Actividad breve",
+    "## Resumen",
+    "## Fuente",
+]
+
+FORBIDDEN_PIPELINE_PHRASES = [
+    "mapeo",
+    "segmento",
+    "segment_id",
+    "score",
+    "keywords",
+    "palabras clave",
+    "conceptos de referencia",
+    "conceptos destacados",
+    "el mapeo tomó como base",
+    "el mapeo tomo como base",
+    "señales desde la fuente",
+    "senales desde la fuente",
+    "conducta observable",
+    "aspecto 1 de",
+    "aspecto 2 de",
+    "aspecto 3 de",
+    "aspecto 4 de",
+    "parte generada",
+    "material de referencia asociado",
+    "hash",
+    "fragmento_resumen",
+    "matched_segments",
+    "similitud",
+    "tf-idf",
+    "vector",
+    "top-k",
+]
+
+GENERIC_WARNING_PHRASES = [
+    "tomar decisiones seguras",
+    "conectar la norma",
+    "conducta profesional",
+    "situación vinculada con",
+    "situacion vinculada con",
+]
+
+BAD_KEYWORD_PATTERNS = [
+    "aparece una condición vinculada con mayor",
+    "aparece una condicion vinculada con mayor",
+    "conceptos destacados: mayor",
+    "relaciona accidentes, conductor, transito",
+    "relaciona siniestros, conductor",
+    "conecta mayor",
+    "tratar mayor",
+]
+
+CONCRETE_EXAMPLE_TERMS = [
+    "avenida",
+    "calle",
+    "paradero",
+    "cruce",
+    "peatón",
+    "peaton",
+    "pasajero",
+    "pasajeros",
+    "vehículo detenido",
+    "vehiculo detenido",
+    "taxi",
+    "transporte escolar",
+    "bus",
+    "colectivo",
+    "velocidad",
+    "distancia",
+    "frenar",
+    "detención",
+    "detencion",
+    "maniobra",
+]
 
 
 def validate_expected_inputs(paths: list[Path]) -> None:
@@ -58,6 +143,73 @@ def _content_is_present(value: Any) -> bool:
     return value is not None
 
 
+def _normalize(value: str) -> str:
+    return value.casefold()
+
+
+def _extract_markdown_section(content: str, section_title: str) -> str:
+    pattern = re.compile(
+        rf"^{re.escape(section_title)}\s*$([\s\S]*?)(?=^##\s+|\Z)",
+        flags=re.MULTILINE,
+    )
+    match = pattern.search(content)
+    return match.group(1).strip() if match else ""
+
+
+def _validate_student_content(
+    lesson: dict[str, Any],
+    label: str,
+    errors: list[str],
+    warnings: list[str],
+    pedagogical_failures: dict[str, list[str]],
+    pedagogical_warnings: list[str],
+) -> None:
+    if lesson.get("tipo") != "texto":
+        return
+    content = str(lesson.get("contenido") or "")
+    normalized = _normalize(content)
+    lesson_failures: list[str] = []
+
+    for phrase in FORBIDDEN_PIPELINE_PHRASES:
+        if _normalize(phrase) in normalized:
+            message = f"{label}: ERROR: Lección no publicable. Contiene lenguaje interno del pipeline: \"{phrase}\"."
+            errors.append(message)
+            lesson_failures.append(f"contiene lenguaje interno \"{phrase}\"")
+
+    for section in REQUIRED_STUDENT_SECTIONS:
+        if section.casefold() not in normalized:
+            message = f"{label}: falta sección pedagógica requerida {section}."
+            errors.append(message)
+            lesson_failures.append(f"falta {section}")
+
+    for pattern in BAD_KEYWORD_PATTERNS:
+        if _normalize(pattern) in normalized:
+            message = f"{label}: ERROR: Lección no publicable. Contiene keyword suelta o frase no redactada: \"{pattern}\"."
+            errors.append(message)
+            lesson_failures.append(f"contiene keyword/frase no redactada \"{pattern}\"")
+
+    example = _extract_markdown_section(content, "## Ejemplo aplicado")
+    example_normalized = _normalize(example)
+    if not example or not any(term in example_normalized for term in CONCRETE_EXAMPLE_TERMS):
+        message = f"{label}: ERROR: Lección no publicable. Falta ejemplo aplicado con situación vial concreta."
+        errors.append(message)
+        lesson_failures.append("falta ejemplo vial concreto")
+
+    generic_hits = [phrase for phrase in GENERIC_WARNING_PHRASES if _normalize(phrase) in normalized]
+    if generic_hits:
+        message = f"{label}: contenido posiblemente genérico; revisar frases: {', '.join(generic_hits)}."
+        warnings.append(message)
+        pedagogical_warnings.append(message)
+
+    if len(content.split()) < 220:
+        message = f"{label}: contenido breve para una lección de texto; revisar profundidad pedagógica."
+        warnings.append(message)
+        pedagogical_warnings.append(message)
+
+    if lesson_failures:
+        pedagogical_failures[label] = lesson_failures
+
+
 def _validate_quiz_content(value: Any, label: str, errors: list[str]) -> None:
     if isinstance(value, str):
         try:
@@ -91,6 +243,8 @@ def validate_lessons(
 ) -> ValidationResult:
     errors = validate_manifest(manifest)
     warnings: list[str] = []
+    pedagogical_failures: dict[str, list[str]] = {}
+    pedagogical_warnings: list[str] = []
     unidades = [unidad for unidad in manifest.get("unidades", []) if isinstance(unidad, dict)]
 
     lessons_by_unit: dict[int, list[dict[str, Any]]] = {}
@@ -146,8 +300,17 @@ def validate_lessons(
                     errors.append(f"{label}: fuente {source_index} tiene páginas inválidas.")
         if lesson.get("tipo") == "quiz":
             _validate_quiz_content(lesson.get("contenido"), label, errors)
+        else:
+            _validate_student_content(lesson, label, errors, warnings, pedagogical_failures, pedagogical_warnings)
 
-    report = build_validation_report(manifest, lessons, errors, warnings)
+    report = build_validation_report(
+        manifest,
+        lessons,
+        errors,
+        warnings,
+        pedagogical_failures,
+        pedagogical_warnings,
+    )
     return ValidationResult(errors=errors, warnings=warnings, report=report)
 
 
@@ -156,11 +319,14 @@ def build_validation_report(
     lessons: list[dict[str, Any]],
     errors: list[str],
     warnings: list[str],
+    pedagogical_failures: dict[str, list[str]],
+    pedagogical_warnings: list[str],
 ) -> str:
     unidades = [unidad for unidad in manifest.get("unidades", []) if isinstance(unidad, dict)]
     text_lessons = [lesson for lesson in lessons if lesson.get("tipo") == "texto"]
     quiz_lessons = [lesson for lesson in lessons if lesson.get("tipo") == "quiz"]
     total_minutes = sum(int(lesson.get("duracion_min") or 0) for lesson in lessons)
+    publishable_count = max(0, len(text_lessons) - len(pedagogical_failures))
     lines = [
         "# Reporte de validación A2",
         "",
@@ -182,6 +348,28 @@ def build_validation_report(
         lines.extend(f"- {warning}" for warning in warnings)
     else:
         lines.append("- Ninguna")
+
+    lines.extend([
+        "",
+        "# Validación pedagógica",
+        "",
+        "## Lecciones publicables",
+        f"- {publishable_count} lecciones pasan validación.",
+        "",
+        "## Lecciones no publicables",
+    ])
+    if pedagogical_failures:
+        for label, failures in pedagogical_failures.items():
+            lines.append(f"- {label}: {'; '.join(failures)}.")
+    else:
+        lines.append("- Ninguna")
+
+    lines.extend(["", "## Warnings pedagógicos"])
+    if pedagogical_warnings:
+        lines.extend(f"- {warning}" for warning in pedagogical_warnings)
+    else:
+        lines.append("- Ninguno")
+
     lines.extend(["", "## Duración por unidad"])
     for unidad in unidades:
         orden = int(unidad.get("orden", 0))
