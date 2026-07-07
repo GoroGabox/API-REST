@@ -23,6 +23,11 @@ class Command(BaseCommand):
         parser.add_argument("--manifest", default="content_pipeline/manifests/a2_course_manifest.json")
         parser.add_argument("--lessons", default="data/output/lessons/a2_lessons.json")
         parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument(
+            "--prune",
+            action="store_true",
+            help="Elimina lecciones del curso que no estén en el JSON (destructivo: borra progresos vinculados por CASCADE).",
+        )
 
     def handle(self, *args, **options):
         manifest_path = project_path(options["manifest"])
@@ -32,7 +37,12 @@ class Command(BaseCommand):
         if not lessons_path.exists():
             raise CommandError(f"No existe JSON de lecciones: {lessons_path}")
         try:
-            summary = import_a2_course(read_json(manifest_path), read_json(lessons_path), dry_run=options["dry_run"])
+            summary = import_a2_course(
+                read_json(manifest_path),
+                read_json(lessons_path),
+                dry_run=options["dry_run"],
+                prune=options["prune"],
+            )
         except Exception as exc:
             raise CommandError(str(exc)) from exc
         for line in summary.as_lines():

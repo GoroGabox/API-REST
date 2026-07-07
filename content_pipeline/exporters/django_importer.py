@@ -52,6 +52,7 @@ def import_a2_course(
     manifest: dict[str, Any],
     lessons: list[dict[str, Any]],
     dry_run: bool = False,
+    prune: bool = False,
 ) -> ImportSummary:
     summary = ImportSummary(dry_run=dry_run)
     curso_spec = manifest["curso"]
@@ -75,6 +76,7 @@ def import_a2_course(
             summary.add("fuente_sync", len(lesson.get("fuentes") or []))
         return summary
 
+    touched_lesson_ids: set[int] = set()
     with transaction.atomic():
         curso, created = Curso.objects.update_or_create(
             codigo=curso_spec["codigo"],
@@ -130,6 +132,7 @@ def import_a2_course(
                 for field_name, value in defaults.items():
                     setattr(leccion, field_name, value)
                 leccion.save(update_fields=list(defaults.keys()))
+            touched_lesson_ids.add(leccion.id)
             summary.add("leccion_create" if created else "leccion_update")
 
             LeccionFuente.objects.filter(leccion=leccion).delete()
@@ -144,5 +147,10 @@ def import_a2_course(
                     hash_fragmento=source.get("hash_fragmento", ""),
                 )
                 summary.add("fuente_create")
+
+        if prune:
+            stale = Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)
+            summary.add("leccion_delete", stale.count())
+            stale.delete()
 
     return summary
