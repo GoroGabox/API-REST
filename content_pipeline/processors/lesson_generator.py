@@ -313,10 +313,14 @@ def _scored_sentences(
     text: str,
     part_index: int,
     concepts: list[str],
+    part_count: int = 1,
 ) -> list[tuple[float, str]]:
     if not text.strip():
         return []
-    focus_terms = _PART_FOCUS_TERMS[min(part_index, len(_PART_FOCUS_TERMS) - 1)]
+    if part_count <= 1:
+        focus_terms = set().union(*_PART_FOCUS_TERMS)
+    else:
+        focus_terms = _PART_FOCUS_TERMS[min(part_index, len(_PART_FOCUS_TERMS) - 1)]
     tema_terms = {
         _strip_accents(term).lower()
         for term in extract_keywords(tema, max_keywords=8)
@@ -368,23 +372,26 @@ def _development_paragraphs(context: LessonContext) -> str:
         context.source_text,
         context.part_index,
         context.concepts,
+        context.part_count,
     )
     if len(scored) < 3:
         return _GENERIC_DEVELOPMENT
-    top = [sentence for _score, sentence in scored[:6]]
-    per_paragraph = max(1, len(top) // 3)
+    target_sentences = 12 if context.part_count <= 1 else 6
+    target_paragraphs = 4 if context.part_count <= 1 else 3
+    top = [sentence for _score, sentence in scored[:target_sentences]]
+    per_paragraph = max(1, len(top) // target_paragraphs)
     paragraphs: list[str] = []
     for start in range(0, len(top), per_paragraph):
         chunk = top[start : start + per_paragraph]
         if chunk:
             paragraphs.append(" ".join(chunk))
-        if len(paragraphs) == 3:
+        if len(paragraphs) == target_paragraphs:
             break
     if len(paragraphs) < 2:
         return _GENERIC_DEVELOPMENT
     lead = (
-        f"En esta parte el foco está en {context.tema.lower()}. "
-        "Los siguientes puntos del libro guían las decisiones del conductor profesional Clase A2."
+        f"En esta lección revisamos lo esencial de {context.tema.lower()}. "
+        "Los siguientes puntos, tomados del libro, guían las decisiones del conductor profesional Clase A2."
     )
     body_paragraphs = "\n\n".join(paragraphs)
     closer = (
@@ -431,6 +438,7 @@ def _applied_example(context: LessonContext) -> str:
         context.source_text,
         context.part_index,
         context.concepts,
+        context.part_count,
     )
     scenario_lines = [
         cleaned for _score, cleaned in scored
@@ -612,41 +620,36 @@ def generate_lessons(
         for tema in temas:
             mapping = mapping_by_topic.get((orden, tema))
             matched_segments = _matched_segments(mapping, segment_by_id)
-            desired_parts = _clamp(ceil(minutes_per_topic / 35), 1, 4)
-            part_count = min(desired_parts, max(1, len(matched_segments)))
-            duration = _clamp(round(minutes_per_topic / part_count), 10, 35)
-
-            for part_index in range(part_count):
-                part_segments = _segments_for_part(matched_segments, part_index, part_count)
-                sources = _sources_for_segments(part_segments, tema)
-                unit_sources.extend(sources)
-                title = _lesson_title(tema, part_index, part_count)
-                context = build_lesson_context(
-                    title,
-                    tema,
-                    unidad_nombre,
-                    part_index,
-                    part_count,
-                    part_segments,
-                    sources,
-                )
-                lessons.append(
-                    {
-                        "unidad_orden": orden,
-                        "unidad_nombre": unidad_nombre,
-                        "categoria": categoria,
-                        "tema_regulatorio": tema,
-                        "nombre": title,
-                        "posicion": position,
-                        "tipo": "texto",
-                        "descripcion": _lesson_description(tema, unidad_nombre),
-                        "duracion_min": duration,
-                        "contenido": render_student_lesson(context),
-                        "transcripcion": _transcription(context),
-                        "fuentes": sources,
-                    }
-                )
-                position += 1
+            sources = _sources_for_segments(matched_segments, tema)
+            unit_sources.extend(sources)
+            duration = _clamp(round(minutes_per_topic), 15, 60)
+            title = _lesson_title(tema, 0, 1)
+            context = build_lesson_context(
+                title,
+                tema,
+                unidad_nombre,
+                0,
+                1,
+                matched_segments,
+                sources,
+            )
+            lessons.append(
+                {
+                    "unidad_orden": orden,
+                    "unidad_nombre": unidad_nombre,
+                    "categoria": categoria,
+                    "tema_regulatorio": tema,
+                    "nombre": title,
+                    "posicion": position,
+                    "tipo": "texto",
+                    "descripcion": _lesson_description(tema, unidad_nombre),
+                    "duracion_min": duration,
+                    "contenido": render_student_lesson(context),
+                    "transcripcion": _transcription(context),
+                    "fuentes": sources,
+                }
+            )
+            position += 1
 
         lessons.append(
             {
