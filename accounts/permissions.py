@@ -58,6 +58,20 @@ class ReadOnlyOrAdmin(permissions.BasePermission):
         return is_admin(request.user)
 
 
+class PublicReadOrAdmin(permissions.BasePermission):
+    """GET público (anónimo permitido); escritura solo admin.
+
+    Para superficies del catálogo que alimentan la landing (/explore,
+    detalle de curso público) — deben ser indexables y visibles sin
+    sesión. El contenido premium (lecciones, ejercicios, recursos) sigue
+    detrás de ReadOnlyOrAdmin.
+    """
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return bool(request.user and request.user.is_authenticated and is_admin(request.user))
+
+
 class IsAdminOrDirectorOfSchool(permissions.BasePermission):
     """Admin pasa siempre. Director solo si el objeto pertenece a su escuela.
 

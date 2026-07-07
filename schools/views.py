@@ -6,7 +6,7 @@ from django.db import transaction as db_transaction
 from django.db.models import Prefetch
 from django_filters.rest_framework import DjangoFilterBackend
 
-from accounts.permissions import ReadOnlyOrAdmin, is_admin, is_director, is_estudiante
+from accounts.permissions import ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
 from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso
 from .serializers import (
     EscuelaSerializer,
@@ -417,7 +417,7 @@ class CursoViewSet(viewsets.ModelViewSet):
     serializer_class = CursoSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['costo']
-    permission_classes = [ReadOnlyOrAdmin]
+    permission_classes = [PublicReadOrAdmin]
 
     @action(detail=True, methods=['get'], url_path='units')
     def units(self, request, pk=None):
@@ -487,7 +487,7 @@ class GlosarioViewSet(viewsets.ModelViewSet):
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
-    permission_classes = [ReadOnlyOrAdmin]
+    permission_classes = [PublicReadOrAdmin]
 
 
 class RecursoViewSet(viewsets.ModelViewSet):
