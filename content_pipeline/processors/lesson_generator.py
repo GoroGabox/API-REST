@@ -82,6 +82,7 @@ class LessonContext:
     sources: list[dict[str, object]]
     concepts: list[str]
     source_ideas: list[str]
+    source_text: str
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
@@ -141,12 +142,36 @@ def _sentence_candidates(segments: list[dict[str, object]]) -> list[str]:
     return candidates
 
 
+_HEADER_PATTERNS = [
+    re.compile(r"\b\d{1,3}\s+Libro del Nuevo Conductor Profesional\s*-\s*CONASET\b", re.IGNORECASE),
+    re.compile(r"\bCap[ií]tulo\s+\d+\b", re.IGNORECASE),
+    re.compile(r"\bFuente:\s*[^.]+", re.IGNORECASE),
+    re.compile(r"\bElaboraci[oó]n:\s*CONASET[^.]*", re.IGNORECASE),
+    re.compile(r"\bCifras\s+promedio\s+a[nñ]os?\s+\d{4}\s*-\s*\d{4}\b", re.IGNORECASE),
+    re.compile(
+        r"\b\d{1,3}\s+(?:Generalidades de seguridad vial|Legislaci[oó]n de tr[aá]nsito|"
+        r"Normativa\s+[a-zá-ú\s]{2,40}|Reglamentaci[oó]n[a-zá-ú\s]{0,40}|"
+        r"Primeros Auxilios|El Conductor(?:\s+y su seguridad)?|El Veh[ií]culo)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+_INLINE_ALLCAPS_HEADER_RE = re.compile(
+    r"\b[A-ZÁÉÍÓÚÑÜ]{3,}(?:\s+[A-ZÁÉÍÓÚÑÜ]{2,}){1,6}\b"
+)
+
+
 def _clean_sentence(sentence: str) -> str:
-    sentence = re.sub(r"\b\d{1,3}\s+Libro del Nuevo Conductor Profesional\s+-\s+CONASET\b", "", sentence)
-    sentence = re.sub(r"\bCap[ií]tulo\s+\d+\b", "", sentence, flags=re.IGNORECASE)
-    sentence = re.sub(r"\bFuente:\s*[^.]+", "", sentence, flags=re.IGNORECASE)
-    sentence = re.sub(r"\s+", " ", sentence).strip(" -")
-    return shorten_text(sentence, 180)
+    sentence = re.sub(r"­\s*", "", sentence)
+    sentence = sentence.replace("�", "")
+    sentence = re.sub(r"(\w)[‐‑–-]\s+(\w)", r"\1\2", sentence)
+    for pattern in _HEADER_PATTERNS:
+        sentence = pattern.sub("", sentence)
+    sentence = _INLINE_ALLCAPS_HEADER_RE.sub("", sentence)
+    sentence = re.sub(r"•\s*", "", sentence)
+    sentence = re.sub(r"\s+", " ", sentence).strip(" -•·")
+    return sentence
 
 
 def _concept_words(tema: str, segments: list[dict[str, object]]) -> list[str]:
@@ -263,12 +288,111 @@ def _intro_paragraphs(context: LessonContext) -> str:
     )
 
 
+_GENERIC_DEVELOPMENT = (
+    "Este tema debe entenderse como una herramienta para decidir mejor durante la conducción. En la práctica, se relaciona con la forma en que el conductor observa la vía, controla la velocidad, mantiene distancia y responde ante cambios del tránsito.\n\n"
+    "La tarea del conductor profesional es observar antes de actuar. Eso significa mantener una velocidad compatible con el entorno, conservar una distancia suficiente, mirar más allá del vehículo de adelante y evitar maniobras bruscas que puedan afectar a pasajeros o peatones.\n\n"
+    "Cuando el riesgo aumenta, la respuesta correcta no es improvisar. Primero se reduce la velocidad si corresponde, luego se asegura espacio, se comunica la maniobra con anticipación y se elige la alternativa que cause menos peligro para quienes viajan y para quienes comparten la vía."
+)
+
+
+_PART_FOCUS_TERMS = [
+    {"riesgo", "aparece", "situacion", "situaciones", "peligro"},
+    {"factor", "factores", "causa", "causas", "provoca", "aumenta", "aumentan"},
+    {"medida", "medidas", "preventiv", "prevenir", "evitar", "prevencion"},
+    {"responsabilidad", "responsable", "pasajero", "pasajeros", "vulnerable", "vulnerables", "peaton", "peatones"},
+]
+
+
+def _strip_accents(text: str) -> str:
+    replacements = str.maketrans("áéíóúüÁÉÍÓÚÜñÑ", "aeiouuAEIOUUnN")
+    return text.translate(replacements)
+
+
+def _scored_sentences(
+    tema: str,
+    text: str,
+    part_index: int,
+    concepts: list[str],
+) -> list[tuple[float, str]]:
+    if not text.strip():
+        return []
+    focus_terms = _PART_FOCUS_TERMS[min(part_index, len(_PART_FOCUS_TERMS) - 1)]
+    tema_terms = {
+        _strip_accents(term).lower()
+        for term in extract_keywords(tema, max_keywords=8)
+        if len(term) >= 4 and term not in LOW_VALUE_CONCEPTS
+    }
+    concept_terms = {
+        _strip_accents(term).lower()
+        for term in concepts
+        if len(term) >= 4 and term not in LOW_VALUE_CONCEPTS
+    }
+    scored: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    normalized = re.sub(r"\s+", " ", text).strip()
+    for sentence in SENTENCE_SPLIT_RE.split(normalized):
+        sentence = sentence.strip(" -")
+        if not (55 <= len(sentence) <= 320) or sentence.endswith(":"):
+            continue
+        if sentence.isupper():
+            continue
+        cleaned = _clean_sentence(sentence)
+        if len(cleaned) < 50:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lowered = _strip_accents(cleaned).lower()
+        tema_matches = sum(1 for term in tema_terms if term in lowered)
+        concept_matches = sum(1 for term in concept_terms if term in lowered)
+        road_matches = sum(1 for term in ROAD_CONTEXT_TERMS if _strip_accents(term) in lowered)
+        focus_matches = sum(1 for term in focus_terms if term in lowered)
+        if tema_matches + concept_matches + road_matches + focus_matches == 0:
+            continue
+        score = (
+            tema_matches * 14
+            + focus_matches * 10
+            + concept_matches * 6
+            + road_matches * 5
+            + min(len(cleaned), 200) * 0.05
+        )
+        scored.append((score, cleaned))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored
+
+
 def _development_paragraphs(context: LessonContext) -> str:
-    return (
-        "Este tema debe entenderse como una herramienta para decidir mejor durante la conducción. En la práctica, se relaciona con la forma en que el conductor observa la vía, controla la velocidad, mantiene distancia y responde ante cambios del tránsito.\n\n"
-        "La tarea del conductor profesional es observar antes de actuar. Eso significa mantener una velocidad compatible con el entorno, conservar una distancia suficiente, mirar más allá del vehículo de adelante y evitar maniobras bruscas que puedan afectar a pasajeros o peatones.\n\n"
-        "Cuando el riesgo aumenta, la respuesta correcta no es improvisar. Primero se reduce la velocidad si corresponde, luego se asegura espacio, se comunica la maniobra con anticipación y se elige la alternativa que cause menos peligro para quienes viajan y para quienes comparten la vía."
+    scored = _scored_sentences(
+        context.tema,
+        context.source_text,
+        context.part_index,
+        context.concepts,
     )
+    if len(scored) < 3:
+        return _GENERIC_DEVELOPMENT
+    top = [sentence for _score, sentence in scored[:6]]
+    per_paragraph = max(1, len(top) // 3)
+    paragraphs: list[str] = []
+    for start in range(0, len(top), per_paragraph):
+        chunk = top[start : start + per_paragraph]
+        if chunk:
+            paragraphs.append(" ".join(chunk))
+        if len(paragraphs) == 3:
+            break
+    if len(paragraphs) < 2:
+        return _GENERIC_DEVELOPMENT
+    lead = (
+        f"En esta parte el foco está en {context.tema.lower()}. "
+        "Los siguientes puntos del libro guían las decisiones del conductor profesional Clase A2."
+    )
+    body_paragraphs = "\n\n".join(paragraphs)
+    closer = (
+        "Traducido a la conducción diaria: observar antes de actuar, ajustar velocidad al entorno, "
+        "mantener distancia suficiente y comunicar cada maniobra con anticipación para proteger a "
+        "pasajeros y a otros usuarios de la vía."
+    )
+    return f"{lead}\n\n{body_paragraphs}\n\n{closer}"
 
 
 def _professional_application(context: LessonContext) -> str:
@@ -288,11 +412,51 @@ def _key_points(context: LessonContext) -> list[str]:
     ]
 
 
+_GENERIC_APPLIED_EXAMPLE = (
+    "Un conductor Clase A2 circula por una avenida con pasajeros a bordo. Más adelante ve un paradero con personas esperando, un vehículo detenido parcialmente sobre la pista y peatones que podrían cruzar entre autos. En lugar de mantener la velocidad o adelantar de inmediato, reduce gradualmente, aumenta la distancia con el vehículo de adelante y prepara una detención segura.\n\n"
+    "Esa decisión protege a los pasajeros, evita una maniobra repentina y le da más tiempo para responder si un peatón cruza o si el vehículo detenido vuelve a incorporarse."
+)
+
+
+_SCENARIO_HINT_TERMS = {
+    "conductor", "pasajero", "pasajeros", "peaton", "peatones", "cruce", "paradero",
+    "avenida", "calle", "veh", "distancia", "velocidad", "maniobra", "detencion",
+    "lluvia", "visibilidad", "trafico", "adelantar", "frenado", "freno",
+}
+
+
 def _applied_example(context: LessonContext) -> str:
-    return (
-        "Un conductor Clase A2 circula por una avenida con pasajeros a bordo. Más adelante ve un paradero con personas esperando, un vehículo detenido parcialmente sobre la pista y peatones que podrían cruzar entre autos. En lugar de mantener la velocidad o adelantar de inmediato, reduce gradualmente, aumenta la distancia con el vehículo de adelante y prepara una detención segura.\n\n"
-        "Esa decisión protege a los pasajeros, evita una maniobra repentina y le da más tiempo para responder si un peatón cruza o si el vehículo detenido vuelve a incorporarse."
+    scored = _scored_sentences(
+        context.tema,
+        context.source_text,
+        context.part_index,
+        context.concepts,
     )
+    scenario_lines = [
+        cleaned for _score, cleaned in scored
+        if sum(1 for term in _SCENARIO_HINT_TERMS if term in _strip_accents(cleaned).lower()) >= 2
+    ]
+    if not scenario_lines:
+        return _GENERIC_APPLIED_EXAMPLE
+    setup = scenario_lines[0]
+    decision = scenario_lines[1] if len(scenario_lines) > 1 else None
+    first_paragraph = (
+        f"Un conductor profesional Clase A2 se encuentra con una situación relacionada con "
+        f"{context.tema.lower()}. {setup}"
+    )
+    if decision:
+        second_paragraph = (
+            f"Frente a ese escenario, la conducta esperada del conductor se apoya en el libro: {decision} "
+            "La decisión protege a pasajeros y a otros usuarios, y da más margen para responder si el "
+            "riesgo se materializa."
+        )
+    else:
+        second_paragraph = (
+            "Frente a ese escenario, la respuesta esperada es reducir la velocidad si corresponde, "
+            "aumentar la distancia con el vehículo de adelante y comunicar cualquier maniobra con "
+            "anticipación. La decisión protege a pasajeros y da margen para reaccionar."
+        )
+    return f"{first_paragraph}\n\n{second_paragraph}"
 
 
 def _frequent_errors(context: LessonContext) -> list[str]:
@@ -335,6 +499,7 @@ def build_lesson_context(
         sources=sources,
         concepts=_concept_words(tema, segments),
         source_ideas=_source_ideas(tema, segments),
+        source_text=_combined_text(segments),
     )
 
 
@@ -447,7 +612,8 @@ def generate_lessons(
         for tema in temas:
             mapping = mapping_by_topic.get((orden, tema))
             matched_segments = _matched_segments(mapping, segment_by_id)
-            part_count = _clamp(ceil(minutes_per_topic / 35), 1, 4)
+            desired_parts = _clamp(ceil(minutes_per_topic / 35), 1, 4)
+            part_count = min(desired_parts, max(1, len(matched_segments)))
             duration = _clamp(round(minutes_per_topic / part_count), 10, 35)
 
             for part_index in range(part_count):
