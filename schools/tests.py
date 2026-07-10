@@ -391,3 +391,89 @@ class PasswordResetInviteTests(APITestCase):
         self.client.force_authenticate(self.admin)
         r = self.client.post("/api/v1/accounts/password-reset-invite/99999/")
         self.assertEqual(r.status_code, 404)
+
+
+class EjercicioBulkUploadTests(APITestCase):
+    """Carga masiva de ejercicios desde .xlsx (bulk-upload / bulk-template)."""
+
+    def setUp(self):
+        from schools.models import Curso, Leccion
+        self.admin = make_user("adm_bulk@x.com", is_admin=True)
+        self.estudiante = make_user("est_bulk@x.com", is_estudiante=True)
+        self.cat = Categoria.objects.create(nombre="Señales")
+        self.curso = Curso.objects.create(nombre="Clase B", codigo="B1")
+        self.leccion = Leccion.objects.create(
+            curso=self.curso, categoria=self.cat, nombre="L1", posicion=1,
+        )
+
+    def _xlsx(self, rows):
+        import io, openpyxl
+        from schools.views import BULK_COLUMNS
+        wb = openpyxl.Workbook(); ws = wb.active
+        ws.append(BULK_COLUMNS)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return buf
+
+    def _upload(self, buf, dry_run=False):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        f = SimpleUploadedFile(
+            "e.xlsx", buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        data = {"file": f}
+        if dry_run:
+            data["dry_run"] = "true"
+        return self.client.post(
+            "/api/v1/schools/exercices/bulk-upload/", data, format="multipart",
+        )
+
+    def test_crea_ejercicios_mapeando_letra_a_texto(self):
+        self.client.force_authenticate(self.admin)
+        buf = self._xlsx([
+            [1, "Pregunta 1", "A opt", "B opt", "C opt", "D opt", "NULL", "NULL",
+             "D", self.cat.id, self.curso.id, "NULL", "http://placeholder.url"],
+        ])
+        r = self._upload(buf)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["created"], 1)
+        ej = Ejercicio.objects.get(pregunta="Pregunta 1")
+        self.assertEqual(ej.respuesta, "D opt")   # letra D → texto de opcion_d
+        self.assertIsNone(ej.leccion_id)          # "NULL" → None
+        self.assertEqual(ej.opcion_e, None)
+
+    def test_dry_run_no_escribe(self):
+        self.client.force_authenticate(self.admin)
+        buf = self._xlsx([
+            [1, "Solo validar", "A", "B", "", "", "", "", "A", self.cat.id, "NULL", "NULL", ""],
+        ])
+        r = self._upload(buf, dry_run=True)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(r.data["dry_run"])
+        self.assertEqual(r.data["would_create"], 1)
+        self.assertEqual(Ejercicio.objects.filter(pregunta="Solo validar").count(), 0)
+
+    def test_reporta_errores_y_omite_filas_invalidas(self):
+        self.client.force_authenticate(self.admin)
+        buf = self._xlsx([
+            ["", "Sin categoria", "A", "B", "", "", "", "", "A", 999999, "NULL", "NULL", ""],
+            ["", "Buena", "A", "B", "", "", "", "", "B", self.cat.id, "NULL", "NULL", ""],
+        ])
+        r = self._upload(buf)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["created"], 1)
+        self.assertEqual(r.data["errors"], 1)
+
+    def test_estudiante_no_autorizado(self):
+        self.client.force_authenticate(self.estudiante)
+        buf = self._xlsx([[1, "x", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""]])
+        r = self._upload(buf)
+        self.assertIn(r.status_code, (401, 403))
+        self.assertEqual(Ejercicio.objects.count(), 0)
+
+    def test_template_descarga_xlsx(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.get("/api/v1/schools/exercices/bulk-template/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("spreadsheetml", r["Content-Type"])

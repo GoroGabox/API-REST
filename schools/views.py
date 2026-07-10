@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -9,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db import transaction as db_transaction
 from django.db.models import Prefetch
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
@@ -35,6 +36,54 @@ LECCION_ORDERING = ('curso_id', 'unidad__orden', 'unidad_id', 'posicion', 'id')
 # Todo lo demás (basic_key, professional_key, basic_access, professional_access)
 # queda reservado a admin y procesos internos (pagos).
 DIRECTOR_EDITABLE_ESCUELA_FIELDS = {"nombre", "email", "telefono", "direccion"}
+
+
+# ---------------------------------------------------------------------------
+# Carga masiva de ejercicios (EjercicioViewSet.bulk_upload / bulk_template)
+# ---------------------------------------------------------------------------
+# Orden canónico de columnas de la plantilla .xlsx.
+BULK_COLUMNS = [
+    "id", "pregunta",
+    "opcion_a", "opcion_b", "opcion_c", "opcion_d", "opcion_e", "opcion_f",
+    "respuesta", "categoria_id", "curso_id", "leccion_id", "imagen",
+]
+BULK_REQUIRED_COLUMNS = ["pregunta", "opcion_a", "opcion_b", "respuesta", "categoria_id"]
+# Alias aceptados en la cabecera → nombre canónico.
+BULK_ALIASES = {
+    "categoria": "categoria_id", "categoria_id": "categoria_id",
+    "curso": "curso_id", "curso_id": "curso_id",
+    "leccion": "leccion_id", "leccion_id": "leccion_id",
+    "pregunta_texto": "pregunta", "imagen_url": "imagen",
+}
+BULK_UPLOAD_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _norm_header(name):
+    """Normaliza un nombre de columna: minúsculas, sin espacios/acentos raros."""
+    if name is None:
+        return ""
+    return str(name).strip().lower().replace(" ", "_")
+
+
+def _clean(value):
+    """Celda → str limpio o None. Trata "", "NULL", "-", "N/A" como vacío."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "" or s.upper() in ("NULL", "NONE", "N/A", "-", "—"):
+        return None
+    return s
+
+
+def _as_int(value):
+    """Celda → int o None (tolera floats de Excel como 13.0 y strings)."""
+    s = _clean(value)
+    if s is None:
+        return None
+    try:
+        return int(float(s))
+    except (TypeError, ValueError):
+        return None
 
 
 class _EscuelaScopedPermission(drf_permissions.BasePermission):
@@ -490,6 +539,247 @@ class EjercicioViewSet(viewsets.ModelViewSet):
         if is_admin(self.request.user):
             return EjercicioConRespuestaSerializer
         return EjercicioSerializer
+
+    # ------------------------------------------------------------------
+    # Carga masiva desde .xlsx
+    # ------------------------------------------------------------------
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[IsAdmin],
+    )
+    def bulk_template(self, request):
+        """GET /api/v1/schools/exercices/bulk-template/
+
+        Devuelve un .xlsx con la cabecera exacta que espera `bulk_upload`
+        más una fila de ejemplo, para que el admin no tenga que adivinar el
+        formato. Descarga como adjunto.
+        """
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "ejercicios"
+        ws.append(BULK_COLUMNS)
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="4F46E5")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        ws.append([
+            1,
+            "Su vehículo se desvía hacia un lado cuando usted frena. Usted debería:",
+            "Cambiar los neumáticos de un lado hacia el otro y viceversa.",
+            "Bombear el pedal al frenar.",
+            "Usar su freno de mano.",
+            "Consultar con su mecánico lo antes posible.",
+            "NULL", "NULL", "D", 13, 1, "NULL", "http://placeholder.url",
+        ])
+        # Anchos legibles.
+        widths = [5, 60, 30, 30, 30, 30, 12, 12, 10, 12, 10, 12, 24]
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+        )
+        resp["Content-Disposition"] = (
+            'attachment; filename="plantilla_ejercicios.xlsx"'
+        )
+        return resp
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-upload",
+        permission_classes=[IsAdmin],
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def bulk_upload(self, request):
+        """POST /api/v1/schools/exercices/bulk-upload/
+
+        multipart/form-data:
+          - file: .xlsx con las columnas de `bulk_template`.
+          - dry_run: "true"|"1" → valida y reporta sin escribir en BD.
+
+        `respuesta` acepta la LETRA de la opción correcta (A-F) o el texto
+        exacto de una opción; se persiste como el TEXTO (coherente con el
+        CRUD y con la corrección del quiz en la app).
+
+        Responde 200 con un resumen por fila; las filas inválidas se omiten
+        (no abortan el lote) salvo que se pida `dry_run`.
+        """
+        import openpyxl
+
+        upload = request.FILES.get("file") or request.FILES.get("archivo")
+        if not upload:
+            return Response(
+                {"detail": "Adjunta el archivo .xlsx en el campo 'file'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not str(upload.name).lower().endswith((".xlsx", ".xlsm")):
+            return Response(
+                {"detail": "El archivo debe ser .xlsx."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if upload.size > BULK_UPLOAD_MAX_BYTES:
+            return Response(
+                {"detail": f"El archivo supera {BULK_UPLOAD_MAX_BYTES // (1024 * 1024)} MB."},
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+        dry_run = str(request.data.get("dry_run", "")).lower() in ("true", "1", "on", "yes")
+
+        try:
+            wb = openpyxl.load_workbook(upload, read_only=True, data_only=True)
+        except Exception:
+            return Response(
+                {"detail": "No pudimos leer el .xlsx (¿archivo corrupto?)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ws = wb.active
+        rows = ws.iter_rows(values_only=True)
+
+        try:
+            header = next(rows)
+        except StopIteration:
+            return Response({"detail": "El archivo está vacío."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mapa nombre_columna -> índice, tolerante a orden / mayúsculas / alias.
+        col_index = {}
+        for i, name in enumerate(header):
+            key = _norm_header(name)
+            if key:
+                col_index[BULK_ALIASES.get(key, key)] = i
+        missing = [c for c in BULK_REQUIRED_COLUMNS if c not in col_index]
+        if missing:
+            wb.close()
+            return Response(
+                {"detail": f"Faltan columnas obligatorias: {', '.join(missing)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def cell(row, name):
+            idx = col_index.get(name)
+            return row[idx] if idx is not None and idx < len(row) else None
+
+        # Lookups para validar FKs sin una consulta por fila.
+        valid_categorias = set(Categoria.objects.values_list("id", flat=True))
+        valid_cursos = set(Curso.objects.values_list("id", flat=True))
+        valid_lecciones = set(Leccion.objects.values_list("id", flat=True))
+
+        results = []
+        to_create = []
+        seen_preguntas = set()
+
+        for offset, row in enumerate(rows):
+            excel_row = offset + 2  # +1 cabecera, +1 base-1
+            if row is None or all(_clean(v) is None for v in row):
+                continue  # fila totalmente vacía
+
+            pregunta = _clean(cell(row, "pregunta"))
+            opciones = {k: _clean(cell(row, f"opcion_{k}")) for k in ("a", "b", "c", "d", "e", "f")}
+            errors = []
+
+            if not pregunta:
+                errors.append("pregunta vacía")
+            if not opciones["a"]:
+                errors.append("opcion_a obligatoria")
+            if not opciones["b"]:
+                errors.append("opcion_b obligatoria")
+
+            # Categoría (obligatoria).
+            categoria_id = _as_int(cell(row, "categoria_id"))
+            if categoria_id is None:
+                errors.append("categoria_id obligatoria")
+            elif categoria_id not in valid_categorias:
+                errors.append(f"categoria_id {categoria_id} no existe")
+
+            # Curso / lección (opcionales pero validados si vienen).
+            curso_id = _as_int(cell(row, "curso_id"))
+            if curso_id is not None and curso_id not in valid_cursos:
+                errors.append(f"curso_id {curso_id} no existe")
+                curso_id = None
+            leccion_id = _as_int(cell(row, "leccion_id"))
+            if leccion_id is not None and leccion_id not in valid_lecciones:
+                errors.append(f"leccion_id {leccion_id} no existe")
+                leccion_id = None
+
+            # Respuesta: letra A-F o texto exacto de una opción.
+            respuesta_text = None
+            raw_resp = _clean(cell(row, "respuesta"))
+            if not raw_resp:
+                errors.append("respuesta vacía")
+            else:
+                letter = str(raw_resp).strip().lower()
+                if letter in opciones and opciones[letter]:
+                    respuesta_text = opciones[letter]
+                else:
+                    match = next(
+                        (v for v in opciones.values() if v and v.lower() == str(raw_resp).lower()),
+                        None,
+                    )
+                    if match:
+                        respuesta_text = match
+                    else:
+                        errors.append(f"respuesta '{raw_resp}' no coincide con ninguna opción")
+
+            # Duplicado dentro del mismo archivo (aviso, no error).
+            dup = pregunta and pregunta.lower() in seen_preguntas
+            if pregunta:
+                seen_preguntas.add(pregunta.lower())
+
+            if errors:
+                results.append({"row": excel_row, "status": "error", "pregunta": (pregunta or "")[:80], "errors": errors})
+                continue
+
+            imagen = _clean(cell(row, "imagen")) or "http://placeholder.url"
+            obj = Ejercicio(
+                categoria_id=categoria_id,
+                curso_id=curso_id,
+                leccion_id=leccion_id,
+                pregunta=pregunta,
+                imagen=imagen,
+                opcion_a=opciones["a"], opcion_b=opciones["b"], opcion_c=opciones["c"],
+                opcion_d=opciones["d"], opcion_e=opciones["e"], opcion_f=opciones["f"],
+                respuesta=respuesta_text,
+            )
+            to_create.append((excel_row, pregunta, dup, obj))
+
+        wb.close()
+
+        created = 0
+        if not dry_run and to_create:
+            with db_transaction.atomic():
+                Ejercicio.objects.bulk_create([o for _, _, _, o in to_create])
+            created = len(to_create)
+
+        for excel_row, pregunta, dup, obj in to_create:
+            results.append({
+                "row": excel_row,
+                "status": "duplicate" if dup else ("ready" if dry_run else "created"),
+                "pregunta": pregunta[:80],
+                "id": obj.pk if not dry_run else None,
+            })
+        results.sort(key=lambda r: r["row"])
+
+        error_count = sum(1 for r in results if r["status"] == "error")
+        return Response({
+            "dry_run": dry_run,
+            "total_rows": len(results),
+            "created": created,
+            "would_create": len(to_create) if dry_run else 0,
+            "errors": error_count,
+            "results": results,
+        }, status=status.HTTP_200_OK)
 
 
 class GlosarioViewSet(viewsets.ModelViewSet):
