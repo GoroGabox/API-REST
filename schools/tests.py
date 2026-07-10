@@ -416,7 +416,7 @@ class EjercicioBulkUploadTests(APITestCase):
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
         return buf
 
-    def _upload(self, buf, dry_run=False):
+    def _upload(self, buf, dry_run=False, skip_duplicates=False):
         from django.core.files.uploadedfile import SimpleUploadedFile
         f = SimpleUploadedFile(
             "e.xlsx", buf.getvalue(),
@@ -425,6 +425,8 @@ class EjercicioBulkUploadTests(APITestCase):
         data = {"file": f}
         if dry_run:
             data["dry_run"] = "true"
+        if skip_duplicates:
+            data["skip_duplicates"] = "true"
         return self.client.post(
             "/api/v1/schools/exercices/bulk-upload/", data, format="multipart",
         )
@@ -471,6 +473,32 @@ class EjercicioBulkUploadTests(APITestCase):
         r = self._upload(buf)
         self.assertIn(r.status_code, (401, 403))
         self.assertEqual(Ejercicio.objects.count(), 0)
+
+    def test_skip_duplicates_salta_repetidos_en_bd_y_archivo(self):
+        self.client.force_authenticate(self.admin)
+        Ejercicio.objects.create(categoria=self.cat, pregunta="Ya existe", opcion_a="a", opcion_b="b", respuesta="a")
+        buf = self._xlsx([
+            ["", "Ya existe", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""],  # dup en BD
+            ["", "Nueva P", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""],     # nueva
+            ["", "Nueva P", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""],     # dup en archivo
+        ])
+        r = self._upload(buf, skip_duplicates=True)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["created"], 1)   # solo "Nueva P" una vez
+        self.assertEqual(r.data["skipped"], 2)
+        self.assertEqual(Ejercicio.objects.filter(pregunta="Nueva P").count(), 1)
+        self.assertEqual(Ejercicio.objects.filter(pregunta="Ya existe").count(), 1)
+
+    def test_sin_flag_permite_duplicados(self):
+        self.client.force_authenticate(self.admin)
+        buf = self._xlsx([
+            ["", "Repe", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""],
+            ["", "Repe", "a", "b", "", "", "", "", "A", self.cat.id, "", "", ""],
+        ])
+        r = self._upload(buf)  # sin skip_duplicates
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["created"], 2)
+        self.assertEqual(Ejercicio.objects.filter(pregunta="Repe").count(), 2)
 
     def test_template_descarga_xlsx(self):
         self.client.force_authenticate(self.admin)

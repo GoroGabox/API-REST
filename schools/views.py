@@ -637,6 +637,7 @@ class EjercicioViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             )
         dry_run = str(request.data.get("dry_run", "")).lower() in ("true", "1", "on", "yes")
+        skip_duplicates = str(request.data.get("skip_duplicates", "")).lower() in ("true", "1", "on", "yes")
 
         try:
             wb = openpyxl.load_workbook(upload, read_only=True, data_only=True)
@@ -676,8 +677,18 @@ class EjercicioViewSet(viewsets.ModelViewSet):
         valid_cursos = set(Curso.objects.values_list("id", flat=True))
         valid_lecciones = set(Leccion.objects.values_list("id", flat=True))
 
+        # Preguntas ya en BD (normalizadas) para saltar duplicados. La dedupe es
+        # por texto de pregunta, igual que la limpieza manual del catálogo.
+        existing_preguntas = set()
+        if skip_duplicates:
+            existing_preguntas = {
+                (p or "").strip().lower()
+                for p in Ejercicio.objects.values_list("pregunta", flat=True)
+            }
+
         results = []
         to_create = []
+        skipped = 0
         seen_preguntas = set()
 
         for offset, row in enumerate(rows):
@@ -732,13 +743,27 @@ class EjercicioViewSet(viewsets.ModelViewSet):
                     else:
                         errors.append(f"respuesta '{raw_resp}' no coincide con ninguna opción")
 
-            # Duplicado dentro del mismo archivo (aviso, no error).
-            dup = pregunta and pregunta.lower() in seen_preguntas
-            if pregunta:
-                seen_preguntas.add(pregunta.lower())
-
             if errors:
                 results.append({"row": excel_row, "status": "error", "pregunta": (pregunta or "")[:80], "errors": errors})
+                continue
+
+            # Duplicado: mismo texto de pregunta ya visto en el archivo, o —si se
+            # pidió— ya presente en BD.
+            key = pregunta.lower() if pregunta else None
+            in_file_dup = key is not None and key in seen_preguntas
+            db_dup = skip_duplicates and key is not None and key in existing_preguntas
+            dup = in_file_dup or db_dup
+            if key:
+                seen_preguntas.add(key)
+
+            if skip_duplicates and dup:
+                skipped += 1
+                results.append({
+                    "row": excel_row,
+                    "status": "skipped",
+                    "pregunta": (pregunta or "")[:80],
+                    "errors": ["duplicado en BD" if db_dup else "duplicado en el archivo"],
+                })
                 continue
 
             imagen = _clean(cell(row, "imagen")) or "http://placeholder.url"
@@ -774,9 +799,11 @@ class EjercicioViewSet(viewsets.ModelViewSet):
         error_count = sum(1 for r in results if r["status"] == "error")
         return Response({
             "dry_run": dry_run,
+            "skip_duplicates": skip_duplicates,
             "total_rows": len(results),
             "created": created,
             "would_create": len(to_create) if dry_run else 0,
+            "skipped": skipped,
             "errors": error_count,
             "results": results,
         }, status=status.HTTP_200_OK)
