@@ -14,7 +14,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
-from rest_framework.generics import CreateAPIView, ListAPIView, RetrieveUpdateDestroyAPIView, RetrieveAPIView
+from rest_framework.generics import CreateAPIView, ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView, RetrieveAPIView
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import  Usuario, DirectorProfile, EstudianteProfile, Certificado, Prueba, PruebaEjercicio, EstudianteLeccion
 from schools.models import Ejercicio, Categoria, Leccion
@@ -22,6 +22,7 @@ from sales.models import EstudianteCurso
 from .serializers import  (
     UsuariorRegisterSerializer,
     UsuarioSerializer,
+    AdminUsuarioCreateSerializer,
     UsuarioMeSerializer,
     LogroSerializer,
     LeaderboardEntrySerializer,
@@ -71,13 +72,24 @@ class UsuarioRegisterView(CreateAPIView):
             return Response(response_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class UsuarioListView(ListAPIView):
-    """Admin: ve todos. Director: solo de su escuela. Estudiante: 403."""
+class UsuarioListView(ListCreateAPIView):
+    """GET admin: ve todos; director: solo de su escuela; estudiante: 403.
+    POST: alta de usuarios con roles/estado (solo admin)."""
     queryset = Usuario.objects.all()
     serializer_class = UsuarioSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['escuela', 'is_director', 'is_estudiante', 'is_active', 'email']
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return AdminUsuarioCreateSerializer
+        return UsuarioSerializer
+
+    def get_permissions(self):
+        # Crear usuarios (con roles) queda reservado a admin.
+        if self.request.method == 'POST':
+            return [permissions.IsAuthenticated(), IsAdmin()]
+        return [permissions.IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user

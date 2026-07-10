@@ -916,3 +916,77 @@ class EstudianteLeccionIdempotenteTests(APITestCase):
         self._post()
         self._post(leccion=l2)
         self.assertEqual(EstudianteLeccion.objects.count(), 2)
+
+
+class AdminUsuarioGestionTests(APITestCase):
+    """Admin puede editar roles/estado/email y crear usuarios con rol; un
+    estudiante NO puede autoelevarse editando su propio perfil."""
+
+    def setUp(self):
+        self.admin = make_user("adm_gest@x.com", is_admin=True)
+        self.estudiante = make_user("est_gest@x.com", is_estudiante=True)
+        self.otro = make_user("otro_gest@x.com", is_estudiante=True)
+
+    def _detail_url(self, uid):
+        return reverse('retrive_update_delete_users_view', args=[uid])
+
+    def test_admin_cambia_roles_y_estado(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(
+            self._detail_url(self.otro.id),
+            {"is_director": True, "is_estudiante": False, "is_active": False},
+            format='json',
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        self.otro.refresh_from_db()
+        self.assertTrue(self.otro.is_director)
+        self.assertFalse(self.otro.is_estudiante)
+        self.assertFalse(self.otro.is_active)
+
+    def test_admin_cambia_email(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(self._detail_url(self.otro.id), {"email": "nuevo_gest@x.com"}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.otro.refresh_from_db()
+        self.assertEqual(self.otro.email, "nuevo_gest@x.com")
+
+    def test_estudiante_no_puede_autoelevar(self):
+        self.client.force_authenticate(self.estudiante)
+        r = self.client.patch(
+            self._detail_url(self.estudiante.id),
+            {"is_superuser": True, "is_staff": True, "is_active": True, "nombre": "Hacker"},
+            format='json',
+        )
+        # El nombre sí cambia; los roles se ignoran (read-only para no-admin).
+        self.assertEqual(r.status_code, 200, r.data)
+        self.estudiante.refresh_from_db()
+        self.assertFalse(self.estudiante.is_superuser)
+        self.assertFalse(self.estudiante.is_staff)
+        self.assertEqual(self.estudiante.nombre, "Hacker")
+
+    def test_admin_crea_usuario_con_rol(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post(
+            reverse('list_users_view'),
+            {
+                "nombre": "Dir", "apellido": "X", "email": "dir_nuevo@x.com",
+                "password": "Abcdef12!@#", "password2": "Abcdef12!@#",
+                "is_director": True, "is_active": True,
+            },
+            format='json',
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        u = Usuario.objects.get(email="dir_nuevo@x.com")
+        self.assertTrue(u.is_director)
+        self.assertTrue(u.is_active)
+
+    def test_estudiante_no_puede_crear(self):
+        self.client.force_authenticate(self.estudiante)
+        r = self.client.post(
+            reverse('list_users_view'),
+            {"nombre": "Z", "apellido": "Z", "email": "z_gest@x.com",
+             "password": "Abcdef12!@#", "password2": "Abcdef12!@#"},
+            format='json',
+        )
+        self.assertIn(r.status_code, (403, 401))
+        self.assertFalse(Usuario.objects.filter(email="z_gest@x.com").exists())

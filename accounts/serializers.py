@@ -14,6 +14,7 @@ from .models import (  # noqa: F401
     Notificacion,
     PushToken,
 )
+from .permissions import is_admin
 
 class UsuariorRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
@@ -52,6 +53,38 @@ class UsuariorRegisterSerializer(serializers.ModelSerializer):
         user.save(update_fields=['is_active'])
         return user
 
+class AdminUsuarioCreateSerializer(serializers.ModelSerializer):
+    """Alta de usuarios por un admin: honra roles y estado (a diferencia del
+    registro público, que siempre crea estudiantes inactivos)."""
+    password = serializers.CharField(write_only=True, validators=[validate_password])
+    password2 = serializers.CharField(write_only=True, required=False)
+
+    class Meta:
+        model = Usuario
+        fields = [
+            'id', 'nombre', 'apellido', 'email', 'escuela',
+            'password', 'password2',
+            'is_superuser', 'is_staff', 'is_director', 'is_estudiante', 'is_active',
+        ]
+
+    def validate(self, data):
+        if 'password2' in data and data.get('password') != data.get('password2'):
+            raise serializers.ValidationError({"password2": "Las contraseñas no coinciden."})
+        return data
+
+    def create(self, validated_data):
+        validated_data.pop('password2', None)
+        password = validated_data.pop('password')
+        user = Usuario.objects.create_user(password=password, **validated_data)
+        return user
+
+
+# Campos que solo un admin puede modificar. Para cualquier otro usuario (p.ej.
+# un estudiante editando su propio perfil vía IsAdminOrSelf) quedan read-only,
+# evitando escalada de privilegios.
+ADMIN_ONLY_WRITABLE = ('is_superuser', 'is_staff', 'is_director', 'is_estudiante', 'is_active', 'email')
+
+
 class UsuarioSerializer(serializers.ModelSerializer):
     class Meta:
         model = Usuario
@@ -72,7 +105,15 @@ class UsuarioSerializer(serializers.ModelSerializer):
             'is_staff',
             'date_joined',
         ]
-        read_only_fields = ['is_superuser', 'is_staff', 'is_active', 'is_director', 'is_estudiante', 'date_joined', 'email']
+        read_only_fields = ['date_joined']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if not is_admin(getattr(request, 'user', None)):
+            for f in ADMIN_ONLY_WRITABLE:
+                if f in self.fields:
+                    self.fields[f].read_only = True
 
 
 class UsuarioMeSerializer(serializers.ModelSerializer):
