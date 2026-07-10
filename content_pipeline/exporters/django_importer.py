@@ -154,3 +154,21 @@ def import_a2_course(
             stale.delete()
 
     return summary
+
+
+def import_generated_course(
+    manifest: dict[str, Any],
+    lessons: list[dict[str, Any]],
+    dry_run: bool = False,
+    prune: bool = False,
+) -> tuple[ImportSummary, Curso]:
+    """Persiste un curso generado por el pipeline y devuelve el Curso creado.
+
+    Reutiliza `import_a2_course` (la lógica de upsert es agnóstica al código de
+    curso) y además recupera la instancia `Curso` para que el llamador pueda
+    reportar su id/nombre/código —lo que el endpoint de streaming necesita para
+    el evento ``done``.
+    """
+    summary = import_a2_course(manifest, lessons, dry_run=dry_run, prune=prune)
+    curso = Curso.objects.get(codigo=manifest["curso"]["codigo"])
+    return summary, curso

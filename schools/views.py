@@ -1,12 +1,18 @@
+import json
+import os
+import tempfile
+
 from rest_framework import viewsets, status, permissions as drf_permissions
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db import transaction as db_transaction
 from django.db.models import Prefetch
+from django.http import StreamingHttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 
-from accounts.permissions import ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
+from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
 from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso
 from .serializers import (
     EscuelaSerializer,
@@ -448,9 +454,17 @@ class LeccionViewSet(viewsets.ModelViewSet):
         )
 
     def get_serializer_class(self):
-        # El frontend del curso consume /lessons/?curso=<id> como la lista completa.
-        # En ese caso devolvemos contenido para evitar un fetch adicional por lección.
-        if self.action == 'retrieve' or (self.action == 'list' and self.request.query_params.get('curso')):
+        # Detalle (con contenido + transcripción) en:
+        # - retrieve
+        # - list?curso=<id> (el frontend del curso consume la lista completa)
+        # - escrituras (create/update/partial_update): el admin edita el cuerpo
+        #   generado por el pipeline para producir la lección final. Sin esto,
+        #   un PATCH con `contenido`/`transcripcion` se descartaría en silencio.
+        write_actions = ('create', 'update', 'partial_update')
+        if (
+            self.action in ('retrieve', *write_actions)
+            or (self.action == 'list' and self.request.query_params.get('curso'))
+        ):
             return LeccionDetalleSerializer
         return LeccionSerializer
 
@@ -529,4 +543,115 @@ class RecursoViewSet(viewsets.ModelViewSet):
             )
 
         return qs.none()
+
+
+# Topes de subida (defensa del disco temporal ante llamadas directas a la API;
+# el frontend valida antes). El temario es un índice pequeño; el material fuente
+# suele ser un manual/libro completo y regularmente supera 25 MB.
+TEMARIO_MAX_BYTES = 30 * 1024 * 1024       # 30 MB
+CONTENIDO_MAX_BYTES = 300 * 1024 * 1024    # 300 MB
+
+
+def _save_temp_pdf(uploaded) -> str:
+    """Vuelca un archivo subido a un PDF temporal en disco y devuelve su ruta.
+
+    PyMuPDF necesita una ruta de archivo, y el generador streamea durante un
+    rato, así que persistimos la subida en vez de mantenerla en memoria.
+    """
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    try:
+        for chunk in uploaded.chunks():
+            handle.write(chunk)
+    finally:
+        handle.close()
+    return handle.name
+
+
+class CourseGenerateView(APIView):
+    """POST /api/v1/schools/courses/generate/
+
+    Genera un curso completo (curso + unidades + lecciones) a partir de dos
+    PDFs —TEMARIO (estructura) y CONTENIDO (fuente)— usando la app
+    `content_pipeline`. Responde un stream NDJSON (`application/x-ndjson`) con
+    eventos step/lesson/done/error consumido por `CourseGenerator.js`.
+
+    Solo admin: crear cursos es una operación de back-office.
+    """
+
+    permission_classes = [IsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        temario = request.FILES.get("temario")
+        contenido = request.FILES.get("contenido")
+        nombre = (request.data.get("nombre") or "").strip()
+        codigo = (request.data.get("codigo") or "").strip().upper()
+
+        if not temario or not contenido:
+            return Response(
+                {"detail": "Se requieren los PDFs 'temario' y 'contenido'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        oversized = None
+        if temario.size > TEMARIO_MAX_BYTES:
+            oversized = f"El temario supera el máximo de {TEMARIO_MAX_BYTES // (1024 * 1024)} MB."
+        elif contenido.size > CONTENIDO_MAX_BYTES:
+            oversized = f"El contenido supera el máximo de {CONTENIDO_MAX_BYTES // (1024 * 1024)} MB."
+        if oversized:
+            return Response({"detail": oversized}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        if not nombre or not codigo:
+            return Response(
+                {"detail": "Se requieren 'nombre' y 'codigo'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(codigo) > 10:
+            return Response(
+                {"detail": "El código no puede superar 10 caracteres."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_profesional = str(request.data.get("is_profesional", "")).lower() in (
+            "true", "1", "on", "yes",
+        )
+        try:
+            max_lecciones = int(request.data.get("max_lecciones") or 20)
+        except (TypeError, ValueError):
+            max_lecciones = 20
+        max_lecciones = max(1, min(max_lecciones, 100))
+        idioma = (request.data.get("idioma") or "es").strip() or "es"
+        modo = (request.data.get("modo") or "draft").strip() or "draft"
+        source_name = getattr(contenido, "name", None) or f"Contenido: {nombre}"
+
+        temario_path = _save_temp_pdf(temario)
+        contenido_path = _save_temp_pdf(contenido)
+
+        # Import diferido: mantiene los procesadores del pipeline fuera de la
+        # ruta de importación del módulo de vistas.
+        from content_pipeline.services.course_generator import generate_course_stream
+
+        def stream():
+            try:
+                for event in generate_course_stream(
+                    temario_path=temario_path,
+                    contenido_path=contenido_path,
+                    nombre=nombre,
+                    codigo=codigo,
+                    is_profesional=is_profesional,
+                    max_lecciones=max_lecciones,
+                    idioma=idioma,
+                    modo=modo,
+                    source_name=source_name,
+                ):
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            finally:
+                for path in (temario_path, contenido_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
+        response = StreamingHttpResponse(stream(), content_type="application/x-ndjson")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"  # evita buffering en nginx
+        return response
 

@@ -1,0 +1,99 @@
+# ============================================================================
+# Ejemplo de configuración nginx para el backend AutoTest (Django REST).
+#
+# Copia este archivo a la ruta de sitios de nginx y ajústalo a tu dominio:
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/autotest_api
+#   sudo ln -s /etc/nginx/sites-available/autotest_api /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Puntos clave para el generador de cursos
+# (POST /api/v1/schools/courses/generate/):
+#   1. `client_max_body_size` alto: el material fuente (contenido) supera 25 MB
+#      con frecuencia. El backend admite hasta 300 MB; dejamos margen para el
+#      multipart (temario + campos + boundaries).
+#   2. El endpoint responde un stream NDJSON: hay que DESACTIVAR el buffering
+#      del proxy para que los eventos step/lesson lleguen en vivo al navegador.
+#   3. Timeouts largos: procesar un PDF grande (extracción + segmentación +
+#      TF-IDF) puede tardar minutos; sin esto nginx corta la conexión.
+#
+# Recuerda alinear el timeout de gunicorn/uvicorn (ver nota al final).
+# ============================================================================
+
+# Servidor de aplicación (gunicorn escuchando en un puerto o socket local).
+upstream autotest_api {
+    server 127.0.0.1:8000;
+    # Alternativa por socket UNIX:
+    # server unix:/run/autotest/gunicorn.sock;
+}
+
+server {
+    listen 80;
+    server_name api.tudominio.cl;  # <-- ajusta tu dominio
+
+    # Para HTTPS, termina TLS aquí (listen 443 ssl; ssl_certificate ...;)
+    # o delega en un proxy/load balancer por delante.
+
+    # Tope global de subida. El generador acepta contenido hasta 300 MB;
+    # 350m deja margen para el temario y el overhead del multipart.
+    client_max_body_size 350m;
+
+    # No bufferes el cuerpo de la request a disco antes de pasarla al backend;
+    # deja que Django/DRF haga streaming de los archivos a su temporal.
+    proxy_request_buffering off;
+
+    # Archivos estáticos de Django (si sirves admin/DRF browsable API).
+    location /static/ {
+        alias /ruta/al/proyecto/staticfiles/;  # <-- ajusta (STATIC_ROOT)
+        access_log off;
+        expires 30d;
+    }
+
+    # ---- Endpoint de generación: streaming NDJSON + proceso largo ----------
+    location = /api/v1/schools/courses/generate/ {
+        proxy_pass http://autotest_api;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Streaming: sin buffering para que los eventos lleguen en tiempo real.
+        # (La vista ya envía X-Accel-Buffering: no, pero lo reforzamos aquí.)
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_http_version 1.1;
+        chunked_transfer_encoding on;
+
+        # Proceso largo: sube los timeouts a 30 min.
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    1800s;
+        proxy_read_timeout    1800s;
+    }
+
+    # ---- Resto de la API ---------------------------------------------------
+    location / {
+        proxy_pass http://autotest_api;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+    }
+}
+
+# ============================================================================
+# Nota gunicorn: el timeout por defecto (30 s) mata la generación de PDFs
+# grandes. Arranca con un worker timeout amplio, p. ej.:
+#
+#   gunicorn autotestAPI.wsgi:application \
+#       --bind 127.0.0.1:8000 \
+#       --workers 3 \
+#       --timeout 1800 \
+#       --graceful-timeout 60
+#
+# Si usas ASGI/uvicorn, configura el timeout equivalente del proxy/servidor.
+# ============================================================================

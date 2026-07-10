@@ -215,7 +215,9 @@ def _source_ideas(
     return unique_preserve_order([idea for _score, idea in scored])[:max_items]
 
 
-def _sources_for_segments(segments: list[dict[str, object]], tema: str) -> list[dict[str, object]]:
+def _sources_for_segments(
+    segments: list[dict[str, object]], tema: str, source_name: str = SOURCE_NAME
+) -> list[dict[str, object]]:
     if not segments:
         return []
     page_start = min(int(segment.get("page_start", 0)) for segment in segments)
@@ -228,7 +230,7 @@ def _sources_for_segments(segments: list[dict[str, object]], tema: str) -> list[
         summary = f"Referencia tecnica usada para redactar el tema {tema}."
     return [
         {
-            "fuente_nombre": SOURCE_NAME,
+            "fuente_nombre": source_name,
             "pagina_inicio": page_start,
             "pagina_fin": page_end,
             "tema_regulatorio": tema,
@@ -238,12 +240,12 @@ def _sources_for_segments(segments: list[dict[str, object]], tema: str) -> list[
     ]
 
 
-def _source_markdown(sources: list[dict[str, object]]) -> str:
+def _source_markdown(sources: list[dict[str, object]], source_name: str = SOURCE_NAME) -> str:
     if not sources:
-        return f"{SOURCE_NAME}, páginas por validar."
+        return f"{source_name}, páginas por validar."
     first_page = min(int(source.get("pagina_inicio", 0)) for source in sources)
     last_page = max(int(source.get("pagina_fin", 0)) for source in sources)
-    return f"{SOURCE_NAME}, páginas {first_page}-{last_page}."
+    return f"{source_name}, páginas {first_page}-{last_page}."
 
 
 def _lesson_title(tema: str, part_index: int, part_count: int) -> str:
@@ -511,7 +513,7 @@ def build_lesson_context(
     )
 
 
-def render_student_lesson(context: LessonContext) -> str:
+def render_student_lesson(context: LessonContext, source_name: str = SOURCE_NAME) -> str:
     key_points = "\n".join(f"- {point}" for point in _key_points(context))
     frequent_errors = "\n".join(f"- {error}" for error in _frequent_errors(context))
     return f"""# {context.title}
@@ -544,7 +546,7 @@ Al finalizar esta lección, podrás reconocer el riesgo asociado a {context.tema
 {_summary(context)}
 
 ## Fuente
-{_source_markdown(context.sources)}
+{_source_markdown(context.sources, source_name)}
 """.strip()
 
 
@@ -555,7 +557,12 @@ def _transcription(context: LessonContext) -> str:
     )
 
 
-def _quiz_sources(unit_sources: list[dict[str, object]], unidad_nombre: str, orden: int) -> list[dict[str, object]]:
+def _quiz_sources(
+    unit_sources: list[dict[str, object]],
+    unidad_nombre: str,
+    orden: int,
+    source_name: str = SOURCE_NAME,
+) -> list[dict[str, object]]:
     if not unit_sources:
         return []
     page_start = min(int(source.get("pagina_inicio", 0)) for source in unit_sources)
@@ -563,7 +570,7 @@ def _quiz_sources(unit_sources: list[dict[str, object]], unidad_nombre: str, ord
     hash_seed = "".join(str(source.get("hash_fragmento", "")) for source in unit_sources)
     return [
         {
-            "fuente_nombre": SOURCE_NAME,
+            "fuente_nombre": source_name,
             "pagina_inicio": page_start,
             "pagina_fin": page_end,
             "tema_regulatorio": f"Evaluación módulo {orden}",
@@ -596,6 +603,7 @@ def generate_lessons(
     manifest: dict[str, object],
     segments: list[dict[str, object]],
     mappings: list[dict[str, object]],
+    source_name: str = SOURCE_NAME,
 ) -> list[dict[str, object]]:
     segment_by_id = {str(segment.get("segment_id")): segment for segment in segments}
     mapping_by_topic = _mapping_lookup(mappings)
@@ -620,7 +628,7 @@ def generate_lessons(
         for tema in temas:
             mapping = mapping_by_topic.get((orden, tema))
             matched_segments = _matched_segments(mapping, segment_by_id)
-            sources = _sources_for_segments(matched_segments, tema)
+            sources = _sources_for_segments(matched_segments, tema, source_name)
             unit_sources.extend(sources)
             duration = _clamp(round(minutes_per_topic), 15, 60)
             title = _lesson_title(tema, 0, 1)
@@ -644,7 +652,7 @@ def generate_lessons(
                     "tipo": "texto",
                     "descripcion": _lesson_description(tema, unidad_nombre),
                     "duracion_min": duration,
-                    "contenido": render_student_lesson(context),
+                    "contenido": render_student_lesson(context, source_name),
                     "transcripcion": _transcription(context),
                     "fuentes": sources,
                 }
@@ -664,7 +672,7 @@ def generate_lessons(
                 "duracion_min": quiz_minutes,
                 "contenido": _quiz_content(temas),
                 "transcripcion": "",
-                "fuentes": _quiz_sources(unit_sources, unidad_nombre, orden),
+                "fuentes": _quiz_sources(unit_sources, unidad_nombre, orden, source_name),
             }
         )
 

@@ -12,6 +12,7 @@ from .views import (
     VincularEstudianteView,
     ProgresoEstudianteDetalleView,
     CertificadosPorEscuelaView,
+    CourseGenerateView,
 )
 # Vistas de suscripción viven en `sales/views.py` porque manipulan
 # EstudianteCurso/AccessKey, pero se exponen bajo el árbol de schools para
@@ -29,6 +30,13 @@ router.register(r'categories', CategoriaViewSet)
 router.register(r'library', RecursoViewSet)
 
 urlpatterns = [
+    # Debe ir ANTES de `*router.urls`: si no, el router captura
+    # `courses/generate/` como detalle `courses/<pk=generate>/`.
+    path(
+        "courses/generate/",
+        CourseGenerateView.as_view(),
+        name="course_generate",
+    ),
     path(
         "vincular-estudiante/",
         VincularEstudianteView.as_view(),
