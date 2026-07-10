@@ -11,6 +11,7 @@ transbank-sdk==6.0.0
 requests==2.32.4
 PyMuPDF==1.24.14
 scikit-learn==1.5.2
+anthropic==0.69.0  # generador de cursos con LLM (opcional; sin API key hay fallback extractivo)
 # Social auth (opcional - solo necesarios si se usan los endpoints /social/*)
 google-auth==2.35.0
 PyJWT==2.10.1

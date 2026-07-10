@@ -9,9 +9,11 @@ directo por el frontend (`CourseGenerator.js`):
     {"event": "done",   "curso": {id, nombre, codigo}, "total": int, "ts": int}
     {"event": "error",  "message": str,                "ts": int}
 
-Se apoya en los procesadores de `content_pipeline` sin duplicar lógica; la
-única pieza nueva es `manifest_builder`, que deriva la estructura del curso a
-partir del PDF de temario.
+Con ANTHROPIC_API_KEY usa el LLM para interpretar el temario
+(`manifest_llm`) y redactar las lecciones ancladas a la fuente
+(`llm_lesson_writer`). Sin API key cae al pipeline extractivo determinista
+(`manifest_builder` + `generic_lesson_generator`). El evento ``done`` incluye
+el desglose de tokens/costo de IA cuando aplica.
 """
 from __future__ import annotations
 
@@ -21,8 +23,11 @@ from typing import Any, Iterator
 
 from content_pipeline.exporters.django_importer import import_generated_course
 from content_pipeline.extractors.pdf_text_extractor import extract_pdf_pages
+from content_pipeline.llm.client import LLMClient, default_model, draft_model
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
+from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
 from content_pipeline.processors.manifest_builder import build_manifest_from_temario
+from content_pipeline.processors.manifest_llm import build_manifest_from_temario_llm
 from content_pipeline.processors.map_topics import map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 
@@ -63,15 +68,56 @@ def generate_course_stream(
     try:
         source_name = source_name or f"Contenido: {nombre}"
 
+        # Modo IA vs extractivo. Sin API key/SDK -> fallback determinista.
+        use_llm = LLMClient.is_available()
+        llm_client = LLMClient() if use_llm else None
+        final_model = default_model()
+        lesson_model = final_model if modo == "final" else draft_model()
+        if use_llm:
+            yield _event(
+                "step",
+                step="modo",
+                message=f"Generación asistida por IA · temario: {final_model} · lecciones: {lesson_model}.",
+            )
+        else:
+            yield _event(
+                "step",
+                step="modo",
+                message="IA no configurada (sin ANTHROPIC_API_KEY): generación heurística extractiva.",
+            )
+
         yield _event("step", step="temario", message="Leyendo el temario…")
         temario_pages = extract_pdf_pages(Path(temario_path))
-        manifest = build_manifest_from_temario(
-            temario_pages,
-            nombre=nombre,
-            codigo=codigo,
-            is_profesional=is_profesional,
-            max_lecciones=max_lecciones,
-        )
+
+        manifest = None
+        if use_llm:
+            yield _event("step", step="temario_ia", message="Interpretando el temario con IA…")
+            try:
+                manifest = build_manifest_from_temario_llm(
+                    temario_pages,
+                    nombre=nombre,
+                    codigo=codigo,
+                    is_profesional=is_profesional,
+                    max_lecciones=max_lecciones,
+                    client=llm_client,
+                    model=final_model,
+                )
+            except Exception as exc:  # noqa: BLE001 — degradar a heurística
+                yield _event(
+                    "step",
+                    step="temario_warn",
+                    message=f"La IA no pudo interpretar el temario ({exc}); uso heurística.",
+                )
+                manifest = None
+        if manifest is None:
+            manifest = build_manifest_from_temario(
+                temario_pages,
+                nombre=nombre,
+                codigo=codigo,
+                is_profesional=is_profesional,
+                max_lecciones=max_lecciones,
+            )
+
         n_units = len(manifest["unidades"])
         n_topics = sum(len(unit["temas"]) for unit in manifest["unidades"])
         yield _event(
@@ -101,20 +147,56 @@ def generate_course_stream(
             message=f"{covered}/{len(mappings)} temas con fuente encontrada.",
         )
 
-        yield _event("step", step="redactar", message="Redactando lecciones…")
-        lessons = generate_lessons_generic(manifest, segments, mappings, source_name=source_name)
+        lessons: list[dict[str, Any]] = []
+        if use_llm:
+            total = n_topics + n_units  # una lección por tema + un quiz por unidad
+            yield _event("step", step="redactar", message=f"Redactando {total} lecciones con IA…")
+            for index, lesson in enumerate(
+                generate_lessons_llm(
+                    manifest,
+                    segments,
+                    mappings,
+                    source_name=source_name,
+                    client=llm_client,
+                    model=lesson_model,
+                ),
+                start=1,
+            ):
+                lessons.append(lesson)
+                yield _event(
+                    "step",
+                    step="redactar_prog",
+                    message=f"[{index}/{total}] {lesson.get('nombre', '')}",
+                )
+                yield _event("lesson", lesson=_lesson_preview(lesson))
+        else:
+            yield _event("step", step="redactar", message="Redactando lecciones…")
+            lessons = generate_lessons_generic(manifest, segments, mappings, source_name=source_name)
+            for lesson in lessons:
+                yield _event("lesson", lesson=_lesson_preview(lesson))
 
-        for lesson in lessons:
-            yield _event("lesson", lesson=_lesson_preview(lesson))
+        if use_llm and llm_client is not None:
+            meter = llm_client.meter
+            yield _event(
+                "step",
+                step="ia_costo",
+                message=(
+                    f"IA: {meter.calls} llamadas · "
+                    f"{meter.input_tokens + meter.cache_read_tokens + meter.cache_creation_tokens} tok in / "
+                    f"{meter.output_tokens} tok out · ~US${meter.cost_usd:.3f}."
+                ),
+            )
 
         yield _event("step", step="persistir", message="Guardando el curso y sus lecciones…")
         _summary, curso = import_generated_course(manifest, lessons)
         yield _event("step", step="persistir_ok", message=f"Curso #{curso.id} guardado.")
 
-        yield _event(
-            "done",
-            curso={"id": curso.id, "nombre": curso.nombre, "codigo": curso.codigo},
-            total=len(lessons),
-        )
+        done_payload: dict[str, Any] = {
+            "curso": {"id": curso.id, "nombre": curso.nombre, "codigo": curso.codigo},
+            "total": len(lessons),
+        }
+        if use_llm and llm_client is not None:
+            done_payload["ia"] = llm_client.meter.as_dict()
+        yield _event("done", **done_payload)
     except Exception as exc:  # noqa: BLE001 — todo fallo se reporta al cliente vía stream
         yield _event("error", message=str(exc))

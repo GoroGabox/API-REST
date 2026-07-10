@@ -170,6 +170,17 @@ REST_FRAMEWORK = {
     ),
 }
 
+# ============================================================================
+# Generador de cursos con LLM (Anthropic)
+# Sin ANTHROPIC_API_KEY, el generador cae al pipeline extractivo determinista.
+# El temario siempre usa el modelo "final" (barato: 1 llamada, alto impacto);
+# las lecciones usan el modelo "draft" en modo draft y el "final" en modo final.
+# ============================================================================
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+COURSE_LLM_ENABLED = os.environ.get('COURSE_LLM_ENABLED', '1') == '1' and bool(ANTHROPIC_API_KEY)
+COURSE_LLM_MODEL = os.environ.get('COURSE_LLM_MODEL', 'claude-sonnet-5')
+COURSE_LLM_MODEL_DRAFT = os.environ.get('COURSE_LLM_MODEL_DRAFT', 'claude-haiku-4-5-20251001')
+
 #SMTP CONFIGURATION
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
