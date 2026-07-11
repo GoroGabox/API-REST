@@ -70,6 +70,9 @@ class AdminUsuarioCreateSerializer(serializers.ModelSerializer):
     def validate(self, data):
         if 'password2' in data and data.get('password') != data.get('password2'):
             raise serializers.ValidationError({"password2": "Las contraseñas no coinciden."})
+        # Invariante: un director SIEMPRE pertenece a una escuela.
+        if data.get('is_director') and not data.get('escuela'):
+            raise serializers.ValidationError({"escuela": "Un director debe pertenecer a una escuela."})
         return data
 
     def create(self, validated_data):
@@ -114,6 +117,19 @@ class UsuarioSerializer(serializers.ModelSerializer):
             for f in ADMIN_ONLY_WRITABLE:
                 if f in self.fields:
                     self.fields[f].read_only = True
+
+    def validate(self, data):
+        # Invariante "un director pertenece a una escuela". Solo se evalúa en
+        # escrituras de admin (los demás no pueden tocar rol/escuela, y no
+        # queremos bloquear la auto-edición de datos por data legada previa).
+        request = self.context.get('request')
+        if is_admin(getattr(request, 'user', None)):
+            inst = self.instance
+            is_dir = data.get('is_director', getattr(inst, 'is_director', False))
+            escuela = data['escuela'] if 'escuela' in data else getattr(inst, 'escuela_id', None)
+            if is_dir and not escuela:
+                raise serializers.ValidationError({"escuela": "Un director debe pertenecer a una escuela."})
+        return data
 
 
 class UsuarioMeSerializer(serializers.ModelSerializer):

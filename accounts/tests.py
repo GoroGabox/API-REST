@@ -926,6 +926,7 @@ class AdminUsuarioGestionTests(APITestCase):
         self.admin = make_user("adm_gest@x.com", is_admin=True)
         self.estudiante = make_user("est_gest@x.com", is_estudiante=True)
         self.otro = make_user("otro_gest@x.com", is_estudiante=True)
+        self.escuela = Escuela.objects.create(nombre="E", direccion="d", email="e@e.com", telefono="1")
 
     def _detail_url(self, uid):
         return reverse('retrive_update_delete_users_view', args=[uid])
@@ -934,7 +935,7 @@ class AdminUsuarioGestionTests(APITestCase):
         self.client.force_authenticate(self.admin)
         r = self.client.patch(
             self._detail_url(self.otro.id),
-            {"is_director": True, "is_estudiante": False, "is_active": False},
+            {"is_director": True, "is_estudiante": False, "is_active": False, "escuela": self.escuela.id},
             format='json',
         )
         self.assertEqual(r.status_code, 200, r.data)
@@ -942,6 +943,50 @@ class AdminUsuarioGestionTests(APITestCase):
         self.assertTrue(self.otro.is_director)
         self.assertFalse(self.otro.is_estudiante)
         self.assertFalse(self.otro.is_active)
+
+    # ---- Invariante: un director SIEMPRE pertenece a una escuela ----
+    def test_no_crea_director_sin_escuela(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post(reverse('list_users_view'), {
+            "nombre": "Dir", "apellido": "X", "email": "dsin@x.com",
+            "password": "Abcdef12!@#", "password2": "Abcdef12!@#",
+            "is_director": True,
+        }, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn("escuela", r.data)
+        self.assertFalse(Usuario.objects.filter(email="dsin@x.com").exists())
+
+    def test_crea_director_con_escuela(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post(reverse('list_users_view'), {
+            "nombre": "Dir", "apellido": "X", "email": "dcon@x.com",
+            "password": "Abcdef12!@#", "password2": "Abcdef12!@#",
+            "is_director": True, "escuela": self.escuela.id,
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        u = Usuario.objects.get(email="dcon@x.com")
+        self.assertTrue(u.is_director)
+        self.assertEqual(u.escuela_id, self.escuela.id)
+
+    def test_patch_a_director_sin_escuela_falla(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(self._detail_url(self.otro.id), {"is_director": True}, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn("escuela", r.data)
+        self.otro.refresh_from_db()
+        self.assertFalse(self.otro.is_director)
+
+    def test_patch_no_deja_quitar_escuela_a_director(self):
+        self.otro.is_director = True
+        self.otro.is_estudiante = False
+        self.otro.escuela = self.escuela
+        self.otro.save()
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(self._detail_url(self.otro.id), {"escuela": None}, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn("escuela", r.data)
+        self.otro.refresh_from_db()
+        self.assertEqual(self.otro.escuela_id, self.escuela.id)
 
     def test_admin_cambia_email(self):
         self.client.force_authenticate(self.admin)
@@ -971,7 +1016,7 @@ class AdminUsuarioGestionTests(APITestCase):
             {
                 "nombre": "Dir", "apellido": "X", "email": "dir_nuevo@x.com",
                 "password": "Abcdef12!@#", "password2": "Abcdef12!@#",
-                "is_director": True, "is_active": True,
+                "is_director": True, "is_active": True, "escuela": self.escuela.id,
             },
             format='json',
         )
