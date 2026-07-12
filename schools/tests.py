@@ -643,3 +643,57 @@ class ImportarEstudiantesTests(APITestCase):
         self.client.force_authenticate(self.director)
         payload = [{"email": f"u{i}@x.com"} for i in range(301)]
         self.assertEqual(self._importar(payload).status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ======================================================================
+# Edición de roster de estudiantes (#10)
+# ======================================================================
+class EditarEstudianteTests(APITestCase):
+    def setUp(self):
+        self.escuela = Escuela.objects.create(nombre="A", direccion="x", email="a@a.com", telefono="1")
+        self.otra = Escuela.objects.create(nombre="B", direccion="y", email="b@b.com", telefono="2")
+        self.director = make_user("dir_ed@a.com", is_director=True, escuela=self.escuela)
+        self.est = make_user("est_ed@a.com", is_estudiante=True, escuela=self.escuela)
+        self.est_otra = make_user("est_ed@b.com", is_estudiante=True, escuela=self.otra)
+        self.ocupado = make_user("ocupado_ed@a.com", is_estudiante=True, escuela=self.escuela)
+
+    def _url(self, uid):
+        return f"/api/v1/schools/estudiantes/{uid}/"
+
+    def test_director_edita_nombre_y_email(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est.id), {"nombre": "Nuevo", "email": "nuevo_ed@a.com"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.nombre, "Nuevo")
+        self.assertEqual(self.est.email, "nuevo_ed@a.com")
+
+    def test_estudiante_de_otra_escuela_403(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est_otra.id), {"nombre": "X"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_no_edita_administrativo(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.director.id), {"nombre": "X"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_email_invalido_400(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est.id), {"email": "no-es-email"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_email_duplicado_409(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est.id), {"email": self.ocupado.email}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_409_CONFLICT)
+
+    def test_nombre_vacio_400(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est.id), {"nombre": "   "}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_sin_cambios_400(self):
+        self.client.force_authenticate(self.director)
+        r = self.client.patch(self._url(self.est.id), {}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)

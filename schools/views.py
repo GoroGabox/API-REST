@@ -623,6 +623,79 @@ class DesvincularEstudianteView(APIView):
         return Response({"status": "unlinked", "user_id": target.id}, status=status.HTTP_200_OK)
 
 
+class EditarEstudianteView(APIView):
+    """PATCH /api/v1/schools/estudiantes/<user_id>/
+       { nombre?, apellido?, telefono?, rut?, direccion?, email? }
+
+    Edita datos del roster de un estudiante. NO permite tocar roles ni estado.
+    Director: solo estudiantes de su escuela y no administrativos. El email
+    (identidad de login) se valida en formato y unicidad.
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+    ALLOWED = ("nombre", "apellido", "telefono", "rut", "direccion")
+
+    def patch(self, request, user_id):
+        if not (is_director(request.user) or is_admin(request.user)):
+            return Response({"detail": "Solo director o admin."}, status=status.HTTP_403_FORBIDDEN)
+
+        from accounts.models import Usuario
+        try:
+            target = Usuario.objects.get(pk=user_id)
+        except Usuario.DoesNotExist:
+            return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if target.is_staff or target.is_superuser or target.is_director:
+            return Response(
+                {"detail": "No se puede editar un usuario administrativo."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if is_director(request.user) and target.escuela_id != request.user.escuela_id:
+            return Response(
+                {"detail": "El estudiante no pertenece a tu escuela."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        update_fields = []
+        # nombre/apellido no pueden quedar vacíos si vienen en el payload.
+        for f in self.ALLOWED:
+            if f in request.data:
+                val = (request.data.get(f) or "").strip()
+                if f in ("nombre", "apellido") and not val:
+                    return Response({"detail": f"El campo {f} no puede quedar vacío."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                setattr(target, f, val)
+                update_fields.append(f)
+
+        # Email: identidad de login → validar formato + unicidad.
+        if "email" in request.data:
+            new_email = (request.data.get("email") or "").strip().lower()
+            if not new_email or not _EMAIL_RE.match(new_email):
+                return Response({"detail": "Email inválido."}, status=status.HTTP_400_BAD_REQUEST)
+            if Usuario.objects.filter(email__iexact=new_email).exclude(pk=target.pk).exists():
+                return Response({"detail": "Ya existe un usuario con ese email."},
+                                status=status.HTTP_409_CONFLICT)
+            if new_email != (target.email or "").lower():
+                target.email = new_email
+                update_fields.append("email")
+
+        if not update_fields:
+            return Response({"detail": "No se enviaron cambios."}, status=status.HTTP_400_BAD_REQUEST)
+
+        target.save(update_fields=update_fields)
+        return Response(
+            {
+                "id": target.id,
+                "nombre": target.nombre,
+                "apellido": target.apellido,
+                "email": target.email,
+                "telefono": target.telefono,
+                "rut": target.rut,
+                "direccion": target.direccion,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class CursoViewSet(viewsets.ModelViewSet):
     queryset = Curso.objects.all()
     serializer_class = CursoSerializer
