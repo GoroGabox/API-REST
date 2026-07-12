@@ -719,10 +719,19 @@ class TwoFAVerifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from .twofa import generate_recovery_codes
+        plain_codes, hashed_codes = generate_recovery_codes()
+
         user.is_2fa_enabled = True
-        user.save(update_fields=["is_2fa_enabled"])
+        user.totp_recovery_codes = hashed_codes
+        user.save(update_fields=["is_2fa_enabled", "totp_recovery_codes"])
         return Response(
-            {"detail": "Autenticación en dos pasos activada.", "is_2fa_enabled": True},
+            {
+                "detail": "Autenticación en dos pasos activada.",
+                "is_2fa_enabled": True,
+                # Se muestran UNA sola vez: el usuario debe guardarlos ahora.
+                "recovery_codes": plain_codes,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -747,7 +756,14 @@ class TwoFADisableView(APIView):
             )
 
         code = str(request.data.get("code") or "").strip()
-        if not code or not pyotp.TOTP(user.totp_secret).verify(code, valid_window=1):
+        # Acepta TOTP o un código de recuperación (para quien perdió su app y
+        # entró con un código de recuperación).
+        from .twofa import consume_recovery_code
+        ok = bool(code) and (
+            pyotp.TOTP(user.totp_secret).verify(code, valid_window=1)
+            or consume_recovery_code(user, code)
+        )
+        if not ok:
             return Response(
                 {"detail": "Código inválido. No se desactivó 2FA."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -755,9 +771,68 @@ class TwoFADisableView(APIView):
 
         user.is_2fa_enabled = False
         user.totp_secret = ""
-        user.save(update_fields=["is_2fa_enabled", "totp_secret"])
+        user.totp_recovery_codes = []
+        user.save(update_fields=["is_2fa_enabled", "totp_secret", "totp_recovery_codes"])
         return Response(
             {"detail": "Autenticación en dos pasos desactivada.", "is_2fa_enabled": False},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TwoFARecoveryRegenerateView(APIView):
+    """POST /api/v1/accounts/me/2fa/recovery-codes/ {code} — regenera códigos.
+
+    Exige un TOTP válido (el usuario tiene su app a mano) e invalida los códigos
+    anteriores. Devuelve el nuevo set en texto plano una sola vez.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        import pyotp
+        from .twofa import generate_recovery_codes
+
+        user = request.user
+        if not user.is_2fa_enabled or not user.totp_secret:
+            return Response(
+                {"detail": "La autenticación en dos pasos no está activada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        code = str(request.data.get("code") or "").strip()
+        if not code or not pyotp.TOTP(user.totp_secret).verify(code, valid_window=1):
+            return Response(
+                {"detail": "Código inválido. No se regeneraron los códigos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        plain_codes, hashed_codes = generate_recovery_codes()
+        user.totp_recovery_codes = hashed_codes
+        user.save(update_fields=["totp_recovery_codes"])
+        return Response({"recovery_codes": plain_codes}, status=status.HTTP_200_OK)
+
+
+class TwoFAAdminDisableView(APIView):
+    """POST /api/v1/accounts/users/<user_id>/2fa/disable/ — reset por admin.
+
+    Red de seguridad: desactiva 2FA de un usuario que perdió su app y sus
+    códigos de recuperación. Solo admin.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, user_id):
+        if not is_admin(request.user):
+            return Response({"detail": "Solo un administrador puede hacer esto."},
+                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            target = Usuario.objects.get(pk=user_id)
+        except Usuario.DoesNotExist:
+            return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        target.is_2fa_enabled = False
+        target.totp_secret = ""
+        target.totp_recovery_codes = []
+        target.save(update_fields=["is_2fa_enabled", "totp_secret", "totp_recovery_codes"])
+        return Response(
+            {"detail": "2FA desactivada para el usuario.", "user_id": target.id, "is_2fa_enabled": False},
             status=status.HTTP_200_OK,
         )
 

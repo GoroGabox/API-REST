@@ -136,18 +136,23 @@ class UsuarioSerializer(serializers.ModelSerializer):
 class UsuarioMeSerializer(serializers.ModelSerializer):
     """Perfil completo del usuario autenticado + stats de gamificación."""
     stats = serializers.SerializerMethodField()
+    recovery_codes_remaining = serializers.SerializerMethodField()
 
     class Meta:
         model = Usuario
         fields = [
             'id', 'nombre', 'apellido', 'email', 'rut', 'direccion',
             'telefono', 'avatar_url', 'email_notifications', 'is_2fa_enabled',
+            'recovery_codes_remaining',
             'escuela', 'is_director', 'is_estudiante',
             'date_joined', 'stats',
         ]
         # is_2fa_enabled es de solo lectura aquí: activar/desactivar 2FA pasa por
         # los endpoints dedicados (setup/verify/disable), nunca por PATCH /me/.
         read_only_fields = ['is_2fa_enabled']
+
+    def get_recovery_codes_remaining(self, obj):
+        return len(obj.totp_recovery_codes or [])
 
     def get_stats(self, obj):
         from . import gamification
@@ -242,12 +247,16 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
                     'detail': 'Ingresa el código de verificación de dos pasos.',
                 })
             totp = pyotp.TOTP(user.totp_secret)
-            # valid_window=1 tolera desfase de reloj de ±30s.
+            # valid_window=1 tolera desfase de reloj de ±30s. Si el TOTP no
+            # coincide, aceptamos un código de recuperación de un solo uso
+            # (para cuando el usuario perdió su app autenticadora).
             if not totp.verify(otp, valid_window=1):
-                raise serializers.ValidationError({
-                    'otp_required': True,
-                    'detail': 'Código de verificación inválido o expirado.',
-                })
+                from .twofa import consume_recovery_code
+                if not consume_recovery_code(user, otp):
+                    raise serializers.ValidationError({
+                        'otp_required': True,
+                        'detail': 'Código de verificación inválido o expirado.',
+                    })
 
         return data
 

@@ -73,6 +73,10 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     # usuario verifica un código válido con su app autenticadora.
     is_2fa_enabled = models.BooleanField(default=False)
     totp_secret = models.CharField(max_length=64, blank=True, default='')
+    # Códigos de recuperación 2FA: lista de hashes (SHA-256) de códigos de un
+    # solo uso. Permiten iniciar sesión si se pierde la app autenticadora.
+    # Nunca se exponen; el texto plano se muestra una única vez al generarlos.
+    totp_recovery_codes = models.JSONField(default=list, blank=True)
 
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=False)

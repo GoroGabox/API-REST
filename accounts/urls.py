@@ -35,6 +35,8 @@ from .views import (
     TwoFASetupView,
     TwoFAVerifyView,
     TwoFADisableView,
+    TwoFARecoveryRegenerateView,
+    TwoFAAdminDisableView,
     LeaderboardView,
     PushTokensView,
     PushTokenDeleteView,
@@ -92,6 +94,8 @@ urlpatterns = [
     path("me/2fa/setup/", TwoFASetupView.as_view(), name="me_2fa_setup"),
     path("me/2fa/verify/", TwoFAVerifyView.as_view(), name="me_2fa_verify"),
     path("me/2fa/disable/", TwoFADisableView.as_view(), name="me_2fa_disable"),
+    path("me/2fa/recovery-codes/", TwoFARecoveryRegenerateView.as_view(), name="me_2fa_recovery"),
+    path("users/<int:user_id>/2fa/disable/", TwoFAAdminDisableView.as_view(), name="admin_2fa_disable"),
 
     # Ranking + notificaciones + push
     path("leaderboard/", LeaderboardView.as_view(), name="leaderboard"),
