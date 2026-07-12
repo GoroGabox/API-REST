@@ -9,6 +9,15 @@ Soportados:
     DJANGO_ENV=test        -> .test
 """
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Cargar el .env ANTES de decidir el entorno. Si no, `os.getenv('DEBUG')` se
+# evalúa antes de que base.py cargue el .env y, sin DJANGO_ENV explícito, el
+# default cae a 'production' incluso en local — activando SECURE_SSL_REDIRECT,
+# cookies seguras y HSTS, lo que rompe el desarrollo por HTTP.
+load_dotenv(Path(__file__).resolve().parent.parent.parent / '.env')
 
 _env = os.getenv('DJANGO_ENV')
 if not _env:

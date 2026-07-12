@@ -14,13 +14,47 @@ from .models import Notificacion, PushToken
 logger = logging.getLogger(__name__)
 
 
-def notificar(user, tipo: str, titulo: str, mensaje: str = '', data: Optional[dict] = None) -> Notificacion:
-    """Crea registro in-app y dispara push a todos los tokens del usuario."""
+def notificar(user, tipo: str, titulo: str, mensaje: str = '', data: Optional[dict] = None,
+              email: bool = False) -> Notificacion:
+    """Crea registro in-app y dispara push a todos los tokens del usuario.
+
+    Si `email=True`, además envía la notificación por correo, respetando la
+    preferencia `email_notifications` del usuario (ver `_dispatch_email`).
+    """
     notif = Notificacion.objects.create(
         usuario=user, tipo=tipo, titulo=titulo, mensaje=mensaje, data=data or {},
     )
     _dispatch_push(user, notif)
+    if email:
+        _dispatch_email(user, notif)
     return notif
+
+
+def _dispatch_email(user, notif: Notificacion):
+    """Envía la notificación por correo si el usuario NO desactivó las
+    notificaciones por email (preferencia `email_notifications`, default True).
+
+    Best-effort: nunca rompe el flujo que originó la notificación.
+    """
+    from django.conf import settings as _settings
+    from django.core.mail import send_mail
+
+    if not getattr(user, 'email_notifications', True):
+        logger.info("email notif omitido (preferencia off) usuario=%s notif=%s", user.id, notif.id)
+        return
+    email_to = getattr(user, 'email', None)
+    if not email_to:
+        return
+    try:
+        send_mail(
+            subject=notif.titulo,
+            message=notif.mensaje,
+            from_email=_settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email_to],
+            fail_silently=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("email notificación fallo notif=%s usuario=%s: %s", notif.id, user.id, e)
 
 
 EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
