@@ -1035,3 +1035,34 @@ class AdminUsuarioGestionTests(APITestCase):
         )
         self.assertIn(r.status_code, (403, 401))
         self.assertFalse(Usuario.objects.filter(email="z_gest@x.com").exists())
+
+
+class CredentialResendCooldownTests(APITestCase):
+    """Cooldown anti-spam del reenvío de credenciales (#11)."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
+        self.director = make_user("dir_cd@a.com", is_director=True, escuela=self.escuela)
+        self.est = make_user("est_cd@a.com", is_estudiante=True, escuela=self.escuela)
+
+    def test_segundo_reenvio_inmediato_bloqueado_429(self):
+        self.client.force_authenticate(self.director)
+        url = reverse('password_reset_invite', args=[self.est.id])
+        r1 = self.client.post(url)
+        self.assertEqual(r1.status_code, 200, r1.data)
+        r2 = self.client.post(url)
+        self.assertEqual(r2.status_code, 429)
+        self.assertIn('retry_after', r2.data)
+
+    def test_cooldown_es_por_destinatario(self):
+        self.client.force_authenticate(self.director)
+        est2 = make_user("est2_cd@a.com", is_estudiante=True, escuela=self.escuela)
+        self.assertEqual(
+            self.client.post(reverse('password_reset_invite', args=[self.est.id])).status_code, 200,
+        )
+        # Otro estudiante no comparte el cooldown.
+        self.assertEqual(
+            self.client.post(reverse('password_reset_invite', args=[est2.id])).status_code, 200,
+        )

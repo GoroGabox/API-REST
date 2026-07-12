@@ -179,6 +179,7 @@ class PasswordResetInviteView(APIView):
     - estudiante: 403.
     """
     permission_classes = [permissions.IsAuthenticated]
+    COOLDOWN_SECONDS = 60
 
     def post(self, request, user_id):
         if not (is_admin(request.user) or is_director(request.user)):
@@ -194,6 +195,22 @@ class PasswordResetInviteView(APIView):
                 return Response({"detail": "No autorizado sobre ese usuario."}, status=status.HTTP_403_FORBIDDEN)
             if target.is_staff or target.is_superuser or target.is_director:
                 return Response({"detail": "No autorizado sobre ese usuario."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Cooldown anti-spam por destinatario. Evita reenviar el mismo correo en
+        # ráfaga (doble clic o abuso). Usa el framework de cache; para varios
+        # workers conviene un backend compartido (Redis/Memcached).
+        import time
+        from django.core.cache import cache
+        cache_key = f"cred_resend:{target.id}"
+        last = cache.get(cache_key)
+        now = time.time()
+        if last is not None and (now - last) < self.COOLDOWN_SECONDS:
+            retry = int(self.COOLDOWN_SECONDS - (now - last)) + 1
+            return Response(
+                {"detail": f"Espera {retry}s antes de reenviar las credenciales.", "retry_after": retry},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        cache.set(cache_key, now, self.COOLDOWN_SECONDS)
 
         uid = urlsafe_base64_encode(force_bytes(target.id))
         token = default_token_generator.make_token(target)
