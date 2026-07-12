@@ -65,6 +65,15 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
 
     escuela = models.ForeignKey(Escuela, on_delete=models.SET_NULL, null=True, blank=True)
 
+    # Preferencias de cuenta
+    email_notifications = models.BooleanField(default=True)
+
+    # Autenticación en dos pasos (TOTP). `totp_secret` guarda la clave base32
+    # (nunca se expone por la API); `is_2fa_enabled` solo pasa a True tras que el
+    # usuario verifica un código válido con su app autenticadora.
+    is_2fa_enabled = models.BooleanField(default=False)
+    totp_secret = models.CharField(max_length=64, blank=True, default='')
+
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)

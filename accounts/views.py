@@ -1,5 +1,6 @@
 import os
 from collections import defaultdict
+from django.conf import settings
 from django.http import Http404
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.contrib.auth.tokens import default_token_generator
@@ -643,6 +644,122 @@ class MeStatsView(APIView):
             'streak_frozen_until': u.streak_frozen_until,
             'last_active_date': u.last_active_date,
         })
+
+
+class TwoFASetupView(APIView):
+    """POST /api/v1/accounts/me/2fa/setup/ — inicia el enrolamiento 2FA.
+
+    Genera (o regenera) un secreto TOTP pendiente y devuelve la URI de
+    aprovisionamiento + un QR PNG (data URI) para escanear con la app
+    autenticadora. NO activa 2FA todavía: eso ocurre al verificar un código
+    válido en `TwoFAVerifyView`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        import base64
+        import io
+        import pyotp
+        import qrcode
+
+        user = request.user
+        if user.is_2fa_enabled:
+            return Response(
+                {"detail": "La autenticación en dos pasos ya está activada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        secret = pyotp.random_base32()
+        user.totp_secret = secret
+        user.save(update_fields=["totp_secret"])
+
+        issuer = getattr(settings, "TOTP_ISSUER", "AutoTest")
+        otpauth_uri = pyotp.TOTP(secret).provisioning_uri(
+            name=user.email, issuer_name=issuer
+        )
+
+        img = qrcode.make(otpauth_uri)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        qr_data_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+        return Response(
+            {"secret": secret, "otpauth_uri": otpauth_uri, "qr": qr_data_uri},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TwoFAVerifyView(APIView):
+    """POST /api/v1/accounts/me/2fa/verify/ {code} — activa 2FA.
+
+    Valida el código de 6 dígitos contra el secreto pendiente. Solo entonces
+    marca `is_2fa_enabled=True`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        import pyotp
+
+        user = request.user
+        code = str(request.data.get("code") or "").strip()
+
+        if not user.totp_secret:
+            return Response(
+                {"detail": "Primero inicia la configuración de 2FA."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not code:
+            return Response(
+                {"detail": "Ingresa el código de 6 dígitos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not pyotp.TOTP(user.totp_secret).verify(code, valid_window=1):
+            return Response(
+                {"detail": "Código inválido o expirado. Intenta nuevamente."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.is_2fa_enabled = True
+        user.save(update_fields=["is_2fa_enabled"])
+        return Response(
+            {"detail": "Autenticación en dos pasos activada.", "is_2fa_enabled": True},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TwoFADisableView(APIView):
+    """POST /api/v1/accounts/me/2fa/disable/ {code} — desactiva 2FA.
+
+    Exige un código válido (o, si el secreto ya se perdió, permite limpiar el
+    estado) antes de desactivar, para que un tercero con la sesión abierta no la
+    apague trivialmente.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        import pyotp
+
+        user = request.user
+        if not user.is_2fa_enabled:
+            return Response(
+                {"detail": "La autenticación en dos pasos no está activada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        code = str(request.data.get("code") or "").strip()
+        if not code or not pyotp.TOTP(user.totp_secret).verify(code, valid_window=1):
+            return Response(
+                {"detail": "Código inválido. No se desactivó 2FA."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.is_2fa_enabled = False
+        user.totp_secret = ""
+        user.save(update_fields=["is_2fa_enabled", "totp_secret"])
+        return Response(
+            {"detail": "Autenticación en dos pasos desactivada.", "is_2fa_enabled": False},
+            status=status.HTTP_200_OK,
+        )
 
 
 class LeaderboardView(APIView):

@@ -100,6 +100,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
             'direccion',
             'telefono',
             'avatar_url',
+            'email_notifications',
             'escuela',
             'is_director',
             'is_estudiante',
@@ -140,9 +141,13 @@ class UsuarioMeSerializer(serializers.ModelSerializer):
         model = Usuario
         fields = [
             'id', 'nombre', 'apellido', 'email', 'rut', 'direccion',
-            'telefono', 'avatar_url', 'escuela', 'is_director', 'is_estudiante',
+            'telefono', 'avatar_url', 'email_notifications', 'is_2fa_enabled',
+            'escuela', 'is_director', 'is_estudiante',
             'date_joined', 'stats',
         ]
+        # is_2fa_enabled es de solo lectura aquí: activar/desactivar 2FA pasa por
+        # los endpoints dedicados (setup/verify/disable), nunca por PATCH /me/.
+        read_only_fields = ['is_2fa_enabled']
 
     def get_stats(self, obj):
         from . import gamification
@@ -220,6 +225,31 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['is_superuser'] = user.is_superuser
 
         return token
+
+    def validate(self, attrs):
+        # super().validate() autentica email+password y expone self.user.
+        data = super().validate(attrs)
+
+        user = self.user
+        if getattr(user, 'is_2fa_enabled', False) and user.totp_secret:
+            import pyotp
+            otp = str(self.initial_data.get('otp') or '').strip()
+            if not otp:
+                # 401 con bandera para que el frontend pida el código sin tratarlo
+                # como credenciales inválidas.
+                raise serializers.ValidationError({
+                    'otp_required': True,
+                    'detail': 'Ingresa el código de verificación de dos pasos.',
+                })
+            totp = pyotp.TOTP(user.totp_secret)
+            # valid_window=1 tolera desfase de reloj de ±30s.
+            if not totp.verify(otp, valid_window=1):
+                raise serializers.ValidationError({
+                    'otp_required': True,
+                    'detail': 'Código de verificación inválido o expirado.',
+                })
+
+        return data
 
 class CertificadoSerializer(serializers.ModelSerializer):
     codigo = serializers.UUIDField(read_only=True)

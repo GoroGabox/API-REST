@@ -188,3 +188,11 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+
+# ============================================================================
+# Autenticación en dos pasos (TOTP)
+# `TOTP_ISSUER` es el nombre que muestra la app autenticadora (Google/Microsoft
+# Authenticator) junto al código. Sin dominio productivo aún, se usa un valor de
+# prueba desde .env.
+# ============================================================================
+TOTP_ISSUER = os.environ.get('TOTP_ISSUER', 'AutoTest')

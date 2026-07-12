@@ -32,6 +32,9 @@ from .views import (
     MeView,
     MeStatsView,
     MeAchievementsView,
+    TwoFASetupView,
+    TwoFAVerifyView,
+    TwoFADisableView,
     LeaderboardView,
     PushTokensView,
     PushTokenDeleteView,
@@ -84,6 +87,11 @@ urlpatterns = [
     path("me/", MeView.as_view(), name="me_profile"),
     path("me/stats/", MeStatsView.as_view(), name="me_stats"),
     path("me/achievements/", MeAchievementsView.as_view(), name="me_achievements"),
+
+    # 2FA (TOTP)
+    path("me/2fa/setup/", TwoFASetupView.as_view(), name="me_2fa_setup"),
+    path("me/2fa/verify/", TwoFAVerifyView.as_view(), name="me_2fa_verify"),
+    path("me/2fa/disable/", TwoFADisableView.as_view(), name="me_2fa_disable"),
 
     # Ranking + notificaciones + push
     path("leaderboard/", LeaderboardView.as_view(), name="leaderboard"),
