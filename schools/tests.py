@@ -584,3 +584,62 @@ class DesvincularEstudianteTests(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
         self.escuela_a.refresh_from_db()
         self.assertEqual(self.escuela_a.basic_seats_used, 0)
+
+
+# ======================================================================
+# Importación masiva de estudiantes (#7)
+# ======================================================================
+class ImportarEstudiantesTests(APITestCase):
+    def setUp(self):
+        self.escuela = Escuela.objects.create(nombre="A", direccion="x", email="a@a.com", telefono="1")
+        self.otra = Escuela.objects.create(nombre="B", direccion="y", email="b@b.com", telefono="2")
+        self.director = make_user("dir_imp@a.com", is_director=True, escuela=self.escuela)
+        self.admin = make_user("adm_imp@a.com", is_admin=True)
+        self.estudiante = make_user("est_imp@a.com", is_estudiante=True, escuela=self.escuela)
+        # Estudiante existente en otra escuela (para probar "linked").
+        self.est_otra = make_user("otro_imp@b.com", is_estudiante=True, escuela=self.otra)
+
+    def _importar(self, estudiantes):
+        return self.client.post(
+            "/api/v1/schools/importar-estudiantes/", {"estudiantes": estudiantes}, format="json",
+        )
+
+    def test_import_mixto_resumen_y_detalle(self):
+        self.client.force_authenticate(self.director)
+        payload = [
+            {"email": "nuevo1@x.com", "nombre": "Nuevo", "apellido": "Uno"},   # created
+            {"email": "est_imp@a.com"},                                        # already_linked
+            {"email": "otro_imp@b.com"},                                       # linked (movido)
+            {"email": "adm_imp@a.com"},                                        # error (admin)
+            {"email": "no-es-email"},                                          # error (formato)
+            {"email": "nuevo1@x.com"},                                         # error (duplicado en archivo)
+        ]
+        r = self._importar(payload)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        s = r.data["summary"]
+        self.assertEqual(s["created"], 1)
+        self.assertEqual(s["already_linked"], 1)
+        self.assertEqual(s["linked"], 1)
+        self.assertEqual(s["error"], 3)
+        self.assertEqual(len(r.data["results"]), 6)
+        # El nuevo quedó en la escuela del director.
+        nuevo = Usuario.objects.get(email="nuevo1@x.com")
+        self.assertEqual(nuevo.escuela_id, self.escuela.id)
+        self.assertTrue(nuevo.is_estudiante)
+        # El de otra escuela fue movido.
+        self.est_otra.refresh_from_db()
+        self.assertEqual(self.est_otra.escuela_id, self.escuela.id)
+
+    def test_no_director_ni_admin_403(self):
+        self.client.force_authenticate(self.estudiante)
+        r = self._importar([{"email": "x@x.com"}])
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_lista_vacia_400(self):
+        self.client.force_authenticate(self.director)
+        self.assertEqual(self._importar([]).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_supera_maximo_400(self):
+        self.client.force_authenticate(self.director)
+        payload = [{"email": f"u{i}@x.com"} for i in range(301)]
+        self.assertEqual(self._importar(payload).status_code, status.HTTP_400_BAD_REQUEST)

@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import tempfile
 
 from rest_framework import viewsets, status, permissions as drf_permissions
@@ -352,23 +353,111 @@ class CertificadosPorEscuelaView(APIView):
         return Response({"count": len(results), "results": results})
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _enviar_credenciales_estudiante(email, nombre, password):
+    """Envía credenciales temporales al estudiante recién creado (best-effort)."""
+    try:
+        from django.core.mail import send_mail
+        send_mail(
+            subject="Tu cuenta AutoTest",
+            message=(
+                f"Hola {nombre or 'estudiante'},\n\n"
+                f"Se creó tu cuenta en AutoTest.\n"
+                f"Correo: {email}\n"
+                f"Contraseña temporal: {password}\n\n"
+                f"Te recomendamos cambiarla en tu primer inicio de sesión."
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=True,
+        )
+    except Exception:
+        pass
+
+
+def vincular_o_crear_estudiante(email, nombre, apellido, escuela_id):
+    """Vincula (o crea) un estudiante en `escuela_id`. Maneja su propia
+    transacción y, al crear, envía credenciales por email.
+
+    Devuelve dict {status, email, user_id?, detail?} con
+    status ∈ {created, linked, already_linked, error}.
+    """
+    from accounts.models import Usuario
+
+    email = (email or "").strip().lower()
+    if not email:
+        return {"status": "error", "email": email, "detail": "email vacío."}
+    if not _EMAIL_RE.match(email):
+        return {"status": "error", "email": email, "detail": "email inválido."}
+
+    nombre = (nombre or "").strip()
+    apellido = (apellido or "").strip()
+
+    with db_transaction.atomic():
+        existing = Usuario.objects.filter(email__iexact=email).select_for_update().first()
+
+        if existing is not None:
+            if existing.is_staff or existing.is_superuser or existing.is_director:
+                return {"status": "error", "email": email, "detail": "usuario administrativo."}
+            if existing.escuela_id == escuela_id:
+                return {"status": "already_linked", "email": existing.email, "user_id": existing.id}
+            existing.escuela_id = escuela_id
+            existing.is_estudiante = True
+            existing.is_active = True
+            existing.save(update_fields=["escuela", "is_estudiante", "is_active"])
+            return {"status": "linked", "email": existing.email, "user_id": existing.id}
+
+        import secrets
+        random_password = secrets.token_urlsafe(12)
+        new_user = Usuario.objects.create_user(
+            email=email,
+            nombre=nombre or "Estudiante",
+            apellido=apellido or "",
+            password=random_password,
+            is_estudiante=True,
+        )
+        new_user.is_active = True
+        new_user.escuela_id = escuela_id
+        new_user.save(update_fields=["is_active", "escuela"])
+        _enviar_credenciales_estudiante(email, nombre, random_password)
+        return {"status": "created", "email": new_user.email, "user_id": new_user.id}
+
+
+def _resolver_escuela_objetivo(request):
+    """Escuela destino para vincular/importar. Devuelve (escuela_id, error|None).
+
+    director → su propia escuela; admin → `escuela_id` del body.
+    """
+    if is_director(request.user):
+        if not request.user.escuela_id:
+            return None, Response(
+                {"detail": "El director no tiene escuela asignada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return request.user.escuela_id, None
+    escuela_id = request.data.get("escuela_id") or request.data.get("escuela")
+    if not escuela_id:
+        return None, Response(
+            {"detail": "escuela_id requerido cuando el caller es admin."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not Escuela.objects.filter(pk=escuela_id).exists():
+        return None, Response({"detail": "Escuela no existe."}, status=status.HTTP_404_NOT_FOUND)
+    return escuela_id, None
+
+
 class VincularEstudianteView(APIView):
-    """POST /api/v1/schools/vincular-estudiante/
+    """POST /api/v1/schools/vincular-estudiante/  {email, nombre?, apellido?}
 
     Vincula (o crea) un estudiante a la escuela del director autenticado.
-    Diseñado para reemplazar el patrón inseguro de buscar por email y luego
-    PATCH del user — no expone emails a terceros.
-
-    Body:
-      email:     requerido
-      nombre:    opcional (usado si se crea)
-      apellido:  opcional (usado si se crea)
 
     Respuestas:
       201 { status: "created",        user_id, email }
       200 { status: "linked",         user_id, email }
       200 { status: "already_linked", user_id, email }
-      403 { detail: ... }             si el email pertenece a un admin/director/staff
+      403 { detail: ... }             email de admin/director/staff
       400 { detail: "email requerido." }
     """
     permission_classes = [drf_permissions.IsAuthenticated]
@@ -376,96 +465,85 @@ class VincularEstudianteView(APIView):
     def post(self, request):
         if not (is_director(request.user) or is_admin(request.user)):
             return Response({"detail": "Solo director o admin."}, status=status.HTTP_403_FORBIDDEN)
-        if is_director(request.user) and not request.user.escuela_id:
+
+        escuela_id, err = _resolver_escuela_objetivo(request)
+        if err is not None:
+            return err
+
+        if not (request.data.get("email") or "").strip():
+            return Response({"detail": "email requerido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = vincular_o_crear_estudiante(
+            request.data.get("email"), request.data.get("nombre"),
+            request.data.get("apellido"), escuela_id,
+        )
+        if result["status"] == "error":
+            if "administrativo" in (result.get("detail") or ""):
+                return Response(
+                    {"detail": "No se puede vincular usuario administrativo."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return Response(
-                {"detail": "El director no tiene escuela asignada."},
+                {"detail": result.get("detail") or "email inválido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        code = status.HTTP_201_CREATED if result["status"] == "created" else status.HTTP_200_OK
+        return Response(result, status=code)
+
+
+class ImportarEstudiantesView(APIView):
+    """POST /api/v1/schools/importar-estudiantes/
+       { estudiantes: [{email, nombre?, apellido?}], escuela_id? }
+
+    Vincula/crea estudiantes en lote (carga masiva). Cada fila se procesa de
+    forma independiente; una fila con error no aborta el resto. Devuelve un
+    resumen agregado + el detalle por fila.
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+    MAX_ROWS = 300
+
+    def post(self, request):
+        if not (is_director(request.user) or is_admin(request.user)):
+            return Response({"detail": "Solo director o admin."}, status=status.HTTP_403_FORBIDDEN)
+
+        escuela_id, err = _resolver_escuela_objetivo(request)
+        if err is not None:
+            return err
+
+        rows = request.data.get("estudiantes")
+        if not isinstance(rows, list) or not rows:
+            return Response(
+                {"detail": "Envía 'estudiantes' como una lista no vacía."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(rows) > self.MAX_ROWS:
+            return Response(
+                {"detail": f"Máximo {self.MAX_ROWS} estudiantes por importación."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        email = (request.data.get("email") or "").strip().lower()
-        if not email:
-            return Response({"detail": "email requerido."}, status=status.HTTP_400_BAD_REQUEST)
-
-        nombre = (request.data.get("nombre") or "").strip()
-        apellido = (request.data.get("apellido") or "").strip()
-
-        from accounts.models import Usuario
-
-        # Determinar la escuela objetivo:
-        #   - director → su propia escuela.
-        #   - admin  → puede indicar escuela_id en el body; si no, 400.
-        if is_director(request.user):
-            escuela_id = request.user.escuela_id
-        else:
-            escuela_id = request.data.get("escuela_id") or request.data.get("escuela")
-            if not escuela_id:
-                return Response(
-                    {"detail": "escuela_id requerido cuando el caller es admin."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if not Escuela.objects.filter(pk=escuela_id).exists():
-                return Response({"detail": "Escuela no existe."}, status=status.HTTP_404_NOT_FOUND)
-
-        with db_transaction.atomic():
-            existing = Usuario.objects.filter(email__iexact=email).select_for_update().first()
-
-            if existing is not None:
-                if existing.is_staff or existing.is_superuser or existing.is_director:
-                    return Response(
-                        {"detail": "No se puede vincular usuario administrativo."},
-                        status=status.HTTP_403_FORBIDDEN,
-                    )
-                if existing.escuela_id == escuela_id:
-                    return Response(
-                        {"status": "already_linked", "user_id": existing.id, "email": existing.email},
-                        status=status.HTTP_200_OK,
-                    )
-                existing.escuela_id = escuela_id
-                existing.is_estudiante = True
-                existing.is_active = True
-                existing.save(update_fields=["escuela", "is_estudiante", "is_active"])
-                return Response(
-                    {"status": "linked", "user_id": existing.id, "email": existing.email},
-                    status=status.HTTP_200_OK,
-                )
-
-            # Crear usuario nuevo con password aleatoria; enviar por email.
-            import secrets
-            random_password = secrets.token_urlsafe(12)
-            new_user = Usuario.objects.create_user(
-                email=email,
-                nombre=nombre or "Estudiante",
-                apellido=apellido or "",
-                password=random_password,
-                is_estudiante=True,
+        results = []
+        summary = {"created": 0, "linked": 0, "already_linked": 0, "error": 0}
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                results.append({"status": "error", "email": "", "detail": "fila inválida."})
+                summary["error"] += 1
+                continue
+            email_norm = (row.get("email") or "").strip().lower()
+            if email_norm and email_norm in seen:
+                results.append({"status": "error", "email": email_norm, "detail": "duplicado en el archivo."})
+                summary["error"] += 1
+                continue
+            if email_norm:
+                seen.add(email_norm)
+            res = vincular_o_crear_estudiante(
+                row.get("email"), row.get("nombre"), row.get("apellido"), escuela_id,
             )
-            new_user.is_active = True
-            new_user.escuela_id = escuela_id
-            new_user.save(update_fields=["is_active", "escuela"])
+            summary[res["status"]] = summary.get(res["status"], 0) + 1
+            results.append(res)
 
-            # Enviar credenciales por email (best-effort).
-            try:
-                from django.core.mail import send_mail
-                send_mail(
-                    subject="Tu cuenta AutoTest",
-                    message=(
-                        f"Hola {nombre or 'estudiante'},\n\n"
-                        f"Se creó tu cuenta en AutoTest.\n"
-                        f"Correo: {email}\n"
-                        f"Contraseña temporal: {random_password}\n\n"
-                        f"Te recomendamos cambiarla en tu primer inicio de sesión."
-                    ),
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[email],
-                    fail_silently=True,
-                )
-            except Exception:
-                pass
-
-            return Response(
-                {"status": "created", "user_id": new_user.id, "email": new_user.email},
-                status=status.HTTP_201_CREATED,
-            )
+        return Response({"summary": summary, "results": results}, status=status.HTTP_200_OK)
 
 
 class DesvincularEstudianteView(APIView):

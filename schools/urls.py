@@ -11,6 +11,7 @@ from .views import (
     RecursoViewSet,
     VincularEstudianteView,
     DesvincularEstudianteView,
+    ImportarEstudiantesView,
     ProgresoEstudianteDetalleView,
     CertificadosPorEscuelaView,
     CourseGenerateView,
@@ -47,6 +48,11 @@ urlpatterns = [
         "desvincular-estudiante/",
         DesvincularEstudianteView.as_view(),
         name="desvincular_estudiante",
+    ),
+    path(
+        "importar-estudiantes/",
+        ImportarEstudiantesView.as_view(),
+        name="importar_estudiantes",
     ),
     path(
         "<int:school_id>/estudiantes/<int:user_id>/progreso/",
