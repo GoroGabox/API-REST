@@ -9,6 +9,7 @@ Soportados:
     DJANGO_ENV=test        -> .test
 """
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -21,7 +22,12 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / '.env')
 
 _env = os.getenv('DJANGO_ENV')
 if not _env:
-    _env = 'development' if os.getenv('DEBUG', 'False') == 'True' else 'production'
+    # `manage.py test` usa siempre el entorno de test (DB en memoria, email
+    # locmem, hasher rápido) sin necesidad de exportar DJANGO_ENV.
+    if 'test' in sys.argv:
+        _env = 'test'
+    else:
+        _env = 'development' if os.getenv('DEBUG', 'False') == 'True' else 'production'
 
 if _env == 'production':
     from .production import *  # noqa: F401,F403

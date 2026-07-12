@@ -533,3 +533,121 @@ class SubscriptionSeatsTests(APITestCase):
             f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec_id_b}/"
         )
         self.assertEqual(r.status_code, 404)
+
+
+# ======================================================================
+# Revocar llave (#8) y bloqueo de escritura directa en viewsets (#2)
+# ======================================================================
+class RevocarLlaveTests(APITestCase):
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from schools.models import Curso, Escuela
+        from sales.models import AccessKey, EstudianteCurso
+
+        self.escuela_a = Escuela.objects.create(
+            nombre="A", direccion="x", email="a@a.com", telefono="1",
+            basic_key=5, professional_key=5,
+        )
+        self.escuela_b = Escuela.objects.create(
+            nombre="B", direccion="y", email="b@b.com", telefono="2",
+        )
+        self.admin = make_user("adm_rev@a.com", is_admin=True)
+        self.dir_a = make_user("dira_rev@a.com", is_director=True, escuela=self.escuela_a)
+        self.dir_b = make_user("dirb_rev@b.com", is_director=True, escuela=self.escuela_b)
+        self.est_a = make_user("esta_rev@a.com", is_estudiante=True, escuela=self.escuela_a)
+        self.curso = Curso.objects.create(nombre="B", descripcion="d", is_profesional=False)
+
+        now = timezone.now()
+        self.key = AccessKey.objects.create(
+            valid_from=now - timedelta(days=1), valid_until=now + timedelta(days=10), origen="key",
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.est_a, curso_id=self.curso, access_key_id=self.key,
+        )
+
+    def _revocar(self, key_id):
+        return self.client.post(
+            "/api/v1/sales/revocar_llave/", {"access_key_id": str(key_id)}, format="json",
+        )
+
+    def test_director_revoca_llave_de_su_escuela(self):
+        self.client.force_authenticate(self.dir_a)
+        r = self._revocar(self.key.id)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.key.refresh_from_db()
+        self.assertEqual(self.key.status, "revoked")
+
+    def test_director_de_otra_escuela_403(self):
+        self.client.force_authenticate(self.dir_b)
+        r = self._revocar(self.key.id)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.key.refresh_from_db()
+        self.assertEqual(self.key.status, "active")
+
+    def test_estudiante_403(self):
+        self.client.force_authenticate(self.est_a)
+        self.assertEqual(self._revocar(self.key.id).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_llave_inexistente_404(self):
+        self.client.force_authenticate(self.dir_a)
+        r = self._revocar("00000000-0000-0000-0000-000000000000")
+        self.assertEqual(r.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_revocar_seat_libera_cupo(self):
+        from sales.models import AccessKey, EstudianteCurso
+        self.escuela_a.basic_seats_used = 1
+        self.escuela_a.save()
+        seat_key = AccessKey.objects.create(valid_until=None, origen="seat")
+        est2 = make_user("esta2_rev@a.com", is_estudiante=True, escuela=self.escuela_a)
+        EstudianteCurso.objects.create(
+            estudiante_id=est2, curso_id=self.curso, access_key_id=seat_key,
+        )
+        self.client.force_authenticate(self.dir_a)
+        r = self._revocar(seat_key.id)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_seats_used, 0)
+
+
+class DirectWriteAuthzTests(APITestCase):
+    """El director puede LEER llaves/inscripciones de su escuela pero no crear/
+    editar por la vía genérica (evita otorgar acceso sin consumir saldo)."""
+
+    def setUp(self):
+        from schools.models import Curso, Escuela
+        self.escuela = Escuela.objects.create(
+            nombre="A", direccion="x", email="a@a.com", telefono="1", basic_key=5,
+        )
+        self.admin = make_user("adm_authz@a.com", is_admin=True)
+        self.director = make_user("dir_authz@a.com", is_director=True, escuela=self.escuela)
+        self.est = make_user("est_authz@a.com", is_estudiante=True, escuela=self.escuela)
+        self.curso = Curso.objects.create(nombre="B", descripcion="d", is_profesional=False)
+
+    def test_director_lee_pero_no_crea_access_key(self):
+        self.client.force_authenticate(self.director)
+        self.assertEqual(self.client.get("/api/v1/sales/access_key/").status_code, status.HTTP_200_OK)
+        r = self.client.post(
+            "/api/v1/sales/access_key/", {"status": "active", "origen": "key"}, format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_director_no_crea_estudiante_curso(self):
+        from sales.models import EstudianteCurso
+        self.client.force_authenticate(self.director)
+        r = self.client.post(
+            "/api/v1/sales/estudiante_curso/",
+            {"estudiante_id": self.est.id, "curso_id": self.curso.id},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            EstudianteCurso.objects.filter(estudiante_id_id=self.est.id).count(), 0,
+        )
+
+    def test_admin_si_crea_access_key(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post(
+            "/api/v1/sales/access_key/", {"status": "active", "origen": "key"}, format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)

@@ -505,3 +505,82 @@ class EjercicioBulkUploadTests(APITestCase):
         r = self.client.get("/api/v1/schools/exercices/bulk-template/")
         self.assertEqual(r.status_code, 200)
         self.assertIn("spreadsheetml", r["Content-Type"])
+
+
+# ======================================================================
+# Desvincular estudiante (#7)
+# ======================================================================
+from accounts.tests import make_user  # noqa: E402
+
+
+class DesvincularEstudianteTests(APITestCase):
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from schools.models import Curso
+        from sales.models import AccessKey, EstudianteCurso
+
+        self.escuela_a = Escuela.objects.create(nombre="A", direccion="x", email="a@a.com", telefono="1")
+        self.escuela_b = Escuela.objects.create(nombre="B", direccion="y", email="b@b.com", telefono="2")
+        self.admin = make_user("adm_des@a.com", is_admin=True)
+        self.dir_a = make_user("dira_des@a.com", is_director=True, escuela=self.escuela_a)
+        self.dir_b = make_user("dirb_des@b.com", is_director=True, escuela=self.escuela_b)
+        self.est = make_user("est_des@a.com", is_estudiante=True, escuela=self.escuela_a)
+        self.curso = Curso.objects.create(nombre="B", descripcion="d", is_profesional=False)
+
+        now = timezone.now()
+        self.key = AccessKey.objects.create(
+            valid_from=now - timedelta(days=1), valid_until=now + timedelta(days=10), origen="key",
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.est, curso_id=self.curso, access_key_id=self.key,
+        )
+
+    def _desvincular(self, user_id):
+        return self.client.post(
+            "/api/v1/schools/desvincular-estudiante/", {"user_id": user_id}, format="json",
+        )
+
+    def test_director_desvincula_y_revoca_accesos(self):
+        from sales.models import EstudianteCurso
+        self.client.force_authenticate(self.dir_a)
+        r = self._desvincular(self.est.id)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.est.refresh_from_db()
+        self.assertIsNone(self.est.escuela_id)
+        self.assertEqual(EstudianteCurso.objects.filter(estudiante_id_id=self.est.id).count(), 0)
+        self.key.refresh_from_db()
+        self.assertEqual(self.key.status, "revoked")
+
+    def test_director_de_otra_escuela_403(self):
+        self.client.force_authenticate(self.dir_b)
+        r = self._desvincular(self.est.id)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.escuela_id, self.escuela_a.id)
+
+    def test_no_permite_desvincular_administrativo(self):
+        otro_dir = make_user("otrodir_des@a.com", is_director=True, escuela=self.escuela_a)
+        self.client.force_authenticate(self.dir_a)
+        r = self._desvincular(otro_dir.id)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_user_id_requerido(self):
+        self.client.force_authenticate(self.dir_a)
+        r = self.client.post("/api/v1/schools/desvincular-estudiante/", {}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_seat_libera_cupo(self):
+        from sales.models import AccessKey, EstudianteCurso
+        self.escuela_a.basic_seats_used = 1
+        self.escuela_a.save()
+        seat_key = AccessKey.objects.create(valid_until=None, origen="seat")
+        est2 = make_user("est2_des@a.com", is_estudiante=True, escuela=self.escuela_a)
+        EstudianteCurso.objects.create(
+            estudiante_id=est2, curso_id=self.curso, access_key_id=seat_key,
+        )
+        self.client.force_authenticate(self.dir_a)
+        r = self._desvincular(est2.id)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_seats_used, 0)
