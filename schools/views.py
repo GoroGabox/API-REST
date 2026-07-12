@@ -467,6 +467,83 @@ class VincularEstudianteView(APIView):
             )
 
 
+class DesvincularEstudianteView(APIView):
+    """POST /api/v1/schools/desvincular-estudiante/ {user_id}
+
+    Quita a un estudiante de la escuela del director: pone `escuela=None` y
+    retira su acceso a los cursos otorgados por la escuela — marca las
+    AccessKey como 'revoked', libera cupos de suscripción (decrementa
+    *_seats_used) y borra los EstudianteCurso.
+
+    Permisos:
+    - admin: cualquier estudiante.
+    - director: solo estudiantes de su escuela.
+    Rechaza usuarios administrativos.
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not (is_director(request.user) or is_admin(request.user)):
+            return Response({"detail": "Solo director o admin."}, status=status.HTTP_403_FORBIDDEN)
+
+        user_id = request.data.get("user_id")
+        if not user_id:
+            return Response({"detail": "user_id requerido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from accounts.models import Usuario
+        from sales.models import EstudianteCurso
+
+        with db_transaction.atomic():
+            try:
+                target = Usuario.objects.select_for_update().get(pk=user_id)
+            except Usuario.DoesNotExist:
+                return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+            if target.is_staff or target.is_superuser or target.is_director:
+                return Response(
+                    {"detail": "No se puede desvincular un usuario administrativo."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if is_director(request.user) and target.escuela_id != request.user.escuela_id:
+                return Response(
+                    {"detail": "El estudiante no pertenece a tu escuela."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            escuela = (
+                Escuela.objects.select_for_update().filter(pk=target.escuela_id).first()
+                if target.escuela_id else None
+            )
+
+            inscripciones = (
+                EstudianteCurso.objects
+                .select_related("curso_id", "access_key_id")
+                .filter(estudiante_id=target)
+            )
+            for ec in inscripciones:
+                ak = ec.access_key_id
+                if ak and ak.origen == "seat" and escuela is not None:
+                    if ec.curso_id.is_profesional:
+                        if escuela.professional_seats_used > 0:
+                            escuela.professional_seats_used -= 1
+                    else:
+                        if escuela.basic_seats_used > 0:
+                            escuela.basic_seats_used -= 1
+                if ak:
+                    ak.status = "revoked"
+                    ak.save(update_fields=["status"])
+                ec.delete()
+
+            if escuela is not None:
+                escuela.save()
+
+            target.escuela = None
+            target.save(update_fields=["escuela"])
+
+        return Response({"status": "unlinked", "user_id": target.id}, status=status.HTTP_200_OK)
+
+
 class CursoViewSet(viewsets.ModelViewSet):
     queryset = Curso.objects.all()
     serializer_class = CursoSerializer

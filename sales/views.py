@@ -540,6 +540,79 @@ class ExtenderLlaveView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class RevocarLlaveView(APIView):
+    """POST /api/v1/sales/revocar_llave/ {access_key_id}
+
+    Revoca una AccessKey (status='revoked'), retirando el acceso del estudiante
+    al curso. NO reembolsa el saldo de la escuela (la llave ya fue consumida).
+    Si la llave es de origen 'seat', libera además el cupo (decrementa
+    *_seats_used) para que vuelva al pool disponible.
+
+    Permisos:
+    - admin: cualquier llave.
+    - director: solo llaves de estudiantes de su escuela.
+    - estudiante: 403.
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def post(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        if is_estudiante(request.user) or not (is_admin(request.user) or is_director(request.user)):
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        access_key_id = request.data.get("access_key_id")
+        if not access_key_id:
+            return Response({"error": "access_key_id requerido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with db_transaction.atomic():
+            try:
+                access_key = AccessKey.objects.select_for_update().get(pk=access_key_id)
+            except (AccessKey.DoesNotExist, ValueError, DjangoValidationError):
+                return Response({"error": "Llave no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+            inscripcion = (
+                EstudianteCurso.objects
+                .select_related("curso_id", "estudiante_id")
+                .filter(access_key_id=access_key)
+                .first()
+            )
+
+            # Scope director: solo llaves de estudiantes de su escuela.
+            if is_director(request.user):
+                est = inscripcion.estudiante_id if inscripcion else None
+                if est is None or est.escuela_id != request.user.escuela_id:
+                    return Response(
+                        {"error": "Solo puedes revocar llaves de estudiantes de tu escuela."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+            if access_key.status == "revoked":
+                return Response(
+                    {"status": "already_revoked", "access_key_id": str(access_key.id)},
+                    status=status.HTTP_200_OK,
+                )
+
+            # Si ocupaba un cupo de suscripción, devolverlo al pool.
+            if access_key.origen == "seat" and inscripcion is not None and inscripcion.estudiante_id.escuela_id:
+                escuela = Escuela.objects.select_for_update().get(pk=inscripcion.estudiante_id.escuela_id)
+                if inscripcion.curso_id.is_profesional:
+                    if escuela.professional_seats_used > 0:
+                        escuela.professional_seats_used -= 1
+                else:
+                    if escuela.basic_seats_used > 0:
+                        escuela.basic_seats_used -= 1
+                escuela.save()
+
+            access_key.status = "revoked"
+            access_key.save(update_fields=["status"])
+
+        return Response(
+            {"status": "revoked", "access_key_id": str(access_key.id)},
+            status=status.HTTP_200_OK,
+        )
+
+
 #Solo TransBank
 class SaleInitiationViewSet(APIView):
     permission_classes = [drf_permissions.IsAuthenticated]

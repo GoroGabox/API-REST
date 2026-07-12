@@ -11,6 +11,7 @@ from .views import (
     UnifiedPaymentConfirmationView,
     ActivarCursoView,
     ExtenderLlaveView,
+    RevocarLlaveView,
     CanjearLlaveView,
     EstudianteCursoDetailViewSet,
     EstudiantesCursosActivosPorEscuelaView,
@@ -31,6 +32,7 @@ urlpatterns = [
     path('pay_confirm/', UnifiedPaymentConfirmationView.as_view(), name='pay_confirm_view'),
     path('activar_curso/', ActivarCursoView.as_view(), name='activar_curso_view'),
     path('extender_llave/', ExtenderLlaveView.as_view(), name='extender_llave_view'),
+    path('revocar_llave/', RevocarLlaveView.as_view(), name='revocar_llave_view'),
     path('canjear_llave/', CanjearLlaveView.as_view(), name='canjear_llave_view'),
     path('escuelas/<int:escuela_id>/estudiantes-cursos-activos/', EstudiantesCursosActivosPorEscuelaView.as_view(),name='estudiantes_cursos_activos_por_escuela'),
     path(
