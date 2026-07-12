@@ -105,7 +105,12 @@ class AccessKeyViewSet(viewsets.ModelViewSet):
     """
     queryset = AccessKey.objects.all()
     serializer_class = AccessKeySerializer
-    permission_classes = [drf_permissions.IsAuthenticated]
+    # Lectura: autenticado (scopeada por get_queryset). Escritura: solo admin.
+    # Los directores NO crean/editan llaves por esta vía genérica —usan los
+    # flujos con reglas de negocio (activar_curso / revocar_llave / extender)—;
+    # exponer create/update/delete aquí permitiría otorgar acceso sin consumir
+    # saldo ni pasar por la pasarela de pago.
+    permission_classes = [ReadOnlyOrAdmin]
 
     def get_queryset(self):
         user = self.request.user
@@ -123,7 +128,10 @@ class EstudianteCursoViewSet(viewsets.ModelViewSet):
     serializer_class = EstudianteCursoSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['estudiante_id', 'curso_id']
-    permission_classes = [drf_permissions.IsAuthenticated]
+    # Lectura: autenticado (scopeada por get_queryset). Escritura: solo admin.
+    # Crear inscripciones directas saltaría el consumo de llaves/cupos; los
+    # directores inscriben vía activar_curso.
+    permission_classes = [ReadOnlyOrAdmin]
 
     def get_queryset(self):
         return _scope_estudiante_curso(EstudianteCurso.objects.all(), self.request.user)

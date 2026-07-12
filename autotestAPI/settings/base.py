@@ -189,6 +189,17 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 
+# Remitente por defecto de todo correo transaccional. DEBE coincidir con la
+# cuenta SMTP autenticada (EMAIL_HOST_USER): Gmail rechaza o marca como spam un
+# `From` distinto al de la cuenta que envía. Se permite un display name.
+# Configurable por env (DEFAULT_FROM_EMAIL) para producción.
+DEFAULT_FROM_EMAIL = os.environ.get(
+    'DEFAULT_FROM_EMAIL',
+    f'AutoTest <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'no-reply@autotest.cl',
+)
+# Correo del que salen los mensajes de error del servidor a ADMINS.
+SERVER_EMAIL = EMAIL_HOST_USER or DEFAULT_FROM_EMAIL
+
 # ============================================================================
 # Autenticación en dos pasos (TOTP)
 # `TOTP_ISSUER` es el nombre que muestra la app autenticadora (Google/Microsoft

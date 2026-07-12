@@ -159,7 +159,7 @@ class PasswordResetRequestView(APIView):
             send_mail(
                 subject='Restablecimiento de contraseña',
                 message='Sigue este enlace para restablecer tu contraseña: {}'.format(password_reset_link),
-                from_email='soporte.autotest@gmail.com',
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
             )
             return Response({"mensaje": "Se ha enviado un correo electrónico con instrucciones para restablecer tu contraseña."}, status=status.HTTP_200_OK)
@@ -209,7 +209,7 @@ class PasswordResetInviteView(APIView):
                     f'accediendo al siguiente enlace:\n\n{link}\n\n'
                     f'Si no reconoces esta invitación, ignora este correo.'
                 ),
-                from_email='soporte.autotest@gmail.com',
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[target.email],
                 fail_silently=True,
             )
@@ -315,7 +315,7 @@ class SendActivationEmailView(APIView):
             send_mail(
                 subject="Activa tu cuenta",
                 message=f"Por favor activa tu cuenta usando el siguiente enlace: {activation_url}",
-                from_email="soporte.autotest@gmail.com",
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
             )
             return Response({"detail": "Correo de activación enviado."}, status=status.HTTP_200_OK)

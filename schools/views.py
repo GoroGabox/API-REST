@@ -8,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models import Prefetch
 from django.http import StreamingHttpResponse, HttpResponse
@@ -454,7 +455,7 @@ class VincularEstudianteView(APIView):
                         f"Contraseña temporal: {random_password}\n\n"
                         f"Te recomendamos cambiarla en tu primer inicio de sesión."
                     ),
-                    from_email="soporte.autotest@gmail.com",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[email],
                     fail_silently=True,
                 )
