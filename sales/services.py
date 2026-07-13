@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
@@ -5,6 +6,15 @@ from django.db import transaction
 
 from schools.models import Escuela, Curso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
+from .utils import extract_ids_from_buy_order
+
+# Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
+DIAS_COMPRA_INDIVIDUAL = 30
+
+
+def precio_final_curso(curso: Curso) -> int:
+    """Precio autoritativo (CLP entero) de un curso individual: su `costo`."""
+    return int(curso.costo or 0)
 
 
 def precio_final_producto(producto: Producto) -> int:
@@ -133,6 +143,83 @@ def registrar_venta_transbank(*, user, producto, escuela, result, token_ws, fech
     _aplicar_efectos_a_escuela(
         escuela.pk if escuela else None, producto, user.is_director
     )
+    return venta
+
+
+class CompraCursoError(Exception):
+    """Error de negocio al registrar la compra individual de un curso."""
+    def __init__(self, message, code='compra_error'):
+        super().__init__(message)
+        self.code = code
+
+
+@transaction.atomic
+def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
+                                      dias=DIAS_COMPRA_INDIVIDUAL):
+    """Registra la compra individual de un curso por un estudiante.
+
+    Otorga acceso por `dias` días (equivale a comprar 1 llave): crea una
+    AccessKey(origen='purchase') con expiración, la inscripción del estudiante
+    (EstudianteCurso) y la Venta (con `curso`, sin `producto`).
+
+    Seguridad: el curso y el monto se derivan del `result['buy_order']`
+    AUTORITATIVO devuelto por Transbank (no de datos que el cliente pueda
+    manipular en la confirmación), y el monto pagado se revalida contra el
+    precio del curso. Así no se puede pagar un curso barato y reclamar otro.
+
+    Raise CompraCursoError en cualquier violación.
+    """
+    # El buy_order autoritativo viene en extra_data (flujo unificado); fallback
+    # al nivel superior por compatibilidad.
+    buy_order = (result.get('extra_data') or {}).get('buy_order') or result.get('buy_order') or ''
+    curso_id, student_id = extract_ids_from_buy_order(buy_order)
+    if curso_id is None:
+        raise CompraCursoError("buy_order inválido en la confirmación.", 'bad_buy_order')
+
+    # El comprador debe ser quien inició el pago.
+    if student_id != user.id:
+        raise CompraCursoError("El comprador no coincide con el pago.", 'owner_mismatch')
+
+    try:
+        curso = Curso.objects.get(pk=curso_id)
+    except Curso.DoesNotExist:
+        raise CompraCursoError("Curso no existe.", 'curso_not_found')
+
+    # Defensa en profundidad: el monto cobrado debe coincidir con el precio.
+    if int(round(float(result.get('amount') or 0))) != precio_final_curso(curso):
+        raise CompraCursoError("El monto cobrado no coincide con el precio del curso.", 'price_mismatch')
+
+    if EstudianteCurso.objects.filter(estudiante_id=user, curso_id=curso).exists():
+        raise CompraCursoError("Ya tienes acceso a este curso.", 'already_enrolled')
+
+    access_key = AccessKey.objects.create(
+        valid_until=timezone.now() + timedelta(days=dias),
+        origen='purchase',
+    )
+    EstudianteCurso.objects.create(
+        estudiante_id=user, curso_id=curso, access_key_id=access_key,
+    )
+    venta = Venta.objects.create(
+        usuario=user,
+        curso=curso,
+        producto=None,
+        escuela=user.escuela,  # informativo; null si el estudiante no tiene escuela
+        monto_pagado=result['amount'],
+        pay_system=method.upper(),
+        payment_status=result['status'],
+        fecha_venta=fecha_venta,
+    )
+    if method == 'transbank':
+        extra = result['extra_data']
+        TransbankTransaction.objects.create(
+            sale=venta,
+            transaction_date=result['transaction_date'],
+            payment_type_code=extra['payment_type_code'],
+            token=extra['token'],
+            buy_order=extra['buy_order'],
+            status=result['status'],
+            amount=result['amount'],
+        )
     return venta
 
 

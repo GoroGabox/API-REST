@@ -602,6 +602,10 @@ class DesvincularEstudianteView(APIView):
             )
             for ec in inscripciones:
                 ak = ec.access_key_id
+                # Compra individual: el acceso es del estudiante (lo pagó), NO
+                # de la escuela. Al salir de la escuela lo conserva intacto.
+                if ak and ak.origen == "purchase":
+                    continue
                 if ak and ak.origen == "seat" and escuela is not None:
                     if ec.curso_id.is_profesional:
                         if escuela.professional_seats_used > 0:

@@ -28,7 +28,11 @@ class Producto(models.Model):
 ### 🛒 Venta ###
 class Venta(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
-    producto = models.ForeignKey(Producto, on_delete=models.CASCADE)
+    # Una venta refiere a un Producto (llave/suscripción, típicamente compra de
+    # escuela) O a un Curso (compra individual de un estudiante). Exactamente uno
+    # de los dos según el tipo de compra.
+    producto = models.ForeignKey(Producto, on_delete=models.SET_NULL, null=True, blank=True)
+    curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True)
     escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, null=True)
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, null=True)
     fecha_venta = models.DateTimeField(auto_now_add=True)
@@ -37,7 +41,9 @@ class Venta(models.Model):
     payment_status = models.CharField(max_length=20, default='pending')
 
     def __str__(self):
-        return f"Venta {self.id} - {self.producto.nombre} ({self.monto_pagado} {self.producto.currency})"
+        item = self.producto.nombre if self.producto else (self.curso.nombre if self.curso else "—")
+        currency = self.producto.currency if self.producto else "CLP"
+        return f"Venta {self.id} - {item} ({self.monto_pagado} {currency})"
 
 ### 🔑 Llaves de Acceso ###
 class AccessKey(models.Model):
@@ -49,6 +55,7 @@ class AccessKey(models.Model):
     ORIGEN_CHOICES = [
         ('key', 'Llave temporal'),
         ('seat', 'Cupo de suscripción'),
+        ('purchase', 'Compra individual'),
     ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.CharField(max_length=64, unique=True, blank=True, null=True)

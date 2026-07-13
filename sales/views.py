@@ -32,7 +32,10 @@ from .services import (
     CanjeError,
     registrar_venta_transbank,
     registrar_venta_unificada,
+    registrar_compra_curso_individual,
+    CompraCursoError,
     precio_final_producto,
+    precio_final_curso,
 )
 
 
@@ -76,6 +79,38 @@ def _validar_monto_contra_producto(buy_order, amount):
             status=status.HTTP_400_BAD_REQUEST,
         ), None
     return None, producto
+
+
+def _validar_monto_contra_curso(buy_order, amount):
+    """Valida `amount` contra el precio autoritativo del Curso (compra individual).
+
+    El primer id del buy_order (`order_<curso_id>_<student_id>`) identifica el
+    curso. Devuelve (Response de error | None, curso | None).
+    """
+    curso_id, _ = extract_ids_from_buy_order(buy_order)
+    if curso_id is None:
+        return Response(
+            {"error": "buy_order tiene formato inválido. Esperado: order_<curso_id>_<student_id>."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    curso = Curso.objects.filter(id=curso_id).first()
+    if curso is None:
+        return Response(
+            {"error": "Curso no encontrado para esta compra."},
+            status=status.HTTP_404_NOT_FOUND,
+        ), None
+    esperado = precio_final_curso(curso)
+    if esperado <= 0:
+        return Response(
+            {"error": "Este curso no está disponible para compra individual."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    if int(round(float(amount))) != esperado:
+        return Response(
+            {"error": "El monto no coincide con el precio del curso.", "expected": esperado},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    return None, curso
 
 
 def _scope_estudiante_curso(qs, user):
@@ -167,7 +202,10 @@ def _generar_comprobante_pdf(venta):
         cliente = f"{venta.usuario.nombre or ''} {venta.usuario.apellido or ''}".strip() or venta.usuario.email
     else:
         cliente = "—"
-    producto = venta.producto.nombre if venta.producto else "—"
+    producto = (
+        venta.producto.nombre if venta.producto
+        else (venta.curso.nombre if venta.curso else "—")
+    )
     currency = getattr(venta.producto, "currency", "CLP") if venta.producto else "CLP"
     try:
         monto = f"{currency} ${venta.monto_pagado:,.0f}".replace(",", ".")
@@ -993,8 +1031,14 @@ class UnifiedSaleInitiationView(APIView):
                 return owner_check
 
             # Anti price-tampering: el monto debe coincidir con el precio
-            # autoritativo del producto (no confiar en el `amount` del cliente).
-            price_err, _producto = _validar_monto_contra_producto(buy_order, amount)
+            # autoritativo del item (no confiar en el `amount` del cliente).
+            # item_type='curso' → compra individual de un estudiante; por defecto
+            # 'producto' → compra de llave/suscripción (flujo escuela).
+            item_type = (request.data.get("item_type") or "producto").lower().strip()
+            if item_type == "curso":
+                price_err, _item = _validar_monto_contra_curso(buy_order, amount)
+            else:
+                price_err, _item = _validar_monto_contra_producto(buy_order, amount)
             if price_err is not None:
                 return price_err
 
@@ -1049,6 +1093,27 @@ class UnifiedPaymentConfirmationView(APIView):
 
             if not result["success"]:
                 return Response({"success": False, "details": result.get("message", "Pago no autorizado.")}, status=status.HTTP_401_UNAUTHORIZED)
+
+            item_type = (request.data.get("item_type") or "producto").lower().strip()
+
+            if item_type == "curso":
+                # Compra individual de curso: otorga acceso 30 días al comprador.
+                # El curso y el monto se derivan del buy_order autoritativo de
+                # Transbank dentro del servicio (no del cliente).
+                try:
+                    registrar_compra_curso_individual(
+                        user=request.user,
+                        method=method,
+                        result=result,
+                        fecha_venta=parse_accounting_date(result["transaction_date"]),
+                    )
+                except CompraCursoError as e:
+                    http = (
+                        status.HTTP_409_CONFLICT if e.code == "already_enrolled"
+                        else status.HTTP_400_BAD_REQUEST
+                    )
+                    return Response({"success": False, "details": str(e), "code": e.code}, status=http)
+                return Response({"success": True, "details": "Curso adquirido.", "data": result}, status=status.HTTP_201_CREATED)
 
             user = Usuario.objects.get(id=result["user_id"])
             producto = Producto.objects.get(id=result["product_id"])
