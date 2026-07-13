@@ -32,7 +32,50 @@ from .services import (
     CanjeError,
     registrar_venta_transbank,
     registrar_venta_unificada,
+    precio_final_producto,
 )
+
+
+def _frontend_return_url():
+    """URL de retorno de la pasarela, desde env (no hardcodear localhost).
+
+    En producción FRONTEND_URL debe apuntar al dominio real; el default local
+    solo aplica en desarrollo.
+    """
+    import os
+    base = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+    return f'{base}/pay_confirmation'
+
+
+def _validar_monto_contra_producto(buy_order, amount):
+    """Valida que `amount` coincida con el precio autoritativo del Producto.
+
+    El primer id del buy_order (`order_<product_id>_<student_id>`) identifica el
+    Producto. Devuelve (Response de error, None) si no valida, o (None, producto)
+    si todo OK. Cierra el hueco de manipulación de precio en el cliente.
+    """
+    product_id, _ = extract_ids_from_buy_order(buy_order)
+    if product_id is None:
+        return Response(
+            {"error": "buy_order tiene formato inválido. Esperado: order_<product_id>_<student_id>."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    producto = Producto.objects.filter(id=product_id).first()
+    if producto is None:
+        # El flujo de compra individual de curso (product_id = curso) no está
+        # soportado por el modelo de ventas; rechazamos ANTES de cobrar.
+        return Response(
+            {"error": "Producto no encontrado para esta compra."},
+            status=status.HTTP_404_NOT_FOUND,
+        ), None
+    esperado = precio_final_producto(producto)
+    if int(round(float(amount))) != esperado:
+        return Response(
+            {"error": "El monto no coincide con el precio del producto.",
+             "expected": esperado},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+    return None, producto
 
 
 def _scope_estudiante_curso(qs, user):
@@ -742,7 +785,12 @@ class SaleInitiationViewSet(APIView):
         if owner_check is not None:
             return owner_check
 
-        return_url = 'http://localhost:3000/pay_confirmation'
+        # Anti price-tampering (mismo criterio que el flujo unificado).
+        price_err, _producto = _validar_monto_contra_producto(buy_order, amount)
+        if price_err is not None:
+            return price_err
+
+        return_url = _frontend_return_url()
 
         options = WebpayOptions(IntegrationCommerceCodes.WEBPAY_PLUS, IntegrationApiKeys.WEBPAY, IntegrationType.TEST)
         tx = Transaction(options)
@@ -850,7 +898,7 @@ class TransbankPaymentStrategy(PaymentStrategy):
             IntegrationType.TEST
         )
         tx = Transaction(options)
-        return_url = "http://localhost:3000/pay_confirmation"
+        return_url = _frontend_return_url()
         response = tx.create(buy_order, session_id, amount, return_url)
 
         return {
@@ -937,12 +985,18 @@ class UnifiedSaleInitiationView(APIView):
             _, student_id = extract_ids_from_buy_order(buy_order)
             if student_id is None:
                 return Response(
-                    {"error": "buy_order tiene formato inválido. Esperado: order_<course_id>_<student_id>."},
+                    {"error": "buy_order tiene formato inválido. Esperado: order_<product_id>_<student_id>."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             owner_check = _enforce_payment_ownership(request, student_id)
             if owner_check is not None:
                 return owner_check
+
+            # Anti price-tampering: el monto debe coincidir con el precio
+            # autoritativo del producto (no confiar en el `amount` del cliente).
+            price_err, _producto = _validar_monto_contra_producto(buy_order, amount)
+            if price_err is not None:
+                return price_err
 
             strategy = self.get_payment_strategy(method)
             payment_data = strategy.create_transaction(amount, buy_order, session_id)

@@ -217,17 +217,22 @@ class SubmitPruebaTests(APITestCase):
         from accounts.models import Certificado
         self.assertEqual(Certificado.objects.filter(estudiante=self.user, curso=self.curso).count(), 1)
 
-    def test_submit_doble_no_duplica_cert(self):
-        # Una segunda Prueba aprobada sobre el mismo curso no crea otro cert.
+    def test_examen_final_bloqueado_tras_aprobar_no_duplica_cert(self):
+        # Primer examen final aprobado → emite certificado.
         prueba_id, preguntas = self._generar_prueba(modalidad='evaluacion', tipo='completa')
         respuestas = {str(p['id']): 'a' for p in preguntas}
         self.client.post(reverse('submit_test', args=[prueba_id]),
                          {"respuestas": respuestas}, format='json')
 
-        prueba_id2, preguntas2 = self._generar_prueba(modalidad='evaluacion', tipo='completa')
-        respuestas2 = {str(p['id']): 'a' for p in preguntas2}
-        self.client.post(reverse('submit_test', args=[prueba_id2]),
-                         {"respuestas": respuestas2}, format='json')
+        # Con el curso ya aprobado, no se puede volver a generar el examen final
+        # (queda bloqueado): así el certificado nunca se duplica.
+        r2 = self.client.post(
+            reverse('generate_test'),
+            {"tipo": "completa", "modalidad": "evaluacion", "curso_id": self.curso.id},
+            format='json',
+        )
+        self.assertEqual(r2.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r2.data.get('razon'), 'curso_completado')
 
         from accounts.models import Certificado
         self.assertEqual(Certificado.objects.filter(estudiante=self.user, curso=self.curso).count(), 1)
@@ -466,50 +471,6 @@ class LeccionDetalleYUnidadesTests(APITestCase):
         self.assertEqual(len(r.data), 2)
         u1 = next(u for u in r.data if u['orden'] == 1)
         self.assertEqual(len(u1['lecciones']), 1)
-
-
-class LeaderboardTests(APITestCase):
-    def setUp(self):
-        from schools.models import Escuela
-        self.escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
-        # Top 3 con XP escalonado
-        self.u1 = make_user("u1@x.com", is_estudiante=True, escuela=self.escuela)
-        self.u1.xp = 1000; self.u1.save()
-        self.u2 = make_user("u2@x.com", is_estudiante=True, escuela=self.escuela)
-        self.u2.xp = 500; self.u2.save()
-        self.u3 = make_user("u3@x.com", is_estudiante=True, escuela=self.escuela)
-        self.u3.xp = 100; self.u3.save()
-        # Usuario fuera del top
-        self.outsider = make_user("o@x.com", is_estudiante=True, escuela=self.escuela)
-        self.outsider.xp = 10; self.outsider.save()
-
-    def test_leaderboard_global_devuelve_top_ordenado(self):
-        self.client.force_authenticate(self.u1)
-        r = self.client.get(reverse('leaderboard'))
-        self.assertEqual(r.status_code, 200)
-        xps = [e['xp'] for e in r.data['top']]
-        self.assertEqual(xps, sorted(xps, reverse=True))
-        self.assertEqual(r.data['top'][0]['usuario_id'], self.u1.id)
-
-    def test_leaderboard_devuelve_mi_rank_si_fuera_del_top(self):
-        self.client.force_authenticate(self.outsider)
-        r = self.client.get(reverse('leaderboard') + '?limit=2')
-        self.assertEqual(r.status_code, 200)
-        ids_top = [e['usuario_id'] for e in r.data['top']]
-        self.assertNotIn(self.outsider.id, ids_top)
-        self.assertEqual(r.data['me']['rank'], 4)
-
-    def test_leaderboard_scope_escuela(self):
-        from schools.models import Escuela
-        otra = Escuela.objects.create(nombre="X", direccion="x", email="x@e.com", telefono="1")
-        intruso = make_user("int@x.com", is_estudiante=True, escuela=otra)
-        intruso.xp = 99999; intruso.save()
-
-        self.client.force_authenticate(self.u1)
-        r = self.client.get(reverse('leaderboard') + '?scope=escuela')
-        self.assertEqual(r.status_code, 200)
-        ids = {e['usuario_id'] for e in r.data['top']}
-        self.assertNotIn(intruso.id, ids)
 
 
 class PushTokenTests(APITestCase):

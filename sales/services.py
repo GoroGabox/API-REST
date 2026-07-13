@@ -1,8 +1,27 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django.utils import timezone
 from django.db import transaction
 
 from schools.models import Escuela, Curso
-from .models import AccessKey, EstudianteCurso, Venta, TransbankTransaction
+from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
+
+
+def precio_final_producto(producto: Producto) -> int:
+    """Precio autoritativo (CLP entero) de un Producto: valor_neto menos descuento.
+
+    Fuente de verdad server-side para validar el `amount` que envía el cliente
+    en el inicio del pago (evita que se manipule el precio en el front).
+    """
+    base = Decimal(producto.valor_neto or 0)
+    desc = Decimal(producto.descuento or 0)
+    if desc > 0:
+        base = base * (Decimal(1) - desc / Decimal(100))
+    return int(base.quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+
+class PriceMismatchError(Exception):
+    """El monto enviado por el cliente no coincide con el precio autoritativo."""
 
 
 class CanjeError(Exception):

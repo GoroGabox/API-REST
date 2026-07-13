@@ -24,10 +24,16 @@ class UnifiedSaleInitiationTests(APITestCase):
         self.client.force_authenticate(self.user)
 
     def test_mercadopago_devuelve_501(self):
+        from sales.models import Producto
+        # Producto válido con precio que coincide con el amount, para pasar la
+        # validación de monto y llegar al stub de MercadoPago (501).
+        prod = Producto.objects.create(
+            nombre="P", tipo="llave", valor_neto=1000, descuento=0, descripcion="d",
+        )
         r = self.client.post('/api/v1/sales/pay_init/', {
             "amount": 1000,
             "session_id": "sess",
-            "buy_order": f"order_1_{self.user.id}",
+            "buy_order": f"order_{prod.id}_{self.user.id}",
             "payment_method": "mercadopago",
         }, format='json')
         self.assertEqual(r.status_code, status.HTTP_501_NOT_IMPLEMENTED)

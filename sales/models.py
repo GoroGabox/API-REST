@@ -94,7 +94,10 @@ class TransbankTransaction(models.Model):
     sale = models.OneToOneField(Venta, on_delete=models.CASCADE, related_name="transbank_transaction")
     transaction_date = models.DateTimeField(null=True)
     payment_type_code = models.CharField(max_length=200, null=True, blank=True)
-    token = models.CharField(max_length=255, null=True, blank=True)  # Token generado por Transbank
+    # Token de Transbank. `unique=True` es la barrera final contra doble
+    # confirmación (además del chequeo exists() en la vista): dos commits del
+    # mismo token no pueden crear dos ventas. NULL permitido (varios nulos OK).
+    token = models.CharField(max_length=255, null=True, blank=True, unique=True)  # Token generado por Transbank
     buy_order = models.CharField(max_length=255, null=True, blank=True)  # Orden de compra asociada
     status = models.CharField(max_length=50, null=True, blank=True)  # Estado de la transacción (ej. "AUTHORIZED", "FAILED")
     amount = models.FloatField(null=True)  # Monto pagado

@@ -1,13 +1,17 @@
 from datetime import datetime
 
 def extract_ids_from_buy_order(buy_order):
-    # Suponiendo que buy_order sigue la estructura "order_{course_id}_{student_id}"
+    # buy_order sigue la estructura "order_{product_id}_{student_id}".
+    if not isinstance(buy_order, str):
+        return None, None
     parts = buy_order.split('_')
-    if len(parts) == 3:
-        _, course_id, student_id = parts
-        return int(course_id), int(student_id)
-    else:
-        # Maneja el caso de error o estructura inesperada
+    if len(parts) != 3:
+        return None, None
+    _, first_id, student_id = parts
+    try:
+        return int(first_id), int(student_id)
+    except (TypeError, ValueError):
+        # Ids no numéricos → formato inválido, no un 500.
         return None, None
 
 def parse_accounting_date(accounting_date):
