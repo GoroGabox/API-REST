@@ -10,14 +10,17 @@ from decimal import Decimal
 from typing import Optional
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from schools.models import Categoria, Ejercicio
 from .models import Certificado, Prueba, PruebaEjercicio
 
 
-# Umbral de aprobación de una prueba (en %).
+# Umbral de aprobación (en %). El examen final de un curso exige más que una
+# práctica cualquiera del Gimnasio.
 APROBACION_MIN_PCT = Decimal('70')
+APROBACION_EXAMEN_FINAL_PCT = Decimal('80')
 
 
 SIZES = {'completa': 35, 'rapida': 10, 'categoria': 20}
@@ -98,6 +101,43 @@ def seleccionar_ejercicios(tipo: str, categoria_id: Optional[int] = None):
                 f"No fue posible balancear suficientes preguntas (obtuvo {len(picked_ids)} de {total_needed}).",
                 400,
             )
+
+    ejercicios_map = {
+        e.id: e for e in Ejercicio.objects
+            .filter(id__in=picked_ids)
+            .select_related('categoria', 'curso', 'leccion')
+    }
+    ejercicios_final = [ejercicios_map[i] for i in picked_ids if i in ejercicios_map]
+    return ejercicios_final, None
+
+
+def seleccionar_ejercicios_de_curso(curso, total_needed: int = SIZES['completa']):
+    """Selecciona preguntas SOLO del curso, para el examen final.
+
+    Un ejercicio pertenece al curso si está asociado directamente (`curso`) o
+    a una de sus lecciones (`leccion__curso`). Si el curso tiene menos de
+    `total_needed`, usa todas las disponibles (el examen se ajusta al tamaño
+    real y el % se calcula sobre ese total). Devuelve (ejercicios, error).
+    """
+    qs = (
+        Ejercicio.objects
+        .select_related('categoria', 'curso', 'leccion')
+        .filter(Q(curso=curso) | Q(leccion__curso=curso))
+        .distinct()
+    )
+    total_disp = qs.count()
+    if total_disp == 0:
+        return None, ServiceError(
+            "Este curso aún no tiene preguntas para el examen final.", 400
+        )
+
+    n = min(total_needed, total_disp)
+    # Balancea por categoría dentro del curso; completa con aleatorio si faltara.
+    picked_ids = _round_robin_sample_by_category(qs, n)
+    if len(picked_ids) < n:
+        resto = [i for i in qs.values_list('id', flat=True) if i not in set(picked_ids)]
+        random.shuffle(resto)
+        picked_ids += resto[: n - len(picked_ids)]
 
     ejercicios_map = {
         e.id: e for e in Ejercicio.objects
@@ -220,7 +260,10 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     PruebaEjercicio.objects.bulk_update(actualizar, ['respuesta_estudiante', 'correcta'], batch_size=100)
 
     score = (Decimal(correctas) / Decimal(total) * Decimal(100)).quantize(Decimal('0.01'))
-    aprobado = score >= APROBACION_MIN_PCT
+    # El examen final del curso (evaluación + completa) exige 80%; el resto 70%.
+    es_examen_final = prueba.modalidad == 'evaluacion' and prueba.tipo == 'completa'
+    umbral = APROBACION_EXAMEN_FINAL_PCT if es_examen_final else APROBACION_MIN_PCT
+    aprobado = score >= umbral
 
     prueba.total_correctas = correctas
     prueba.score = score
@@ -234,15 +277,15 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     incorrectas = total - correctas
 
     xp_ganado = 0
-    # Sólo evaluaciones de tipo no-rápido consumen corazones por error.
-    # Rápida = entrenamiento ligero, no debe penalizar vidas.
-    consume_corazones = (
-        prueba.modalidad == 'evaluacion'
-        and prueba.tipo != 'rapida'
-    )
+    # Vidas: se pierde 1 corazón por cada respuesta incorrecta en cualquier
+    # prueba externa (Gimnasio temática/simulacro y Examen Final), salvo la
+    # rápida ("calentamiento", sin riesgo). Los quizzes DENTRO de una lección
+    # no crean una Prueba, así que nunca llegan aquí y no descuentan vidas.
+    consume_corazones = prueba.tipo != 'rapida'
+    if consume_corazones and incorrectas > 0:
+        gamification.consumir_corazones(user, incorrectas)
+
     if prueba.modalidad == 'evaluacion':
-        if consume_corazones and incorrectas > 0:
-            gamification.consumir_corazones(user, incorrectas)
         xp_ganado = correctas * gamification.XP_POR_CORRECTA_EVALUACION
         if aprobado:
             xp_ganado += gamification.XP_BONUS_APROBAR_EVALUACION
@@ -290,3 +333,83 @@ def emitir_certificado_si_corresponde(prueba: Prueba) -> Optional[Certificado]:
         defaults={'prueba': prueba},
     )
     return cert
+
+
+def elegibilidad_examen_final(user, curso) -> dict:
+    """Determina si `user` puede rendir (o volver a rendir) el examen final de `curso`.
+
+    Reglas:
+    - Si ya tiene certificado del curso → curso finalizado, no hay más intentos.
+    - Si el acceso al curso venció (AccessKey.valid_until pasado) → sin intentos.
+    - Si rindió el examen final hace < FINAL_EXAM_RETRY_HOURS → en cooldown.
+    - En cualquier otro caso → puede rendir.
+
+    Devuelve dict:
+        {
+          'puede': bool,
+          'razon': 'ok'|'curso_completado'|'plazo_vencido'|'cooldown',
+          'retry_after_seconds': int|None,   # sólo en cooldown
+          'proximo_intento': datetime|None,  # sólo en cooldown
+          'expira_en': datetime|None,        # fin de plazo del curso (None = sin límite)
+          'ultimo_intento': datetime|None,
+        }
+    """
+    from datetime import timedelta
+    from sales.models import EstudianteCurso
+    from . import gamification
+
+    now = timezone.now()
+
+    # Plazo del curso: expiración de la llave/cupo con que se inscribió.
+    expira_en = None
+    ec = (
+        EstudianteCurso.objects
+        .filter(estudiante_id=user, curso_id=curso)
+        .select_related('access_key_id')
+        .first()
+    )
+    if ec and ec.access_key_id:
+        expira_en = ec.access_key_id.valid_until
+
+    base = {
+        'puede': False,
+        'razon': 'ok',
+        'retry_after_seconds': None,
+        'proximo_intento': None,
+        'expira_en': expira_en,
+        'ultimo_intento': None,
+    }
+
+    # Curso ya aprobado (certificado emitido) → finalizado.
+    if Certificado.objects.filter(estudiante=user, curso=curso).exists():
+        return {**base, 'razon': 'curso_completado'}
+
+    # Plazo del curso vencido → sin más intentos.
+    if expira_en is not None and now > expira_en:
+        return {**base, 'razon': 'plazo_vencido'}
+
+    # Cooldown desde la última entrega del examen final de este curso.
+    ultima = (
+        Prueba.objects
+        .filter(
+            estudiante=user, curso=curso,
+            tipo='completa', modalidad='evaluacion',
+            completada_en__isnull=False,
+        )
+        .order_by('-completada_en')
+        .first()
+    )
+    if ultima and ultima.completada_en:
+        base['ultimo_intento'] = ultima.completada_en
+        cooldown = timedelta(hours=gamification.FINAL_EXAM_RETRY_HOURS)
+        transcurrido = now - ultima.completada_en
+        if transcurrido < cooldown:
+            restante = cooldown - transcurrido
+            return {
+                **base,
+                'razon': 'cooldown',
+                'retry_after_seconds': int(restante.total_seconds()),
+                'proximo_intento': ultima.completada_en + cooldown,
+            }
+
+    return {**base, 'puede': True, 'razon': 'ok'}

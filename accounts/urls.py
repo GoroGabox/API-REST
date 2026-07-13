@@ -28,6 +28,7 @@ from .views import (
     MisPruebasView,
     MisPruebasDetalleView,
     MisCertificadosView,
+    ExamenFinalElegibilidadView,
     VerifyCertificadoView,
     MeView,
     MeStatsView,
@@ -37,7 +38,6 @@ from .views import (
     TwoFADisableView,
     TwoFARecoveryRegenerateView,
     TwoFAAdminDisableView,
-    LeaderboardView,
     PushTokensView,
     PushTokenDeleteView,
     NotificacionesView,
@@ -85,6 +85,9 @@ urlpatterns = [
     path("me/certificates/", MisCertificadosView.as_view(), name="mis_certificados"),
     path("certificates/<uuid:codigo>/verify/", VerifyCertificadoView.as_view(), name="verify_certificado"),
 
+    # Examen final: estado / elegibilidad (puede rendir, cooldown, plazo)
+    path("me/courses/<int:curso_id>/final-exam/", ExamenFinalElegibilidadView.as_view(), name="examen_final_elegibilidad"),
+
     # Perfil + gamificación
     path("me/", MeView.as_view(), name="me_profile"),
     path("me/stats/", MeStatsView.as_view(), name="me_stats"),
@@ -97,8 +100,7 @@ urlpatterns = [
     path("me/2fa/recovery-codes/", TwoFARecoveryRegenerateView.as_view(), name="me_2fa_recovery"),
     path("users/<int:user_id>/2fa/disable/", TwoFAAdminDisableView.as_view(), name="admin_2fa_disable"),
 
-    # Ranking + notificaciones + push
-    path("leaderboard/", LeaderboardView.as_view(), name="leaderboard"),
+    # Notificaciones + push
     path("me/push-token/", PushTokensView.as_view(), name="me_push_token"),
     path("me/push-token/<str:token>/", PushTokenDeleteView.as_view(), name="me_push_token_delete"),
     path("me/notifications/", NotificacionesView.as_view(), name="me_notifications"),

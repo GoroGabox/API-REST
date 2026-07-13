@@ -323,8 +323,11 @@ class CursosDisponiblesParaUsuarioView(APIView):
             .values_list("curso_id", flat=True)
         )
 
-        # Todos los cursos del sistema (si luego los quieres por escuela, aquí se filtra)
-        cursos = Curso.objects.all()
+        # Todos los cursos del sistema (si luego los quieres por escuela, aquí se filtra).
+        # Anotamos cantidad_lecciones para que el cliente calcule progreso sin
+        # un fetch extra por curso (Leccion.curso es FK sin related_name → 'leccion').
+        from django.db.models import Count
+        cursos = Curso.objects.annotate(cantidad_lecciones=Count('leccion'))
 
         serializer = CursoDisponibleSerializer(
             cursos,

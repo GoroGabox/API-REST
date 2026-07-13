@@ -1,9 +1,12 @@
 """Servicios de gamificación: hearts, XP, streak, logros.
 
 Diseño:
-- Hearts regeneran 1 unidad cada `HEART_REGEN_MINUTES`. La regeneración
-  es perezosa: se llama `regenerar_recursos(user)` antes de consumir, así
-  evitamos jobs cron.
+- Hearts: economía basada en actividad, NO en tiempo. Se gana 1 corazón al
+  completar una lección (hasta `MAX_HEARTS`) y se pierde 1 por cada respuesta
+  incorrecta en tests/pruebas/ejercicios FUERA de las lecciones (los quizzes
+  dentro de una lección no descuentan). La antigua regeneración por tiempo
+  quedó desactivada: `regenerar_recursos` es un no-op que se conserva por
+  compatibilidad con los callers (serializer/stats view).
 - XP es acumulado; level se deriva con `nivel_para_xp(xp)`.
 - Streak: actividad cuenta cuando el user envía una prueba (submit) en un día.
   Si el último día activo fue ayer → +1. Si fue hoy → no cambia. Si saltó días
@@ -24,8 +27,14 @@ from django.utils import timezone
 from .models import Logro, Usuario, UsuarioLogro
 
 
-HEART_REGEN_MINUTES = 30
+# Vidas: máximo, y válvula de escape por tiempo. Se regenera 1 vida cada
+# HEART_REGEN_MINUTES aunque el estudiante no complete lecciones, para que
+# llegar a 0 no sea un callejón sin salida (ej. ya completó todas las lecciones).
 MAX_HEARTS = 5
+HEART_REGEN_MINUTES = 120  # +1 vida cada 2 horas
+
+# Reintento del examen final: horas mínimas entre entregas del mismo curso.
+FINAL_EXAM_RETRY_HOURS = 24
 
 XP_POR_CORRECTA_PRACTICA = 5
 XP_POR_CORRECTA_EVALUACION = 10
@@ -42,33 +51,38 @@ LOGROS_CATALOGO = {
 }
 
 
-# ----------------- Regeneración de hearts -----------------
+# ----------------- Hearts (vidas) -----------------
 
 def _aplicar_regen(actual: int, max_: int, next_at, minutos: int):
-    """Calcula cuántas unidades regenerar desde el último 'next_at' a ahora.
+    """Calcula cuántas vidas regenerar desde 'next_at' hasta ahora.
 
-    Retorna (nuevo_valor, nuevo_next_at).
+    Retorna (nuevo_valor, nuevo_next_at). Regeneración perezosa: se evalúa al
+    leer/consumir, sin jobs cron.
     """
     now = timezone.now()
     if actual >= max_:
         return max_, None
     if next_at is None:
-        # Primera vez que algo se consume — programa el próximo refill.
+        # Sin refill programado: agenda el próximo (p.ej. tras un consumo previo
+        # a esta lógica). No regenera todavía.
         return actual, now + timedelta(minutes=minutos)
     if now < next_at:
         return actual, next_at
-    # cuántos intervalos han pasado
     elapsed = (now - next_at).total_seconds() / 60
     pasos = 1 + int(elapsed // minutos)
     nuevo = min(max_, actual + pasos)
     if nuevo >= max_:
         return nuevo, None
-    nuevo_next = next_at + timedelta(minutes=minutos * pasos)
-    return nuevo, nuevo_next
+    return nuevo, next_at + timedelta(minutes=minutos * pasos)
 
 
 def regenerar_recursos(user: Usuario, save: bool = True) -> Usuario:
-    """Actualiza hearts del user según el tiempo transcurrido."""
+    """Aplica la regeneración pasiva de vidas según el tiempo transcurrido.
+
+    Válvula de escape: aunque el estudiante no complete lecciones, recupera 1
+    vida cada HEART_REGEN_MINUTES hasta el máximo. Perezosa: la llaman el
+    serializer de perfil, `MeStatsView` y antes de consumir/gate.
+    """
     h, h_next = _aplicar_regen(user.hearts, MAX_HEARTS, user.next_heart_regen_at, HEART_REGEN_MINUTES)
     if (h, h_next) != (user.hearts, user.next_heart_regen_at):
         user.hearts = h
@@ -79,14 +93,36 @@ def regenerar_recursos(user: Usuario, save: bool = True) -> Usuario:
 
 
 def consumir_corazones(user: Usuario, cantidad: int) -> int:
-    """Resta hearts (saturando en 0). Programa next_heart_regen_at si no estaba."""
+    """Resta hearts (saturando en 0). Se llama al fallar tests/pruebas externos.
+
+    Programa el próximo refill pasivo si baja del máximo y no había uno agendado.
+    """
     if cantidad <= 0:
         return user.hearts
     regenerar_recursos(user, save=False)
-    user.hearts = max(0, user.hearts - cantidad)
+    nuevo = max(0, user.hearts - cantidad)
+    changed = nuevo != user.hearts
+    user.hearts = nuevo
     if user.next_heart_regen_at is None and user.hearts < MAX_HEARTS:
         user.next_heart_regen_at = timezone.now() + timedelta(minutes=HEART_REGEN_MINUTES)
-    user.save(update_fields=['hearts', 'next_heart_regen_at'])
+        changed = True
+    if changed:
+        user.save(update_fields=['hearts', 'next_heart_regen_at'])
+    return user.hearts
+
+
+def ganar_corazones(user: Usuario, cantidad: int = 1) -> int:
+    """Suma hearts saturando en MAX_HEARTS. Se llama al completar una lección."""
+    if cantidad <= 0:
+        return user.hearts
+    regenerar_recursos(user, save=False)
+    nuevo = min(MAX_HEARTS, user.hearts + cantidad)
+    if nuevo != user.hearts:
+        user.hearts = nuevo
+        # Al tope, no hay refill pendiente.
+        if user.hearts >= MAX_HEARTS:
+            user.next_heart_regen_at = None
+        user.save(update_fields=['hearts', 'next_heart_regen_at'])
     return user.hearts
 
 

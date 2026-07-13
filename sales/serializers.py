@@ -75,6 +75,8 @@ class EstudianteCursosActivosSerializer(serializers.ModelSerializer):
 class CursoDisponibleSerializer(serializers.ModelSerializer):
     user_can_access = serializers.SerializerMethodField()
     already_owned = serializers.SerializerMethodField()
+    # Anotado en la vista con Count('leccion'); default 0 por robustez.
+    cantidad_lecciones = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Curso
@@ -86,6 +88,7 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
             "url_icon",
             "costo",
             "is_profesional",
+            "cantidad_lecciones",
             "user_can_access",
             "already_owned",
         ]

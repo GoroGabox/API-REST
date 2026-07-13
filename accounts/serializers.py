@@ -185,16 +185,6 @@ class PushTokenSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'last_seen_at']
 
 
-class LeaderboardEntrySerializer(serializers.Serializer):
-    rank = serializers.IntegerField()
-    usuario_id = serializers.IntegerField()
-    nombre = serializers.CharField()
-    apellido = serializers.CharField()
-    avatar_url = serializers.CharField(allow_blank=True)
-    xp = serializers.IntegerField()
-    level = serializers.IntegerField()
-
-
 class LogroSerializer(serializers.Serializer):
     """Logro del catálogo + si fue obtenido por el usuario actual."""
     slug = serializers.CharField()

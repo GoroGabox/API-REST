@@ -26,7 +26,6 @@ from .serializers import  (
     AdminUsuarioCreateSerializer,
     UsuarioMeSerializer,
     LogroSerializer,
-    LeaderboardEntrySerializer,
     NotificacionSerializer,
     PushTokenSerializer,
     DirectorProfileSerializer,
@@ -426,6 +425,14 @@ class EstudianteLeccionViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=payload)
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
+
+        # Vidas: completar una lección nueva otorga +1 corazón (hasta el máximo).
+        # Sólo para el propio estudiante; si un admin/director crea el registro
+        # no debe alterar la economía de vidas del alumno.
+        if is_estudiante(request.user) and instance.estudiante_id == request.user.id:
+            from . import gamification
+            gamification.ganar_corazones(request.user, 1)
+
         return Response(
             self.get_serializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -486,7 +493,53 @@ class GenerarPruebaView(APIView):
             except _Curso.DoesNotExist:
                 return Response({"detail": "Curso no existe."}, status=status.HTTP_404_NOT_FOUND)
 
-        ejercicios, error = accounts_services.seleccionar_ejercicios(tipo, categoria_id)
+        tipo_norm = (tipo or '').lower().strip()
+        es_examen_final = tipo_norm == 'completa' and modalidad == 'evaluacion' and curso is not None
+
+        # Examen Final del curso: valida elegibilidad antes de generar (curso ya
+        # completado, plazo vencido, o cooldown de 24h desde la última entrega).
+        if es_examen_final:
+            elig = accounts_services.elegibilidad_examen_final(request.user, curso)
+            if not elig['puede']:
+                mensajes = {
+                    'curso_completado': 'Ya aprobaste y completaste este curso.',
+                    'plazo_vencido': 'El plazo para rendir el examen de este curso ya venció.',
+                    'cooldown': 'Debes esperar antes de volver a rendir el examen final.',
+                }
+                http = (
+                    status.HTTP_429_TOO_MANY_REQUESTS
+                    if elig['razon'] == 'cooldown'
+                    else status.HTTP_403_FORBIDDEN
+                )
+                return Response({
+                    'detail': mensajes.get(elig['razon'], 'No puedes rendir el examen ahora.'),
+                    'razon': elig['razon'],
+                    'retry_after': elig['retry_after_seconds'],
+                    'proximo_intento': elig['proximo_intento'],
+                    'expira_en': elig['expira_en'],
+                }, status=http)
+
+        # Gate de vidas: las rutinas del Gimnasio que gastan vidas (todo lo que
+        # no sea 'rapida') exigen ≥1 vida para iniciar. El examen final queda
+        # exento (ya tiene su propio gate de lecciones + cooldown). La rápida es
+        # gratis. Regenera primero por si ya pasó el tiempo de refill.
+        if tipo_norm != 'rapida' and not es_examen_final:
+            from . import gamification
+            gamification.regenerar_recursos(request.user)
+            if request.user.hearts <= 0:
+                return Response({
+                    'detail': 'Te quedaste sin vidas. Espera a que se recuperen o completa una lección para ganar una.',
+                    'razon': 'sin_vidas',
+                    'next_heart_regen_at': request.user.next_heart_regen_at,
+                    'hearts': request.user.hearts,
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        # Selección de preguntas: el examen final SOLO usa preguntas del curso;
+        # el resto usa el banco general (round-robin / por categoría).
+        if es_examen_final:
+            ejercicios, error = accounts_services.seleccionar_ejercicios_de_curso(curso)
+        else:
+            ejercicios, error = accounts_services.seleccionar_ejercicios(tipo, categoria_id)
         if error:
             return Response({"detail": error.detail}, status=error.status)
 
@@ -854,68 +907,6 @@ class TwoFAAdminDisableView(APIView):
         )
 
 
-class LeaderboardView(APIView):
-    """GET /api/v1/accounts/leaderboard/?scope=global|escuela&limit=20
-
-    Devuelve top-N usuarios por XP + el rank del usuario actual (si no entra
-    en el top). admin: cualquier escuela; director: solo la suya;
-    estudiante: global o su propia escuela.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        from .gamification import nivel_para_xp
-
-        scope = request.query_params.get('scope', 'global')
-        try:
-            limit = min(100, max(1, int(request.query_params.get('limit', 20))))
-        except (TypeError, ValueError):
-            limit = 20
-
-        qs = Usuario.objects.filter(is_estudiante=True, is_active=True)
-        if scope == 'escuela':
-            escuela_id = request.user.escuela_id
-            if not escuela_id:
-                return Response({"detail": "No perteneces a una escuela."}, status=status.HTTP_400_BAD_REQUEST)
-            if is_director(request.user) or is_admin(request.user):
-                escuela_param = request.query_params.get('escuela_id')
-                if escuela_param and is_admin(request.user):
-                    try:
-                        escuela_id = int(escuela_param)
-                    except (TypeError, ValueError):
-                        return Response({"detail": "escuela_id inválido."}, status=400)
-            qs = qs.filter(escuela_id=escuela_id)
-
-        top = list(qs.order_by('-xp', 'id')[:limit])
-        entries = []
-        for idx, u in enumerate(top, start=1):
-            entries.append({
-                'rank': idx,
-                'usuario_id': u.id,
-                'nombre': u.nombre,
-                'apellido': u.apellido,
-                'avatar_url': u.avatar_url or '',
-                'xp': u.xp,
-                'level': nivel_para_xp(u.xp)['level'],
-            })
-
-        # Rank del usuario actual si quedó fuera del top
-        mi_rank = None
-        if not any(e['usuario_id'] == request.user.id for e in entries):
-            mejor_xp = qs.filter(xp__gt=request.user.xp).count()
-            mi_rank = mejor_xp + 1
-
-        return Response({
-            'scope': scope,
-            'top': LeaderboardEntrySerializer(entries, many=True).data,
-            'me': {
-                'rank': mi_rank,
-                'xp': request.user.xp,
-                'level': nivel_para_xp(request.user.xp)['level'],
-            },
-        })
-
-
 class PushTokensView(APIView):
     """POST /api/v1/accounts/me/push-token/    registra/actualiza token
     DELETE /api/v1/accounts/me/push-token/<token>/   elimina
@@ -1010,6 +1001,24 @@ class MisCertificadosView(ListAPIView):
 
     def get_queryset(self):
         return Certificado.objects.filter(estudiante=self.request.user).order_by('-fecha_emision', '-id')
+
+
+class ExamenFinalElegibilidadView(APIView):
+    """GET /api/v1/accounts/me/courses/<curso_id>/final-exam/
+
+    Estado del examen final del curso para el estudiante: si puede rendir,
+    la razón si no (curso completado / plazo vencido / cooldown), y cuándo
+    podrá volver a intentarlo. Alimenta el estado del botón "Prueba Final".
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, curso_id):
+        from schools.models import Curso
+        try:
+            curso = Curso.objects.get(pk=curso_id)
+        except Curso.DoesNotExist:
+            return Response({"detail": "Curso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(accounts_services.elegibilidad_examen_final(request.user, curso))
 
 
 class VerifyCertificadoView(APIView):
