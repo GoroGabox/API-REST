@@ -11,6 +11,7 @@ from transbank.common.integration_api_keys import IntegrationApiKeys
 from transbank.common.integration_type import IntegrationType
 from rest_framework.views import APIView
 from django.db import transaction as db_transaction
+from django.http import HttpResponse
 from .utils import extract_ids_from_buy_order, parse_accounting_date
 from rest_framework.exceptions import ValidationError
 from django_filters.rest_framework import DjangoFilterBackend
@@ -80,6 +81,91 @@ class ProductoViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOnlyOrAdmin]
 
 
+def _generar_comprobante_pdf(venta):
+    """Genera un PDF de comprobante de pago (sin validez tributaria)."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    x = 25 * mm
+    right = W - 25 * mm
+    y = H - 30 * mm
+
+    # Encabezado
+    c.setFillColorRGB(0.06, 0.06, 0.06)
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(x, y, "AutoTest")
+    c.setFont("Helvetica", 10)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawRightString(right, y, "Comprobante de pago")
+    c.drawRightString(right, y - 14, f"N° {venta.id}")
+    y -= 34
+    c.setStrokeColorRGB(0.85, 0.85, 0.85)
+    c.line(x, y, right, y)
+    y -= 24
+
+    def row(label, value):
+        nonlocal y
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.45, 0.45, 0.45)
+        c.drawString(x, y, label)
+        c.setFont("Helvetica-Bold", 11)
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        c.drawString(x, y - 14, str(value))
+        y -= 32
+
+    fecha = venta.fecha_venta.strftime("%d-%m-%Y %H:%M") if venta.fecha_venta else "—"
+    escuela = venta.escuela.nombre if venta.escuela else "—"
+    if venta.usuario:
+        cliente = f"{venta.usuario.nombre or ''} {venta.usuario.apellido or ''}".strip() or venta.usuario.email
+    else:
+        cliente = "—"
+    producto = venta.producto.nombre if venta.producto else "—"
+    currency = getattr(venta.producto, "currency", "CLP") if venta.producto else "CLP"
+    try:
+        monto = f"{currency} ${venta.monto_pagado:,.0f}".replace(",", ".")
+    except (TypeError, ValueError):
+        monto = f"{currency} ${venta.monto_pagado}"
+
+    row("Fecha", fecha)
+    row("Escuela", escuela)
+    row("Cliente", cliente)
+    row("Producto", producto)
+    row("Método de pago", venta.pay_system or "—")
+    row("Estado", venta.payment_status or "—")
+
+    tx = getattr(venta, "transbank_transaction", None)
+    if tx:
+        if tx.buy_order:
+            row("Orden de compra", tx.buy_order)
+        if tx.status:
+            row("Estado de la transacción", tx.status)
+
+    # Total destacado
+    y -= 6
+    c.line(x, y, right, y)
+    y -= 26
+    c.setFont("Helvetica-Bold", 14)
+    c.setFillColorRGB(0.1, 0.1, 0.1)
+    c.drawString(x, y, "Total pagado")
+    c.drawRightString(right, y, monto)
+    y -= 44
+
+    # Nota legal (honesta): no es un DTE.
+    c.setFont("Helvetica-Oblique", 8)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.drawString(x, y, "Comprobante de pago sin validez tributaria: no constituye boleta ni factura")
+    c.drawString(x, y - 11, "electrónica (SII). Emitido automáticamente por AutoTest.")
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 class VentaViewSet(viewsets.ModelViewSet):
     """admin: todo; director: ventas asociadas a su escuela; estudiante: sus propias compras."""
     queryset = Venta.objects.all()
@@ -95,6 +181,19 @@ class VentaViewSet(viewsets.ModelViewSet):
         if is_estudiante(user):
             return Venta.objects.filter(usuario=user)
         return Venta.objects.none()
+
+    @action(detail=True, methods=["get"])
+    def comprobante(self, request, pk=None):
+        """GET /api/v1/sales/ventas/<id>/comprobante/ → PDF de comprobante.
+
+        `get_object()` aplica el scoping de `get_queryset`: un director solo
+        accede a ventas de su escuela; un estudiante a las suyas; en otro caso 404.
+        """
+        venta = self.get_object()
+        pdf = _generar_comprobante_pdf(venta)
+        resp = HttpResponse(pdf, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="comprobante_{venta.id}.pdf"'
+        return resp
 
 
 class AccessKeyViewSet(viewsets.ModelViewSet):

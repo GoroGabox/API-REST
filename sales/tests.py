@@ -651,3 +651,52 @@ class DirectWriteAuthzTests(APITestCase):
             "/api/v1/sales/access_key/", {"status": "active", "origen": "key"}, format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+
+
+# ======================================================================
+# Comprobante de pago en PDF (#9)
+# ======================================================================
+class ComprobanteVentaTests(APITestCase):
+    def setUp(self):
+        from schools.models import Escuela
+        from sales.models import Producto, Venta
+        self.escuela_a = Escuela.objects.create(nombre="A", direccion="x", email="a@a.com", telefono="1")
+        self.escuela_b = Escuela.objects.create(nombre="B", direccion="y", email="b@b.com", telefono="2")
+        self.dir_a = make_user("dira_cp@a.com", is_director=True, escuela=self.escuela_a)
+        self.dir_b = make_user("dirb_cp@b.com", is_director=True, escuela=self.escuela_b)
+        self.est_a = make_user("esta_cp@a.com", is_estudiante=True, escuela=self.escuela_a)
+        self.producto = Producto.objects.create(
+            nombre="Pack Básico", tipo="llave", valor_neto=19990, descripcion="d",
+        )
+        self.venta = Venta.objects.create(
+            producto=self.producto, escuela=self.escuela_a, usuario=self.dir_a,
+            monto_pagado=19990, pay_system="transbank", payment_status="approved",
+        )
+
+    def _url(self, vid):
+        return f"/api/v1/sales/ventas/{vid}/comprobante/"
+
+    def test_director_descarga_pdf_de_su_escuela(self):
+        self.client.force_authenticate(self.dir_a)
+        r = self.client.get(self._url(self.venta.id))
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r["Content-Type"], "application/pdf")
+        self.assertIn("attachment", r["Content-Disposition"])
+        self.assertTrue(r.content[:5] == b"%PDF-")
+
+    def test_director_de_otra_escuela_404(self):
+        self.client.force_authenticate(self.dir_b)
+        r = self.client.get(self._url(self.venta.id))
+        self.assertEqual(r.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_estudiante_descarga_su_propia_compra(self):
+        from sales.models import Venta
+        venta_est = Venta.objects.create(
+            producto=self.producto, escuela=self.escuela_a, usuario=self.est_a,
+            monto_pagado=9990, pay_system="transbank", payment_status="approved",
+        )
+        self.client.force_authenticate(self.est_a)
+        # Su propia venta: 200
+        self.assertEqual(self.client.get(self._url(venta_est.id)).status_code, status.HTTP_200_OK)
+        # Venta ajena (del director): 404
+        self.assertEqual(self.client.get(self._url(self.venta.id)).status_code, status.HTTP_404_NOT_FOUND)

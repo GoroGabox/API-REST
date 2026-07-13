@@ -12,6 +12,7 @@ requests==2.32.4
 pyotp==2.9.0  # 2FA TOTP (verificación de códigos de app autenticadora)
 qrcode==8.0   # genera el QR de enrolamiento 2FA (requiere Pillow)
 Pillow==10.4.0  # backend de imagen para qrcode (PNG del QR)
+reportlab==4.2.5  # comprobante de pago en PDF (VentaViewSet.comprobante)
 PyMuPDF==1.24.14
 openpyxl==3.1.5  # carga masiva de ejercicios desde .xlsx (EjercicioViewSet.bulk_upload)
 scikit-learn==1.5.2
