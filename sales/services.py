@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 
 from schools.models import Escuela, Curso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
@@ -10,6 +11,33 @@ from .utils import extract_ids_from_buy_order
 
 # Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
 DIAS_COMPRA_INDIVIDUAL = 30
+
+
+def cursos_con_acceso_vigente(user) -> set:
+    """Ids de cursos a los que `user` (estudiante) tiene acceso VIGENTE.
+
+    Acceso vigente = existe un EstudianteCurso cuya AccessKey está 'active' y
+    dentro de su rango temporal. Los cupos de suscripción (valid_until=None) no
+    expiran; las llaves/compras vencen en su `valid_until`. Es la fuente de
+    verdad para gatear el contenido premium (lecciones, unidades, ejercicios).
+    """
+    now = timezone.now()
+    qs = (
+        EstudianteCurso.objects
+        .filter(estudiante_id=user, access_key_id__status='active')
+        .filter(Q(access_key_id__valid_from__isnull=True) | Q(access_key_id__valid_from__lte=now))
+        .filter(Q(access_key_id__valid_until__isnull=True) | Q(access_key_id__valid_until__gte=now))
+    )
+    return set(qs.values_list('curso_id_id', flat=True))
+
+
+def tiene_acceso_a_curso(user, curso_id) -> bool:
+    """True si el estudiante tiene acceso vigente al curso indicado."""
+    try:
+        cid = int(curso_id)
+    except (TypeError, ValueError):
+        return False
+    return cid in cursos_con_acceso_vigente(user)
 
 
 def precio_final_curso(curso: Curso) -> int:
@@ -189,16 +217,42 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
     if int(round(float(result.get('amount') or 0))) != precio_final_curso(curso):
         raise CompraCursoError("El monto cobrado no coincide con el precio del curso.", 'price_mismatch')
 
-    if EstudianteCurso.objects.filter(estudiante_id=user, curso_id=curso).exists():
-        raise CompraCursoError("Ya tienes acceso a este curso.", 'already_enrolled')
+    # ¿Ya inscrito? Distinguimos renovación de compra nueva:
+    #  - Compra propia (origen='purchase') VENCIDA → renovar: extiende +dias.
+    #  - Compra propia VIGENTE → ya tiene acceso (no cobrar de nuevo).
+    #  - Acceso de escuela (key/seat) → lo gestiona la escuela, no se renueva
+    #    con pago individual.
+    existing = (
+        EstudianteCurso.objects
+        .select_related('access_key_id')
+        .filter(estudiante_id=user, curso_id=curso)
+        .first()
+    )
+    if existing is not None:
+        ak = existing.access_key_id
+        if ak and ak.origen == 'purchase' and not ak.is_valid():
+            # Renovación: reactiva y extiende desde ahora.
+            ak.valid_from = timezone.now()
+            ak.valid_until = timezone.now() + timedelta(days=dias)
+            ak.status = 'active'
+            ak.save(update_fields=['valid_from', 'valid_until', 'status'])
+            access_key = ak
+        elif ak and ak.origen == 'purchase':
+            raise CompraCursoError("Ya tienes acceso vigente a este curso.", 'already_enrolled')
+        else:
+            raise CompraCursoError(
+                "Este curso lo gestiona tu escuela; contáctala para renovar.",
+                'managed_by_school',
+            )
+    else:
+        access_key = AccessKey.objects.create(
+            valid_until=timezone.now() + timedelta(days=dias),
+            origen='purchase',
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=user, curso_id=curso, access_key_id=access_key,
+        )
 
-    access_key = AccessKey.objects.create(
-        valid_until=timezone.now() + timedelta(days=dias),
-        origen='purchase',
-    )
-    EstudianteCurso.objects.create(
-        estudiante_id=user, curso_id=curso, access_key_id=access_key,
-    )
     venta = Venta.objects.create(
         usuario=user,
         curso=curso,

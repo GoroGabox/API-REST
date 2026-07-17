@@ -279,6 +279,52 @@ class CompraCursoIndividualTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertFalse(EstudianteCurso.objects.filter(estudiante_id=self.student).exists())
 
+    @patch("sales.views.Transaction")
+    def test_renovacion_extiende_curso_vencido(self, MockTx):
+        # Inscripción de compra VENCIDA.
+        ak = AccessKey.objects.create(
+            valid_until=timezone.now() - timedelta(days=1), origen="purchase", status="active",
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.student, curso_id=self.curso, access_key_id=ak,
+        )
+        MockTx.return_value.commit.return_value = self._commit()
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm_payload("TREN"), format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        # No se duplicó la inscripción; la llave se extendió y quedó vigente.
+        self.assertEqual(
+            EstudianteCurso.objects.filter(estudiante_id=self.student, curso_id=self.curso).count(), 1
+        )
+        ak.refresh_from_db()
+        self.assertTrue(ak.is_valid())
+        self.assertGreater(ak.valid_until, timezone.now())
+
+    @patch("sales.views.Transaction")
+    def test_no_renueva_curso_gestionado_por_escuela(self, MockTx):
+        # Acceso otorgado por la escuela (origen='key') vencido → no se renueva
+        # con pago individual.
+        ak = AccessKey.objects.create(
+            valid_until=timezone.now() - timedelta(days=1), origen="key", status="active",
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.student, curso_id=self.curso, access_key_id=ak,
+        )
+        MockTx.return_value.commit.return_value = self._commit()
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm_payload("TK"), format="json")
+        self.assertEqual(r.status_code, 409)
+
+    @patch("sales.views.Transaction")
+    def test_lista_cursos_expone_estado_de_acceso(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit()
+        self.client.post("/api/v1/sales/pay_confirm/", self._confirm_payload(), format="json")
+        r = self.client.get(f"/api/v1/sales/estudiante_curso/?estudiante_id={self.student.id}")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        rows = body.get("results", body) if isinstance(body, dict) else body
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["acceso_vigente"])
+        self.assertEqual(rows[0]["origen"], "purchase")
+
 
 class CursoCompradoYEscuelaTests(TestCase):
     """Adopción, desvinculación y extensión sobre cursos comprados."""

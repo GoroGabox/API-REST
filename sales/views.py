@@ -314,7 +314,8 @@ class EstudianteCursoViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOnlyOrAdmin]
 
     def get_queryset(self):
-        return _scope_estudiante_curso(EstudianteCurso.objects.all(), self.request.user)
+        qs = EstudianteCurso.objects.select_related('access_key_id', 'curso_id')
+        return _scope_estudiante_curso(qs, self.request.user)
 
 
 class EstudianteCursoDetailViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1109,7 +1110,8 @@ class UnifiedPaymentConfirmationView(APIView):
                     )
                 except CompraCursoError as e:
                     http = (
-                        status.HTTP_409_CONFLICT if e.code == "already_enrolled"
+                        status.HTTP_409_CONFLICT
+                        if e.code in ("already_enrolled", "managed_by_school")
                         else status.HTTP_400_BAD_REQUEST
                     )
                     return Response({"success": False, "details": str(e), "code": e.code}, status=http)

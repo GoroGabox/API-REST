@@ -449,6 +449,17 @@ class LeccionDetalleYUnidadesTests(APITestCase):
             tipo='video', contenido='# Markdown', transcripcion='lorem',
             duracion_min=15,
         )
+        # El contenido está gateado por acceso al curso: damos acceso vigente
+        # al estudiante para probar la forma del serializer / unidades.
+        from sales.models import AccessKey, EstudianteCurso
+        from django.utils import timezone as _tz
+        from datetime import timedelta as _td
+        ak = AccessKey.objects.create(
+            valid_until=_tz.now() + _td(days=30), origen='purchase', status='active',
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.user, curso_id=self.curso, access_key_id=ak,
+        )
 
     def test_leccion_detalle_incluye_contenido_y_transcripcion(self):
         r = self.client.get(f'/api/v1/schools/lessons/{self.leccion.id}/')

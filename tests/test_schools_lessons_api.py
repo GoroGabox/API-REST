@@ -35,6 +35,18 @@ class LessonApiOrderingTests(TestCase):
         self.u1_p1 = self._lesson(self.unidad_1, 1, "U1 P1", "Contenido U1 P1")
         self.u2_p2 = self._lesson(self.unidad_2, 2, "U2 P2", "Contenido U2 P2")
 
+        # El contenido premium está gateado por acceso al curso: damos acceso
+        # vigente al estudiante para poder verificar orden y forma del contenido.
+        from django.utils import timezone
+        from datetime import timedelta
+        from sales.models import AccessKey, EstudianteCurso
+        ak = AccessKey.objects.create(
+            valid_until=timezone.now() + timedelta(days=30), origen="purchase", status="active",
+        )
+        EstudianteCurso.objects.create(
+            estudiante_id=self.user, curso_id=self.curso, access_key_id=ak,
+        )
+
     def _lesson(self, unidad, posicion, nombre, contenido):
         return Leccion.objects.create(
             curso=self.curso,

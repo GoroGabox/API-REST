@@ -7,6 +7,11 @@ class EscuelaSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class CursoSerializer(serializers.ModelSerializer):
+    # Los cursos no pueden ser gratis: costo obligatorio y > 0 al crear/editar.
+    # (min_value=1 rechaza 0 y negativos; required en create/PUT, validado si
+    # viene en un PATCH parcial.)
+    costo = serializers.IntegerField(min_value=1, required=True, allow_null=False)
+
     class Meta:
         model = Curso
         fields = '__all__'

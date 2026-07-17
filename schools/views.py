@@ -709,8 +709,23 @@ class CursoViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='units')
     def units(self, request, pk=None):
-        """GET /api/v1/schools/courses/<id>/units/ — unidades del curso con sus lecciones."""
+        """GET /api/v1/schools/courses/<id>/units/ — unidades del curso con sus lecciones.
+
+        Contenido premium: el estudiante necesita acceso vigente al curso;
+        admin/director ven todo; anónimo no (aunque el catálogo del curso sea
+        público, sus lecciones no lo son).
+        """
         curso = self.get_object()
+        user = request.user
+        if not (user and user.is_authenticated):
+            return Response({"detail": "Autenticación requerida."}, status=status.HTTP_401_UNAUTHORIZED)
+        if not (is_admin(user) or is_director(user)):
+            from sales.services import tiene_acceso_a_curso
+            if not tiene_acceso_a_curso(user, curso.id):
+                return Response(
+                    {"detail": "No tienes acceso a este curso."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         lecciones_ordenadas = Leccion.objects.select_related('categoria').order_by('posicion', 'id')
         unidades = (
             Unidad.objects.filter(curso=curso)
@@ -729,11 +744,21 @@ class LeccionViewSet(viewsets.ModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        return (
+        qs = (
             Leccion.objects
             .select_related('curso', 'unidad', 'categoria')
             .order_by(*LECCION_ORDERING)
         )
+        # Gating de contenido premium: el estudiante solo ve lecciones de cursos
+        # con acceso vigente (comprado/llave/cupo no vencido). Admin/director ven
+        # todo (curación/preview). Anónimo: nada (además ReadOnlyOrAdmin exige auth).
+        user = self.request.user
+        if is_admin(user) or is_director(user):
+            return qs
+        if is_estudiante(user):
+            from sales.services import cursos_con_acceso_vigente
+            return qs.filter(curso_id__in=cursos_con_acceso_vigente(user))
+        return qs.none()
 
     def get_serializer_class(self):
         # Detalle (con contenido + transcripción) en:
@@ -758,6 +783,18 @@ class UnidadViewSet(viewsets.ModelViewSet):
     filterset_fields = ['curso']
     permission_classes = [ReadOnlyOrAdmin]
 
+    def get_queryset(self):
+        # UnidadSerializer anida las lecciones (con URLs de media), así que se
+        # gatea igual que LeccionViewSet: estudiante solo cursos con acceso.
+        qs = Unidad.objects.all()
+        user = self.request.user
+        if is_admin(user) or is_director(user):
+            return qs
+        if is_estudiante(user):
+            from sales.services import cursos_con_acceso_vigente
+            return qs.filter(curso_id__in=cursos_con_acceso_vigente(user))
+        return qs.none()
+
 
 class EjercicioViewSet(viewsets.ModelViewSet):
     queryset = Ejercicio.objects.all()
@@ -765,6 +802,15 @@ class EjercicioViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOnlyOrAdmin]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['categoria', 'curso', 'leccion']
+
+    def get_queryset(self):
+        # El banco de preguntas es contenido premium: NO se expone directamente a
+        # estudiantes (reciben ejercicios solo vía tests generados en servidor, y
+        # los quiz de lección van embebidos en el contenido). Solo admin/director.
+        user = self.request.user
+        if is_admin(user) or is_director(user):
+            return Ejercicio.objects.all()
+        return Ejercicio.objects.none()
 
     def get_serializer_class(self):
         """Admin ve y escribe `respuesta`; el resto recibe el serializer
@@ -1080,13 +1126,11 @@ class RecursoViewSet(viewsets.ModelViewSet):
         if is_admin(user) or is_director(user):
             return qs
 
-        # Estudiante: ocultar recursos con requires_owned_course=True
-        # excepto los de cursos que posee.
+        # Estudiante: ocultar recursos con requires_owned_course=True excepto los
+        # de cursos con acceso VIGENTE (compra/llave/cupo no vencido).
         if is_estudiante(user):
-            from sales.models import EstudianteCurso
-            owned_cursos = EstudianteCurso.objects.filter(
-                estudiante_id=user
-            ).values_list('curso_id_id', flat=True)
+            from sales.services import cursos_con_acceso_vigente
+            owned_cursos = cursos_con_acceso_vigente(user)
             from django.db.models import Q
             return qs.filter(
                 Q(requires_owned_course=False) | Q(curso_id__in=owned_cursos)
@@ -1160,6 +1204,17 @@ class CourseGenerateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Los cursos no pueden ser gratis: costo obligatorio y mayor a 0.
+        try:
+            costo = int(request.data.get("costo"))
+        except (TypeError, ValueError):
+            costo = None
+        if not costo or costo <= 0:
+            return Response(
+                {"detail": "El costo es obligatorio y debe ser mayor a 0."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         is_profesional = str(request.data.get("is_profesional", "")).lower() in (
             "true", "1", "on", "yes",
         )
@@ -1186,6 +1241,7 @@ class CourseGenerateView(APIView):
                     contenido_path=contenido_path,
                     nombre=nombre,
                     codigo=codigo,
+                    costo=costo,
                     is_profesional=is_profesional,
                     max_lecciones=max_lecciones,
                     idioma=idioma,

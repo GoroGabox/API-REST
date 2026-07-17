@@ -54,6 +54,7 @@ def generate_course_stream(
     contenido_path: str | Path,
     nombre: str,
     codigo: str,
+    costo: int,
     is_profesional: bool = False,
     max_lecciones: int = 20,
     idioma: str = "es",
@@ -117,6 +118,10 @@ def generate_course_stream(
                 is_profesional=is_profesional,
                 max_lecciones=max_lecciones,
             )
+
+        # El costo lo define el operador (obligatorio, > 0): los cursos no
+        # pueden ser gratis. Sobrescribe el placeholder del manifest builder.
+        manifest["curso"]["costo"] = int(costo)
 
         n_units = len(manifest["unidades"])
         n_topics = sum(len(unit["temas"]) for unit in manifest["unidades"])

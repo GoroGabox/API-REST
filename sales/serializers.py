@@ -27,9 +27,30 @@ class AccessKeySerializer(serializers.ModelSerializer):
 
 
 class EstudianteCursoSerializer(serializers.ModelSerializer):
+    # Estado del acceso para la UI "Mis cursos": permite distinguir un curso
+    # con acceso vigente de uno vencido (y ofrecer "Renovar" si es compra).
+    acceso_vigente = serializers.SerializerMethodField()
+    valid_until = serializers.SerializerMethodField()
+    origen = serializers.SerializerMethodField()
+
     class Meta:
         model = EstudianteCurso
-        fields = '__all__'
+        fields = [
+            'id', 'estudiante_id', 'curso_id', 'access_key_id',
+            'acceso_vigente', 'valid_until', 'origen',
+        ]
+
+    def get_acceso_vigente(self, obj):
+        ak = obj.access_key_id
+        return bool(ak and ak.is_valid())
+
+    def get_valid_until(self, obj):
+        ak = obj.access_key_id
+        return ak.valid_until if ak else None
+
+    def get_origen(self, obj):
+        ak = obj.access_key_id
+        return ak.origen if ak else None
 
 class EstudianteCursoDetailSerializer(serializers.ModelSerializer):
     estudiante_id = UsuarioSerializer()
