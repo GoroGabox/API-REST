@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Producto, Venta, AccessKey, EstudianteCurso
+from .models import Producto, Venta, AccessKey, EstudianteCurso, SolicitudAcceso
 from accounts.serializers import UsuarioSerializer
 from schools.serializers import CursoSerializer
 from django.utils import timezone
@@ -67,6 +67,31 @@ class ActivarCursoSerializer(serializers.ModelSerializer):
     class Meta:
         model = EstudianteCurso
         fields = ['curso_id', 'estudiante_id','days']
+
+
+class SolicitudAccesoSerializer(serializers.ModelSerializer):
+    # Campos denormalizados para que ambas UIs (estudiante y director) rendericen
+    # sin joins extra.
+    curso_nombre = serializers.CharField(source='curso.nombre', read_only=True)
+    curso_codigo = serializers.CharField(source='curso.codigo', read_only=True)
+    curso_is_profesional = serializers.BooleanField(source='curso.is_profesional', read_only=True)
+    escuela_nombre = serializers.CharField(source='escuela.nombre', read_only=True)
+    estudiante_nombre = serializers.SerializerMethodField()
+    estudiante_email = serializers.CharField(source='estudiante.email', read_only=True)
+
+    class Meta:
+        model = SolicitudAcceso
+        fields = [
+            'id', 'estudiante', 'estudiante_nombre', 'estudiante_email',
+            'escuela', 'escuela_nombre', 'curso', 'curso_nombre', 'curso_codigo',
+            'curso_is_profesional', 'estado', 'mensaje', 'motivo_rechazo',
+            'created_at', 'resolved_at',
+        ]
+        read_only_fields = fields
+
+    def get_estudiante_nombre(self, obj):
+        est = obj.estudiante
+        return f"{est.nombre} {est.apellido}".strip() if est else ''
 
 class EstudianteCursosActivosSerializer(serializers.ModelSerializer):
     registros = serializers.SerializerMethodField()

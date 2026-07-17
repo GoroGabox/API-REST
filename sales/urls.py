@@ -16,6 +16,7 @@ from .views import (
     EstudianteCursoDetailViewSet,
     EstudiantesCursosActivosPorEscuelaView,
     CursosDisponiblesParaUsuarioView,
+    SolicitudAccesoViewSet,
 )
 
 router = DefaultRouter()
@@ -24,6 +25,7 @@ router.register(r'ventas', VentaViewSet)
 router.register(r'access_key', AccessKeyViewSet)
 router.register(r'estudiante_curso', EstudianteCursoViewSet)
 router.register(r'estudiante-cursos-detail', EstudianteCursoDetailViewSet, basename='estudiante-curso-detail')
+router.register(r'solicitudes', SolicitudAccesoViewSet, basename='solicitud-acceso')
 
 urlpatterns = [
     path('webpay_init/', SaleInitiationViewSet.as_view(), name='webpay_init_view'),

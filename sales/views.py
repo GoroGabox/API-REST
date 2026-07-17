@@ -1,7 +1,8 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
-from .models import Producto, Venta, AccessKey, TransbankTransaction, Usuario, Escuela, Curso, EstudianteCurso
-from .serializers import ProductoSerializer, VentaSerializer, AccessKeySerializer, EstudianteCursoSerializer, ActivarCursoSerializer, EstudianteCursoDetailSerializer
+from django.utils import timezone
+from .models import Producto, Venta, AccessKey, TransbankTransaction, Usuario, Escuela, Curso, EstudianteCurso, SolicitudAcceso
+from .serializers import ProductoSerializer, VentaSerializer, AccessKeySerializer, EstudianteCursoSerializer, ActivarCursoSerializer, EstudianteCursoDetailSerializer, SolicitudAccesoSerializer
 from rest_framework.response import Response
 from transbank.error.transbank_error import TransbankError
 from transbank.webpay.webpay_plus.transaction import Transaction
@@ -36,7 +37,9 @@ from .services import (
     CompraCursoError,
     precio_final_producto,
     precio_final_curso,
+    tiene_acceso_a_curso,
 )
+from accounts.notifications import notificar
 
 
 def _frontend_return_url():
@@ -627,6 +630,208 @@ def _asignar_por_source(estudiante, curso, days, resolved_source, decrement_escu
             access_key_id=access_key,
         )
     return access_key
+
+
+class SolicitudAccesoViewSet(mixins.ListModelMixin,
+                             mixins.CreateModelMixin,
+                             viewsets.GenericViewSet):
+    """Solicitudes de acceso in-app (estudiante → escuela+curso).
+
+    - Estudiante: `POST` crea una solicitud (ingresa el código de la escuela +
+      el curso); `GET` lista las propias; `cancelar` retira una pendiente.
+    - Director/Admin: `GET` lista las de su escuela; `aprobar` enrola (consume
+      llave/cupo como `activar_curso` y vincula la escuela si hacía falta);
+      `rechazar` la descarta con un motivo. Ambas notifican al estudiante.
+    """
+    serializer_class = SolicitudAccesoSerializer
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SolicitudAcceso.objects.select_related('estudiante', 'escuela', 'curso')
+        if is_admin(user):
+            base = qs
+        elif is_director(user) and user.escuela_id:
+            base = qs.filter(escuela_id=user.escuela_id)
+        else:  # estudiante (u otro): solo lo suyo
+            base = qs.filter(estudiante_id=user.id)
+        estado = self.request.query_params.get('estado')
+        if estado:
+            base = base.filter(estado=estado)
+        return base
+
+    def create(self, request, *args, **kwargs):
+        if not is_estudiante(request.user):
+            return Response({"detail": "Solo estudiantes pueden pedir acceso."},
+                            status=status.HTTP_403_FORBIDDEN)
+        codigo = (request.data.get('codigo_escuela') or '').strip().upper()
+        curso_id = request.data.get('curso_id')
+        mensaje = (request.data.get('mensaje') or '').strip()
+        if not codigo or not curso_id:
+            return Response({"detail": "Se requieren 'codigo_escuela' y 'curso_id'."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        escuela = Escuela.objects.filter(codigo=codigo).first()
+        if escuela is None:
+            return Response({"detail": "Código de escuela inválido."},
+                            status=status.HTTP_404_NOT_FOUND)
+        # Si ya pertenece a una escuela, solo puede pedir a la suya.
+        if request.user.escuela_id and request.user.escuela_id != escuela.id:
+            return Response({"detail": "Ya perteneces a otra escuela; pide acceso a esa."},
+                            status=status.HTTP_409_CONFLICT)
+        try:
+            curso = Curso.objects.get(id=curso_id)
+        except (Curso.DoesNotExist, ValueError, TypeError):
+            return Response({"detail": "Curso no encontrado."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if tiene_acceso_a_curso(request.user, curso.id):
+            return Response({"detail": "Ya tienes acceso vigente a este curso."},
+                            status=status.HTTP_409_CONFLICT)
+        if SolicitudAcceso.objects.filter(
+            estudiante_id=request.user.id, curso_id=curso.id, estado='pendiente',
+        ).exists():
+            return Response({"detail": "Ya tienes una solicitud pendiente para este curso."},
+                            status=status.HTTP_409_CONFLICT)
+
+        solicitud = SolicitudAcceso.objects.create(
+            estudiante=request.user, escuela=escuela, curso=curso, mensaje=mensaje,
+        )
+        self._notificar_directores(solicitud)
+        return Response(self.get_serializer(solicitud).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def cancelar(self, request, pk=None):
+        solicitud = SolicitudAcceso.objects.filter(pk=pk).first()
+        if solicitud is None:
+            return Response({"detail": "Solicitud no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        if solicitud.estudiante_id != request.user.id:
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+        if solicitud.estado != 'pendiente':
+            return Response({"detail": "La solicitud ya fue resuelta."}, status=status.HTTP_409_CONFLICT)
+        solicitud.estado = 'cancelada'
+        solicitud.resolved_at = timezone.now()
+        solicitud.save(update_fields=['estado', 'resolved_at'])
+        return Response(self.get_serializer(solicitud).data)
+
+    @action(detail=True, methods=['post'])
+    def aprobar(self, request, pk=None):
+        solicitud = self._get_dir_pendiente(request, pk)
+        if isinstance(solicitud, Response):
+            return solicitud
+
+        source = (request.data.get('source') or 'auto').lower().strip()
+        if source not in ('auto', 'key', 'seat'):
+            return Response({"error": "source debe ser 'auto', 'key' o 'seat'."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            days = int(request.data.get('days')) if request.data.get('days') else 30
+        except (TypeError, ValueError):
+            days = 30
+
+        estudiante = solicitud.estudiante
+        curso = solicitud.curso
+        if estudiante.escuela_id and estudiante.escuela_id != solicitud.escuela_id:
+            return Response({"error": "El estudiante pertenece a otra escuela."},
+                            status=status.HTTP_409_CONFLICT)
+        if tiene_acceso_a_curso(estudiante, curso.id):
+            return Response({"error": "El estudiante ya tiene acceso vigente a este curso."},
+                            status=status.HTTP_409_CONFLICT)
+        # Una inscripción previa (aunque vencida) bloquea crear otra (unique
+        # estudiante+curso). En ese caso el director debe extender/revocar.
+        if EstudianteCurso.objects.filter(estudiante_id=estudiante, curso_id=curso).exists():
+            return Response(
+                {"error": "El estudiante ya tiene una inscripción a este curso (vencida). Usa extender o revocar."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if is_admin(request.user):
+            resolved_source = 'seat' if source == 'seat' else 'key'
+            access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
+        else:
+            is_pro = bool(curso.is_profesional)
+            with db_transaction.atomic():
+                escuela = Escuela.objects.select_for_update().get(pk=solicitud.escuela_id)
+                resolved_source = _resolver_source_director(escuela, is_pro, source)
+                if resolved_source is None:
+                    return Response({"error": _mensaje_sin_saldo(is_pro, source)},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                _decrementar_saldo(escuela, is_pro, resolved_source)
+                escuela.save()
+                access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
+
+        # Vincula la escuela si el estudiante no la tenía (flujo escuela+curso).
+        if not estudiante.escuela_id:
+            estudiante.escuela_id = solicitud.escuela_id
+            estudiante.save(update_fields=['escuela'])
+
+        solicitud.estado = 'aprobada'
+        solicitud.resolved_at = timezone.now()
+        solicitud.resuelta_por = request.user
+        solicitud.save(update_fields=['estado', 'resolved_at', 'resuelta_por'])
+
+        notificar(
+            estudiante, 'access_request_resolved', '¡Solicitud aprobada!',
+            f'Tu acceso al curso "{curso.nombre}" fue aprobado.',
+            data={'curso_id': curso.id, 'estado': 'aprobada'},
+        )
+        return Response({
+            "message": "Solicitud aprobada y curso activado.",
+            "access_key": access_key.key,
+            "valid_until": access_key.valid_until,
+            "origen": access_key.origen,
+            "solicitud": self.get_serializer(solicitud).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def rechazar(self, request, pk=None):
+        solicitud = self._get_dir_pendiente(request, pk)
+        if isinstance(solicitud, Response):
+            return solicitud
+        motivo = (request.data.get('motivo') or '').strip()
+        solicitud.estado = 'rechazada'
+        solicitud.motivo_rechazo = motivo
+        solicitud.resolved_at = timezone.now()
+        solicitud.resuelta_por = request.user
+        solicitud.save(update_fields=['estado', 'motivo_rechazo', 'resolved_at', 'resuelta_por'])
+        notificar(
+            solicitud.estudiante, 'access_request_resolved', 'Solicitud rechazada',
+            f'Tu solicitud para "{solicitud.curso.nombre}" fue rechazada.'
+            + (f' Motivo: {motivo}' if motivo else ''),
+            data={'curso_id': solicitud.curso_id, 'estado': 'rechazada'},
+        )
+        return Response(self.get_serializer(solicitud).data)
+
+    # ---- helpers ----
+    def _get_dir_pendiente(self, request, pk):
+        """Carga una solicitud PENDIENTE que el director/admin puede resolver."""
+        if not (is_admin(request.user) or is_director(request.user)):
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+        solicitud = (
+            SolicitudAcceso.objects
+            .select_related('estudiante', 'curso', 'escuela')
+            .filter(pk=pk).first()
+        )
+        if solicitud is None:
+            return Response({"detail": "Solicitud no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        if is_director(request.user) and not is_admin(request.user):
+            if solicitud.escuela_id != request.user.escuela_id:
+                return Response({"detail": "La solicitud no pertenece a tu escuela."},
+                                status=status.HTTP_404_NOT_FOUND)
+        if solicitud.estado != 'pendiente':
+            return Response({"detail": "La solicitud ya fue resuelta."}, status=status.HTTP_409_CONFLICT)
+        return solicitud
+
+    def _notificar_directores(self, solicitud):
+        directores = Usuario.objects.filter(escuela_id=solicitud.escuela_id, is_director=True)
+        nombre = f"{solicitud.estudiante.nombre} {solicitud.estudiante.apellido}".strip()
+        for director in directores:
+            notificar(
+                director, 'access_request', 'Nueva solicitud de acceso',
+                f'{nombre} pide acceso al curso "{solicitud.curso.nombre}".',
+                data={'solicitud_id': solicitud.id, 'curso_id': solicitud.curso_id},
+            )
+
 
 class ExtenderLlaveView(APIView):
     """Extiende la fecha de validez de una `AccessKey` existente.

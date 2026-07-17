@@ -1,4 +1,23 @@
-﻿from django.db import models
+﻿import secrets
+import string
+
+from django.db import models
+
+
+# Alfabeto sin caracteres ambiguos (0/O, 1/I) para códigos legibles/dictables.
+_CODIGO_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def generar_codigo_escuela(length: int = 6) -> str:
+    """Genera un código de escuela único (mayúsculas, sin ambigüedad).
+
+    El estudiante lo ingresa para pedir acceso, así que prioriza que sea corto
+    y fácil de dictar. Reintenta ante colisiones (rarísimas con 32^6).
+    """
+    while True:
+        codigo = "".join(secrets.choice(_CODIGO_ALPHABET) for _ in range(length))
+        if not Escuela.objects.filter(codigo=codigo).exists():
+            return codigo
 
 
 # Create your models here.
@@ -18,6 +37,9 @@ class Escuela(models.Model):
     email = models.EmailField()
     telefono = models.CharField(max_length=20)
 
+    # Código único que el estudiante ingresa para pedir acceso a esta escuela.
+    codigo = models.CharField(max_length=12, unique=True, null=True, blank=True, db_index=True)
+
     # Llaves (unidades reservables con expiracion)
     basic_key = models.IntegerField(default=0)
     professional_key = models.IntegerField(default=0)
@@ -29,6 +51,12 @@ class Escuela(models.Model):
     basic_seats_used = models.IntegerField(default=0)
     professional_seats_max = models.IntegerField(default=0)
     professional_seats_used = models.IntegerField(default=0)
+
+    def save(self, *args, **kwargs):
+        # Toda escuela nace con un código; se genera una sola vez y no cambia.
+        if not self.codigo:
+            self.codigo = generar_codigo_escuela()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.nombre

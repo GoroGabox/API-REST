@@ -158,6 +158,8 @@ class Notificacion(models.Model):
         ('certificate_issued', 'Certificado emitido'),
         ('test_passed', 'Prueba aprobada'),
         ('hearts_refilled', 'Vidas recuperadas'),
+        ('access_request', 'Solicitud de acceso'),            # → director: nueva solicitud
+        ('access_request_resolved', 'Solicitud resuelta'),     # → estudiante: aprobada/rechazada
         ('promo', 'Promoción'),
         ('info', 'Informativa'),
     ]

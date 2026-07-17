@@ -97,6 +97,52 @@ class EstudianteCurso(models.Model):
         ]
         ordering = ['id']
 
+### 🙋 Solicitud de acceso (estudiante → escuela) ###
+class SolicitudAcceso(models.Model):
+    """Solicitud in-app de un estudiante para obtener acceso a un curso a
+    través de una escuela (identificada por su `codigo`).
+
+    Reemplaza el canal externo previo (el estudiante pedía por fuera y el
+    director activaba el curso a mano). Al aprobarla, el director enrola al
+    estudiante — vincula la escuela si hacía falta y consume 1 llave/cupo,
+    igual que `activar_curso`.
+    """
+    ESTADO_CHOICES = [
+        ('pendiente', 'Pendiente'),
+        ('aprobada', 'Aprobada'),
+        ('rechazada', 'Rechazada'),
+        ('cancelada', 'Cancelada'),
+    ]
+    estudiante = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='solicitudes_acceso')
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='solicitudes_acceso')
+    curso = models.ForeignKey(Curso, on_delete=models.CASCADE)
+    estado = models.CharField(max_length=12, choices=ESTADO_CHOICES, default='pendiente')
+    mensaje = models.TextField(blank=True, default='')        # nota opcional del estudiante
+    motivo_rechazo = models.TextField(blank=True, default='')  # nota opcional del director
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resuelta_por = models.ForeignKey(
+        Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            # A lo sumo una solicitud PENDIENTE por (estudiante, curso): evita
+            # spam y solicitudes duplicadas. Resueltas no cuentan (permite
+            # re-pedir tras un rechazo o cuando el acceso vence).
+            models.UniqueConstraint(
+                fields=['estudiante', 'curso'],
+                condition=models.Q(estado='pendiente'),
+                name='unique_solicitud_pendiente_por_curso',
+            ),
+        ]
+        indexes = [models.Index(fields=['escuela', 'estado', '-created_at'])]
+
+    def __str__(self):
+        return f"Solicitud {self.id} [{self.estado}] {self.estudiante_id}→{self.curso_id}"
+
+
 class TransbankTransaction(models.Model):
     sale = models.OneToOneField(Venta, on_delete=models.CASCADE, related_name="transbank_transaction")
     transaction_date = models.DateTimeField(null=True)
