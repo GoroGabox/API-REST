@@ -7,6 +7,7 @@ Correr:  manage.py test sales.tests_solicitudes --settings=autotestAPI.settings.
 """
 from datetime import timedelta
 
+from django.core import mail
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -59,6 +60,21 @@ class CrearSolicitudTests(SolicitudBaseTest):
         self.assertEqual(SolicitudAcceso.objects.count(), 1)
         # El director recibió notificación.
         self.assertTrue(Notificacion.objects.filter(usuario=self.director, tipo="access_request").exists())
+
+    def test_crear_solicitud_envia_email_al_director(self):
+        mail.outbox = []
+        r = self.crear_solicitud()
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.director.email, mail.outbox[0].to)
+
+    def test_no_envia_email_si_director_desactivo_preferencia(self):
+        self.director.email_notifications = False
+        self.director.save(update_fields=["email_notifications"])
+        mail.outbox = []
+        r = self.crear_solicitud()
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(len(mail.outbox), 0)
 
     def test_codigo_invalido_404(self):
         r = self.crear_solicitud(codigo="ZZZZZZ")

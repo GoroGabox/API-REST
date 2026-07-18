@@ -825,11 +825,18 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
     def _notificar_directores(self, solicitud):
         directores = Usuario.objects.filter(escuela_id=solicitud.escuela_id, is_director=True)
         nombre = f"{solicitud.estudiante.nombre} {solicitud.estudiante.apellido}".strip()
+        mensaje = (
+            f'{nombre} ({solicitud.estudiante.email}) pide acceso al curso '
+            f'"{solicitud.curso.nombre}". Revísala en tu panel de Solicitudes.'
+        )
         for director in directores:
+            # `email=True`: además del aviso in-app, se envía correo (respeta la
+            # preferencia `email_notifications` del director; best-effort).
             notificar(
                 director, 'access_request', 'Nueva solicitud de acceso',
-                f'{nombre} pide acceso al curso "{solicitud.curso.nombre}".',
+                mensaje,
                 data={'solicitud_id': solicitud.id, 'curso_id': solicitud.curso_id},
+                email=True,
             )
 
 
