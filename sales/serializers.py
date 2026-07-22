@@ -63,7 +63,7 @@ class EstudianteCursoDetailSerializer(serializers.ModelSerializer):
 
 
 class ActivarCursoSerializer(serializers.ModelSerializer):
-    days = serializers.IntegerField(default=30)
+    days = serializers.IntegerField(default=7)
     class Meta:
         model = EstudianteCurso
         fields = ['curso_id', 'estudiante_id','days']
@@ -154,13 +154,9 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
         if escuela is None:
             return False
 
-        # Reglas de acceso de la escuela
-        # - basic_access → solo cursos no profesionales
-        # - professional_access → acceso a todos
-        if not obj.is_profesional and escuela.basic_access:
-            return True
-
-        if escuela.professional_access:
+        # Regla de acceso de la escuela: con la suscripción (basic_access)
+        # activa, el estudiante accede a todos los cursos (un solo tier).
+        if escuela.basic_access:
             return True
 
         return False

@@ -43,9 +43,7 @@ class Command(BaseCommand):
                 "email": "contacto@escuelademo.cl",
                 "telefono": "+56912345678",
                 "basic_key": 10,
-                "professional_key": 5,
                 "basic_access": True,
-                "professional_access": False,
             },
         )
         self.stdout.write(self.style.SUCCESS(f'Escuela: {"creada" if created else "ya existia"} -> {escuela.nombre} (id={escuela.id})'))

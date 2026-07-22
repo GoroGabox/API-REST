@@ -112,7 +112,7 @@ class EscuelaDirectorPatchTests(APITestCase):
     def setUp(self):
         self.escuela_a = Escuela.objects.create(
             nombre="A", direccion="x", email="a@a.com", telefono="1",
-            basic_key=10, professional_key=5,
+            basic_key=10,
         )
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="y", email="b@b.com", telefono="2",
@@ -135,11 +135,10 @@ class EscuelaDirectorPatchTests(APITestCase):
 
     def test_director_no_puede_modificar_saldos(self):
         self.client.force_authenticate(self.dir_a)
-        r = self._patch(self.escuela_a.id, {"basic_key": 9999, "professional_key": 9999})
+        r = self._patch(self.escuela_a.id, {"basic_key": 9999})
         self.assertEqual(r.status_code, 400)
         self.escuela_a.refresh_from_db()
         self.assertEqual(self.escuela_a.basic_key, 10)
-        self.assertEqual(self.escuela_a.professional_key, 5)
 
     def test_director_saldos_ignorados_si_mezcla_con_campos_validos(self):
         self.client.force_authenticate(self.dir_a)
@@ -158,11 +157,10 @@ class EscuelaDirectorPatchTests(APITestCase):
 
     def test_admin_puede_modificar_todo(self):
         self.client.force_authenticate(self.admin)
-        r = self._patch(self.escuela_a.id, {"basic_key": 50, "professional_key": 20})
+        r = self._patch(self.escuela_a.id, {"basic_key": 50})
         self.assertEqual(r.status_code, 200, r.data)
         self.escuela_a.refresh_from_db()
         self.assertEqual(self.escuela_a.basic_key, 50)
-        self.assertEqual(self.escuela_a.professional_key, 20)
 
     def test_estudiante_no_puede_patchear(self):
         self.client.force_authenticate(self.est_a)

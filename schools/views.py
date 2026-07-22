@@ -35,8 +35,8 @@ LECCION_ORDERING = ('curso_id', 'unidad__orden', 'unidad_id', 'posicion', 'id')
 
 
 # Campos que un director puede modificar en su propia Escuela via PATCH.
-# Todo lo demás (basic_key, professional_key, basic_access, professional_access)
-# queda reservado a admin y procesos internos (pagos).
+# Todo lo demás (basic_key, basic_access) queda reservado a admin y procesos
+# internos (pagos).
 DIRECTOR_EDITABLE_ESCUELA_FIELDS = {"nombre", "email", "telefono", "direccion"}
 
 
@@ -119,7 +119,7 @@ class EscuelaViewSet(viewsets.ModelViewSet):
     queryset = Escuela.objects.all()
     serializer_class = EscuelaSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['email', 'basic_access', 'professional_access']
+    filterset_fields = ['email', 'basic_access']
     permission_classes = [_EscuelaScopedPermission]
 
     def get_queryset(self):
@@ -607,12 +607,8 @@ class DesvincularEstudianteView(APIView):
                 if ak and ak.origen == "purchase":
                     continue
                 if ak and ak.origen == "seat" and escuela is not None:
-                    if ec.curso_id.is_profesional:
-                        if escuela.professional_seats_used > 0:
-                            escuela.professional_seats_used -= 1
-                    else:
-                        if escuela.basic_seats_used > 0:
-                            escuela.basic_seats_used -= 1
+                    if escuela.basic_seats_used > 0:
+                        escuela.basic_seats_used -= 1
                 if ak:
                     ak.status = "revoked"
                     ak.save(update_fields=["status"])

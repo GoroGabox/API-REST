@@ -9,8 +9,8 @@ from schools.models import Escuela, Curso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
 from .utils import extract_ids_from_buy_order
 
-# Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
-DIAS_COMPRA_INDIVIDUAL = 30
+# Días de acceso que otorga cada llave (compra individual y activaciones).
+DIAS_COMPRA_INDIVIDUAL = 7
 
 
 def cursos_con_acceso_vigente(user) -> set:
@@ -136,12 +136,8 @@ def _aplicar_efectos_a_escuela(escuela_id: int, producto, is_director: bool):
     escuela_locked = Escuela.objects.select_for_update().get(pk=escuela_id)
     if producto.basic_access:
         escuela_locked.basic_access = True
-    elif producto.professional_access:
-        escuela_locked.professional_access = True
     elif producto.cant_basic_key and producto.cant_basic_key > 0:
         escuela_locked.basic_key += producto.cant_basic_key
-    elif producto.cant_professional_key and producto.cant_professional_key > 0:
-        escuela_locked.professional_key += producto.cant_professional_key
     else:
         return
     escuela_locked.save()

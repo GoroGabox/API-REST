@@ -43,7 +43,7 @@ class ActivarCursoTests(APITestCase):
     def setUp(self):
         self.escuela_a = Escuela.objects.create(
             nombre="A", direccion="x", email="a@a.com", telefono="1",
-            basic_key=2, professional_key=1,
+            basic_key=2,
         )
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="y", email="b@b.com", telefono="2",
@@ -99,7 +99,7 @@ class ActivarCursoTests(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
         self.escuela_a.refresh_from_db()
         # admin no consume saldo de la escuela
-        self.assertEqual(self.escuela_a.professional_key, 1)
+        self.assertEqual(self.escuela_a.basic_key, 2)
 
 
 class PaymentOwnershipTests(APITestCase):
@@ -199,11 +199,11 @@ class ExtenderLlaveTests(APITestCase):
 
         self.escuela_a = Escuela.objects.create(
             nombre="A", direccion="x", email="a@a.com", telefono="1",
-            basic_key=3, professional_key=2,
+            basic_key=3,
         )
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="y", email="b@b.com", telefono="2",
-            basic_key=5, professional_key=5,
+            basic_key=5,
         )
         self.admin = make_user("ad_ext@a.com", is_admin=True)
         self.dir_a = make_user("da_ext@a.com", is_director=True, escuela=self.escuela_a)
@@ -307,9 +307,8 @@ class ActivarCursoConSeatsTests(APITestCase):
     def setUp(self):
         self.escuela = Escuela.objects.create(
             nombre="Sub", direccion="x", email="s@s.com", telefono="1",
-            basic_key=3, professional_key=0,
+            basic_key=3,
             basic_access=True, basic_seats_max=2, basic_seats_used=0,
-            professional_access=False,
         )
         self.dir_ = make_user("dsub@x.com", is_director=True, escuela=self.escuela)
         self.est = make_user("esub@x.com", is_estudiante=True, escuela=self.escuela)
@@ -356,12 +355,18 @@ class ActivarCursoConSeatsTests(APITestCase):
         self.assertEqual(self.escuela.basic_seats_used, 0)
         self.assertEqual(self.escuela.basic_key, 2)
 
-    def test_source_seat_para_curso_pro_sin_suscripcion_falla(self):
-        # No hay professional_access
+    def test_curso_pro_usa_el_mismo_pool_unico(self):
+        # is_profesional es solo etiqueta: el curso pro consume el pool básico.
         r = self._post(self.curso_pro, source="seat")
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["origen"], "seat")
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)
 
-    def test_pro_sin_llaves_ni_seats_falla_400(self):
+    def test_curso_pro_sin_saldo_ni_seats_falla_400(self):
+        self.escuela.basic_key = 0
+        self.escuela.basic_seats_used = self.escuela.basic_seats_max
+        self.escuela.save()
         r = self._post(self.curso_pro)
         self.assertEqual(r.status_code, 400)
 
@@ -403,9 +408,8 @@ class SubscriptionStatusTests(APITestCase):
     def setUp(self):
         self.escuela = Escuela.objects.create(
             nombre="E", direccion="x", email="e@e.com", telefono="1",
-            basic_key=3, professional_key=1,
+            basic_key=3,
             basic_access=True, basic_seats_max=10, basic_seats_used=4,
-            professional_access=True, professional_seats_max=5, professional_seats_used=2,
         )
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="x", email="b@e.com", telefono="1",
@@ -428,8 +432,8 @@ class SubscriptionStatusTests(APITestCase):
         self.assertEqual(b["seats_available"], 6)
         self.assertEqual(b["keys_available"], 3)
         self.assertTrue(b["access"])
-        p = r.data["professional"]
-        self.assertEqual(p["seats_available"], 3)
+        # Ya no existe el tier profesional en la respuesta.
+        self.assertNotIn("professional", r.data)
 
     def test_director_otra_escuela_403(self):
         self.client.force_authenticate(self.dir_b)
@@ -553,7 +557,7 @@ class RevocarLlaveTests(APITestCase):
 
         self.escuela_a = Escuela.objects.create(
             nombre="A", direccion="x", email="a@a.com", telefono="1",
-            basic_key=5, professional_key=5,
+            basic_key=5,
         )
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="y", email="b@b.com", telefono="2",

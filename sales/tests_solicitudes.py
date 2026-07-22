@@ -28,7 +28,7 @@ class SolicitudBaseTest(APITestCase):
     def setUp(self):
         self.escuela = Escuela.objects.create(
             nombre="Escuela A", direccion="x", email="a@a.com", telefono="1",
-            basic_key=2, professional_key=1,
+            basic_key=2,
         )
         self.otra = Escuela.objects.create(
             nombre="Escuela B", direccion="y", email="b@b.com", telefono="2", basic_key=1,

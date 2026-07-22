@@ -158,7 +158,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
     queryset = Producto.objects.all()
     serializer_class = ProductoSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['cant_basic_key', 'cant_professional_key', 'basic_access', 'professional_access']
+    filterset_fields = ['cant_basic_key', 'basic_access']
     permission_classes = [ReadOnlyOrAdmin]
 
 
@@ -479,7 +479,7 @@ class ActivarCursoView(APIView):
     Body:
       user_id: int
       curso_id: int
-      days: int (opcional, default 30) — solo aplica a source='key'
+      days: int (opcional, default 7) — solo aplica a source='key'
       source: 'key' | 'seat' | 'auto' (opcional, default 'auto')
 
     Reglas por rol:
@@ -516,7 +516,7 @@ class ActivarCursoView(APIView):
         try:
             user = Usuario.objects.get(id=user_id)
             curso = Curso.objects.get(id=curso_id)
-            days = int(days) if days else 30
+            days = int(days) if days else 7
         except Curso.DoesNotExist:
             return Response({"error": "Curso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
         except Usuario.DoesNotExist:
@@ -540,16 +540,15 @@ class ActivarCursoView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        is_pro = bool(curso.is_profesional)
         with db_transaction.atomic():
             escuela = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-            resolved_source = _resolver_source_director(escuela, is_pro, source)
+            resolved_source = _resolver_source_director(escuela, source)
             if resolved_source is None:
                 return Response(
-                    {"error": _mensaje_sin_saldo(is_pro, source)},
+                    {"error": _mensaje_sin_saldo(source)},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            _decrementar_saldo(escuela, is_pro, resolved_source)
+            _decrementar_saldo(escuela, resolved_source)
             escuela.save()
             access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
 
@@ -563,50 +562,41 @@ class ActivarCursoView(APIView):
 
 # ---- helpers para activación con seat/key ----
 
-def _resolver_source_director(escuela, is_pro, source):
+def _resolver_source_director(escuela, source):
     """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela."""
     if source == "seat":
-        return "seat" if _tiene_seat(escuela, is_pro) else None
+        return "seat" if _tiene_seat(escuela) else None
     if source == "key":
-        return "key" if _tiene_key(escuela, is_pro) else None
+        return "key" if _tiene_key(escuela) else None
     # auto: seat primero (más barato), luego key.
-    if _tiene_seat(escuela, is_pro):
+    if _tiene_seat(escuela):
         return "seat"
-    if _tiene_key(escuela, is_pro):
+    if _tiene_key(escuela):
         return "key"
     return None
 
 
-def _tiene_seat(escuela, is_pro):
-    if is_pro:
-        return escuela.professional_access and escuela.professional_seats_used < escuela.professional_seats_max
+def _tiene_seat(escuela):
     return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
 
 
-def _tiene_key(escuela, is_pro):
-    return (escuela.professional_key if is_pro else escuela.basic_key) > 0
+def _tiene_key(escuela):
+    return escuela.basic_key > 0
 
 
-def _decrementar_saldo(escuela, is_pro, resolved_source):
+def _decrementar_saldo(escuela, resolved_source):
     if resolved_source == "seat":
-        if is_pro:
-            escuela.professional_seats_used += 1
-        else:
-            escuela.basic_seats_used += 1
+        escuela.basic_seats_used += 1
     else:  # key
-        if is_pro:
-            escuela.professional_key -= 1
-        else:
-            escuela.basic_key -= 1
+        escuela.basic_key -= 1
 
 
-def _mensaje_sin_saldo(is_pro, source):
-    tier = "profesional" if is_pro else "básico"
+def _mensaje_sin_saldo(source):
     if source == "seat":
-        return f"Tu escuela no tiene cupos {tier}es en la suscripción."
+        return "Tu escuela no tiene cupos disponibles en la suscripción."
     if source == "key":
-        return f"Tu escuela no tiene llaves {tier}es disponibles."
-    return f"Tu escuela no tiene ni cupos ni llaves {tier}es disponibles."
+        return "Tu escuela no tiene llaves disponibles."
+    return "Tu escuela no tiene ni cupos ni llaves disponibles."
 
 
 def _asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None):
@@ -749,14 +739,13 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
             resolved_source = 'seat' if source == 'seat' else 'key'
             access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
         else:
-            is_pro = bool(curso.is_profesional)
             with db_transaction.atomic():
                 escuela = Escuela.objects.select_for_update().get(pk=solicitud.escuela_id)
-                resolved_source = _resolver_source_director(escuela, is_pro, source)
+                resolved_source = _resolver_source_director(escuela, source)
                 if resolved_source is None:
-                    return Response({"error": _mensaje_sin_saldo(is_pro, source)},
+                    return Response({"error": _mensaje_sin_saldo(source)},
                                     status=status.HTTP_400_BAD_REQUEST)
-                _decrementar_saldo(escuela, is_pro, resolved_source)
+                _decrementar_saldo(escuela, resolved_source)
                 escuela.save()
                 access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
 
@@ -846,9 +835,8 @@ class ExtenderLlaveView(APIView):
     Reglas:
     - admin: puede extender cualquier llave sin tocar saldo.
     - director: solo llaves de estudiantes de su escuela, y consume **1**
-      llave del saldo (`basic_key` o `professional_key` según el curso
-      asociado a la llave a través de `EstudianteCurso`). Atómico con
-      `select_for_update` para evitar carreras.
+      llave del saldo (`basic_key`). Atómico con `select_for_update` para
+      evitar carreras.
     - estudiante: 403.
 
     Body:
@@ -866,7 +854,7 @@ class ExtenderLlaveView(APIView):
         if not access_key_id:
             return Response({"error": "access_key_id requerido."}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            days = int(days) if days else 30
+            days = int(days) if days else 7
             if days <= 0:
                 raise ValueError
         except (TypeError, ValueError):
@@ -907,20 +895,12 @@ class ExtenderLlaveView(APIView):
         with db_transaction.atomic():
             if is_director(request.user):
                 escuela_locked = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-                if curso.is_profesional:
-                    if escuela_locked.professional_key <= 0:
-                        return Response(
-                            {"error": "Tu escuela no tiene llaves profesionales disponibles."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    escuela_locked.professional_key -= 1
-                else:
-                    if escuela_locked.basic_key <= 0:
-                        return Response(
-                            {"error": "Tu escuela no tiene llaves básicas disponibles."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    escuela_locked.basic_key -= 1
+                if escuela_locked.basic_key <= 0:
+                    return Response(
+                        {"error": "Tu escuela no tiene llaves disponibles."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                escuela_locked.basic_key -= 1
                 escuela_locked.save()
 
             now = timezone.now()
@@ -1000,12 +980,8 @@ class RevocarLlaveView(APIView):
             # Si ocupaba un cupo de suscripción, devolverlo al pool.
             if access_key.origen == "seat" and inscripcion is not None and inscripcion.estudiante_id.escuela_id:
                 escuela = Escuela.objects.select_for_update().get(pk=inscripcion.estudiante_id.escuela_id)
-                if inscripcion.curso_id.is_profesional:
-                    if escuela.professional_seats_used > 0:
-                        escuela.professional_seats_used -= 1
-                else:
-                    if escuela.basic_seats_used > 0:
-                        escuela.basic_seats_used -= 1
+                if escuela.basic_seats_used > 0:
+                    escuela.basic_seats_used -= 1
                 escuela.save()
 
             access_key.status = "revoked"
@@ -1396,9 +1372,6 @@ class SubscriptionStatusView(APIView):
             "basic": tier(
                 escuela.basic_access, escuela.basic_seats_used, escuela.basic_seats_max, escuela.basic_key,
             ),
-            "professional": tier(
-                escuela.professional_access, escuela.professional_seats_used, escuela.professional_seats_max, escuela.professional_key,
-            ),
         })
 
 
@@ -1492,13 +1465,8 @@ class SubscriptionSeatsView(APIView):
                 )
 
             escuela = Escuela.objects.select_for_update().get(pk=school_id)
-            is_pro = bool(ec.curso_id.is_profesional)
-            if is_pro:
-                if escuela.professional_seats_used > 0:
-                    escuela.professional_seats_used -= 1
-            else:
-                if escuela.basic_seats_used > 0:
-                    escuela.basic_seats_used -= 1
+            if escuela.basic_seats_used > 0:
+                escuela.basic_seats_used -= 1
             escuela.save()
 
             access_key.status = "revoked"

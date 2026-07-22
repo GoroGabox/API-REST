@@ -233,7 +233,7 @@ class CompraCursoIndividualTests(TestCase):
         MockTx.assert_not_called()
 
     @patch("sales.views.Transaction")
-    def test_compra_otorga_acceso_30_dias(self, MockTx):
+    def test_compra_otorga_acceso_7_dias(self, MockTx):
         MockTx.return_value.commit.return_value = self._commit()
         r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm_payload(), format="json")
         self.assertEqual(r.status_code, 201, r.data)
@@ -241,9 +241,9 @@ class CompraCursoIndividualTests(TestCase):
         ec = EstudianteCurso.objects.get(estudiante_id=self.student, curso_id=self.curso)
         ak = ec.access_key_id
         self.assertEqual(ak.origen, "purchase")
-        # ~30 días de validez.
+        # ~7 días de validez.
         dias = (ak.valid_until - timezone.now()).days
-        self.assertTrue(29 <= dias <= 30)
+        self.assertTrue(6 <= dias <= 7)
         # Venta con curso (sin producto).
         venta = Venta.objects.get(usuario=self.student, curso=self.curso)
         self.assertIsNone(venta.producto)

@@ -15,9 +15,7 @@ class Producto(models.Model):
     descripcion = models.TextField()
     
     cant_basic_key = models.IntegerField(default=0, blank=True, null=True)
-    cant_professional_key = models.IntegerField(default=0, blank=True, null=True)
     basic_access = models.BooleanField(default=False)
-    professional_access = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['id']

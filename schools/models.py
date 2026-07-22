@@ -22,14 +22,13 @@ def generar_codigo_escuela(length: int = 6) -> str:
 
 # Create your models here.
 class Escuela(models.Model):
-    """Modelo de licencia mixto:
+    """Modelo de licencia mixto (un solo tipo de llave y de suscripcion):
 
-    - **Llaves** (`basic_key`, `professional_key`): acceso TEMPORAL. Cada
-      activacion descuenta 1 llave y crea una AccessKey con expiracion.
-    - **Suscripcion** (`basic_access`, `professional_access`): acceso
-      ILIMITADO en tiempo, pero acotado por cupos (`basic_seats_max`,
-      `professional_seats_max`). Cada activacion descuenta 1 seat; liberar
-      un estudiante restituye el seat. No consume llaves.
+    - **Llaves** (`basic_key`): acceso TEMPORAL. Cada activacion descuenta 1
+      llave y crea una AccessKey con expiracion (7 dias por defecto).
+    - **Suscripcion** (`basic_access`): acceso ILIMITADO en tiempo, pero
+      acotado por cupos (`basic_seats_max`). Cada activacion descuenta 1 seat;
+      liberar un estudiante restituye el seat. No consume llaves.
     """
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)
@@ -42,15 +41,11 @@ class Escuela(models.Model):
 
     # Llaves (unidades reservables con expiracion)
     basic_key = models.IntegerField(default=0)
-    professional_key = models.IntegerField(default=0)
 
-    # Suscripciones (acceso ilimitado en tiempo con tope de cupos)
+    # Suscripcion (acceso ilimitado en tiempo con tope de cupos)
     basic_access = models.BooleanField(default=False)
-    professional_access = models.BooleanField(default=False)
     basic_seats_max = models.IntegerField(default=0)
     basic_seats_used = models.IntegerField(default=0)
-    professional_seats_max = models.IntegerField(default=0)
-    professional_seats_used = models.IntegerField(default=0)
 
     def save(self, *args, **kwargs):
         # Toda escuela nace con un código; se genera una sola vez y no cambia.
