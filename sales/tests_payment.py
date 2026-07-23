@@ -386,10 +386,10 @@ class CursoCompradoYEscuelaTests(TestCase):
         self.client.force_authenticate(self.director)
         r = self.client.post(
             "/api/v1/sales/extender_llave/",
-            {"access_key_id": str(ak.id), "days": 30}, format="json",
+            {"access_key_id": str(ak.id), "days": 7}, format="json",
         )
         self.assertEqual(r.status_code, 200, r.data)
         ak.refresh_from_db()
         self.assertGreater(ak.valid_until, vu_antes)  # extendido
         self.escuela.refresh_from_db()
-        self.assertEqual(self.escuela.basic_key, 0)  # consumió 1 llave de la escuela
+        self.assertEqual(self.escuela.basic_key, 0)  # 7 días = 1 llave

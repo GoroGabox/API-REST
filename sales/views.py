@@ -38,6 +38,7 @@ from .services import (
     precio_final_producto,
     precio_final_curso,
     tiene_acceso_a_curso,
+    llaves_para_dias,
 )
 from accounts.notifications import notificar
 
@@ -540,15 +541,16 @@ class ActivarCursoView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        keys_needed = llaves_para_dias(days)
         with db_transaction.atomic():
             escuela = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-            resolved_source = _resolver_source_director(escuela, source)
+            resolved_source = _resolver_source_director(escuela, source, keys_needed)
             if resolved_source is None:
                 return Response(
-                    {"error": _mensaje_sin_saldo(source)},
+                    {"error": _mensaje_sin_saldo(source, keys_needed)},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            _decrementar_saldo(escuela, resolved_source)
+            _decrementar_saldo(escuela, resolved_source, keys_needed)
             escuela.save()
             access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
 
@@ -562,16 +564,21 @@ class ActivarCursoView(APIView):
 
 # ---- helpers para activación con seat/key ----
 
-def _resolver_source_director(escuela, source):
-    """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela."""
+def _resolver_source_director(escuela, source, keys_needed):
+    """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela.
+
+    Un seat consume 1 cupo (acceso ilimitado en tiempo). Una llave habilita 7
+    días, así que otorgar `days` días vía key cuesta `keys_needed` = ceil(days/7)
+    llaves.
+    """
     if source == "seat":
         return "seat" if _tiene_seat(escuela) else None
     if source == "key":
-        return "key" if _tiene_key(escuela) else None
+        return "key" if _tiene_key(escuela, keys_needed) else None
     # auto: seat primero (más barato), luego key.
     if _tiene_seat(escuela):
         return "seat"
-    if _tiene_key(escuela):
+    if _tiene_key(escuela, keys_needed):
         return "key"
     return None
 
@@ -580,22 +587,22 @@ def _tiene_seat(escuela):
     return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
 
 
-def _tiene_key(escuela):
-    return escuela.basic_key > 0
+def _tiene_key(escuela, keys_needed):
+    return escuela.basic_key >= keys_needed
 
 
-def _decrementar_saldo(escuela, resolved_source):
+def _decrementar_saldo(escuela, resolved_source, keys_needed):
     if resolved_source == "seat":
         escuela.basic_seats_used += 1
     else:  # key
-        escuela.basic_key -= 1
+        escuela.basic_key -= keys_needed
 
 
-def _mensaje_sin_saldo(source):
+def _mensaje_sin_saldo(source, keys_needed=1):
     if source == "seat":
         return "Tu escuela no tiene cupos disponibles en la suscripción."
     if source == "key":
-        return "Tu escuela no tiene llaves disponibles."
+        return f"Tu escuela no tiene suficientes llaves disponibles (se requieren {keys_needed})."
     return "Tu escuela no tiene ni cupos ni llaves disponibles."
 
 
@@ -715,9 +722,9 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
             return Response({"error": "source debe ser 'auto', 'key' o 'seat'."},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
-            days = int(request.data.get('days')) if request.data.get('days') else 30
+            days = int(request.data.get('days')) if request.data.get('days') else 7
         except (TypeError, ValueError):
-            days = 30
+            days = 7
 
         estudiante = solicitud.estudiante
         curso = solicitud.curso
@@ -739,13 +746,14 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
             resolved_source = 'seat' if source == 'seat' else 'key'
             access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
         else:
+            keys_needed = llaves_para_dias(days)
             with db_transaction.atomic():
                 escuela = Escuela.objects.select_for_update().get(pk=solicitud.escuela_id)
-                resolved_source = _resolver_source_director(escuela, source)
+                resolved_source = _resolver_source_director(escuela, source, keys_needed)
                 if resolved_source is None:
-                    return Response({"error": _mensaje_sin_saldo(source)},
+                    return Response({"error": _mensaje_sin_saldo(source, keys_needed)},
                                     status=status.HTTP_400_BAD_REQUEST)
-                _decrementar_saldo(escuela, resolved_source)
+                _decrementar_saldo(escuela, resolved_source, keys_needed)
                 escuela.save()
                 access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
 
@@ -834,9 +842,9 @@ class ExtenderLlaveView(APIView):
 
     Reglas:
     - admin: puede extender cualquier llave sin tocar saldo.
-    - director: solo llaves de estudiantes de su escuela, y consume **1**
-      llave del saldo (`basic_key`). Atómico con `select_for_update` para
-      evitar carreras.
+    - director: solo llaves de estudiantes de su escuela, y consume
+      `ceil(days/7)` llaves del saldo (`basic_key`) — 1 llave habilita 7 días.
+      Atómico con `select_for_update` para evitar carreras.
     - estudiante: 403.
 
     Body:
@@ -872,7 +880,7 @@ class ExtenderLlaveView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Necesitamos saber el curso asociado para decidir basic vs professional.
+        # Necesitamos el curso asociado (para scope del director sobre su escuela).
         inscripcion = EstudianteCurso.objects.select_related("curso_id", "estudiante_id").filter(
             access_key_id=access_key,
         ).first()
@@ -894,13 +902,14 @@ class ExtenderLlaveView(APIView):
 
         with db_transaction.atomic():
             if is_director(request.user):
+                keys_needed = llaves_para_dias(days)
                 escuela_locked = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-                if escuela_locked.basic_key <= 0:
+                if escuela_locked.basic_key < keys_needed:
                     return Response(
-                        {"error": "Tu escuela no tiene llaves disponibles."},
+                        {"error": f"Tu escuela no tiene suficientes llaves disponibles (se requieren {keys_needed})."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                escuela_locked.basic_key -= 1
+                escuela_locked.basic_key -= keys_needed
                 escuela_locked.save()
 
             now = timezone.now()
@@ -1286,7 +1295,7 @@ class UnifiedPaymentConfirmationView(APIView):
             item_type = (request.data.get("item_type") or "producto").lower().strip()
 
             if item_type == "curso":
-                # Compra individual de curso: otorga acceso 30 días al comprador.
+                # Compra individual de curso: otorga acceso 7 días al comprador.
                 # El curso y el monto se derivan del buy_order autoritativo de
                 # Transbank dentro del servicio (no del cliente).
                 try:

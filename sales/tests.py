@@ -55,7 +55,7 @@ class ActivarCursoTests(APITestCase):
         self.curso_basico = Curso.objects.create(nombre="Básico", descripcion="d", is_profesional=False)
         self.curso_pro = Curso.objects.create(nombre="Pro", descripcion="d", is_profesional=True)
 
-    def _payload(self, user_id, curso_id, days=30):
+    def _payload(self, user_id, curso_id, days=7):
         return {"user_id": user_id, "curso_id": curso_id, "days": days}
 
     def test_estudiante_no_puede_activar(self):
@@ -100,6 +100,26 @@ class ActivarCursoTests(APITestCase):
         self.escuela_a.refresh_from_db()
         # admin no consume saldo de la escuela
         self.assertEqual(self.escuela_a.basic_key, 2)
+
+    def test_director_14_dias_consume_2_llaves(self):
+        # 1 llave = 7 días → 14 días cuestan ceil(14/7)=2 llaves.
+        self.client.force_authenticate(self.dir_a)
+        r = self.client.post('/api/v1/sales/activar_curso/',
+                             self._payload(self.est_a.id, self.curso_basico.id, days=14),
+                             format='json')
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_key, 0)  # 2 -> 0
+
+    def test_director_35_dias_requiere_5_llaves_y_falla_sin_saldo(self):
+        # 35 días = ceil(35/7)=5 llaves; la escuela solo tiene 2 → 400.
+        self.client.force_authenticate(self.dir_a)
+        r = self.client.post('/api/v1/sales/activar_curso/',
+                             self._payload(self.est_a.id, self.curso_basico.id, days=35),
+                             format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_key, 2)  # sin cambios
 
 
 class PaymentOwnershipTests(APITestCase):
@@ -222,7 +242,7 @@ class ExtenderLlaveTests(APITestCase):
             estudiante_id=self.est_a, curso_id=self.curso_basico, access_key_id=self.key_activa,
         )
 
-    def _post(self, key_id, days=30):
+    def _post(self, key_id, days=7):
         return self.client.post(
             '/api/v1/sales/extender_llave/',
             {"access_key_id": str(key_id), "days": days},
@@ -235,16 +255,32 @@ class ExtenderLlaveTests(APITestCase):
         self.client.force_authenticate(self.dir_a)
         valid_until_before = self.key_activa.valid_until
 
-        r = self._post(self.key_activa.id, days=30)
+        r = self._post(self.key_activa.id, days=7)
         self.assertEqual(r.status_code, 200, r.data)
 
         self.escuela_a.refresh_from_db()
-        self.assertEqual(self.escuela_a.basic_key, 2)  # 3 -> 2
+        self.assertEqual(self.escuela_a.basic_key, 2)  # 3 -> 2 (7 días = 1 llave)
 
         self.key_activa.refresh_from_db()
-        # Se sumaron 30 días sobre la fecha previa.
+        # Se sumaron 7 días sobre la fecha previa.
         delta = self.key_activa.valid_until - valid_until_before
-        self.assertGreaterEqual(delta, timedelta(days=29, hours=23))
+        self.assertGreaterEqual(delta, timedelta(days=6, hours=23))
+
+    def test_director_extiende_21_dias_consume_3_llaves(self):
+        # 21 días = ceil(21/7)=3 llaves.
+        self.client.force_authenticate(self.dir_a)
+        r = self._post(self.key_activa.id, days=21)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_key, 0)  # 3 -> 0
+
+    def test_director_extiende_sin_saldo_suficiente_falla(self):
+        # 35 días = 5 llaves; solo hay 3 → 400, sin descuento.
+        self.client.force_authenticate(self.dir_a)
+        r = self._post(self.key_activa.id, days=35)
+        self.assertEqual(r.status_code, 400, r.data)
+        self.escuela_a.refresh_from_db()
+        self.assertEqual(self.escuela_a.basic_key, 3)
 
     def test_director_sin_saldo_falla(self):
         self.escuela_a.basic_key = 0
@@ -278,15 +314,15 @@ class ExtenderLlaveTests(APITestCase):
         self.key_activa.save()
 
         self.client.force_authenticate(self.dir_a)
-        r = self._post(self.key_activa.id, days=30)
+        r = self._post(self.key_activa.id, days=7)
         self.assertEqual(r.status_code, 200, r.data)
 
         self.key_activa.refresh_from_db()
-        # valid_from quedó en aprox ahora; valid_until = ahora + 30 días
+        # valid_from quedó en aprox ahora; valid_until = ahora + 7 días
         now = timezone.now()
         self.assertLess(abs((self.key_activa.valid_from - now).total_seconds()), 60)
         delta = self.key_activa.valid_until - self.key_activa.valid_from
-        self.assertGreaterEqual(delta, timedelta(days=29, hours=23))
+        self.assertGreaterEqual(delta, timedelta(days=6, hours=23))
 
     def test_llave_sin_inscripcion_falla(self):
         from sales.models import AccessKey

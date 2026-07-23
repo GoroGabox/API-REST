@@ -1,3 +1,4 @@
+import math
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -9,8 +10,22 @@ from schools.models import Escuela, Curso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
 from .utils import extract_ids_from_buy_order
 
-# Días de acceso que otorga cada llave (compra individual y activaciones).
-DIAS_COMPRA_INDIVIDUAL = 7
+# Días de acceso que habilita 1 llave. Otorgar N días cuesta ceil(N/7) llaves.
+DIAS_POR_LLAVE = 7
+# Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
+DIAS_COMPRA_INDIVIDUAL = DIAS_POR_LLAVE
+
+
+def llaves_para_dias(dias) -> int:
+    """Nº de llaves que cuesta habilitar `dias` de acceso (1 llave = 7 días).
+
+    Fracciones se redondean hacia arriba: 7 días = 1 llave, 8 días = 2 llaves,
+    35 días = 5 llaves. `dias <= 0` cuesta 0.
+    """
+    d = int(dias or 0)
+    if d <= 0:
+        return 0
+    return math.ceil(d / DIAS_POR_LLAVE)
 
 
 def cursos_con_acceso_vigente(user) -> set:
