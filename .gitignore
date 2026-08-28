@@ -26,6 +26,16 @@ htmlcov/
 media/
 staticfiles/
 
+# Content pipeline — no versionar datos de entrada/salida (PDFs, JSON, reportes).
+# Se conserva solo el esqueleto de carpetas vía .gitkeep.
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+!data/output/*/
+data/output/*/*
+!data/output/*/.gitkeep
+
 # IDE
 .vscode/
 .idea/
