@@ -22,7 +22,7 @@ scikit-learn==1.5.2
 anthropic==0.69.0  # generador de cursos con LLM (opcional; sin API key hay fallback extractivo)
 # Social auth (opcional - solo necesarios si se usan los endpoints /social/*)
 google-auth==2.35.0
-PyJWT==2.10.1
+PyJWT==2.9.0  # simplejwt 5.5.0 exige pyjwt<2.10.0
 cryptography==44.0.0
 
 
