@@ -235,14 +235,14 @@ EMAIL_CONFIGURED = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
 # Configurable por env (DEFAULT_FROM_EMAIL) para producción.
 DEFAULT_FROM_EMAIL = os.environ.get(
     'DEFAULT_FROM_EMAIL',
-    f'AutoTest <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'no-reply@autotest.cl',
+    f'AutoTest <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'no-reply@auto-test.cl',
 )
 # Correo del que salen los mensajes de error del servidor a ADMINS.
 SERVER_EMAIL = EMAIL_HOST_USER or DEFAULT_FROM_EMAIL
 
 # Destinatarios de los reportes de error 500 (django.utils.log.AdminEmailHandler).
 # Formato env ADMINS: coma-separado, cada uno "Nombre <correo>" o solo "correo".
-#   ADMINS=Gabriel <alfons.diaz97@gmail.com>,ops@autotest.cl
+#   ADMINS=Gabriel <alfons.diaz97@gmail.com>,ops@auto-test.cl
 def _parse_admins(raw):
     admins = []
     for item in raw.split(','):
