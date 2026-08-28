@@ -54,6 +54,32 @@ def _frontend_return_url():
     return f'{base}/pay_confirmation'
 
 
+def _build_webpay_options():
+    """Construye las opciones de Webpay Plus desde variables de entorno.
+
+    Defaults = ambiente de INTEGRACIÓN de Transbank (plata simulada), para que
+    el comportamiento actual no cambie sin config. Para pagos reales, definir en
+    producción:
+        TBK_ENVIRONMENT=LIVE
+        TBK_COMMERCE_CODE=<código de comercio productivo>
+        TBK_API_KEY=<api key productiva>
+    El switch a producción es solo config, no requiere tocar código.
+    """
+    import os
+    environment = os.getenv('TBK_ENVIRONMENT', 'TEST').upper()
+    if environment == 'LIVE':
+        return WebpayOptions(
+            os.environ['TBK_COMMERCE_CODE'],
+            os.environ['TBK_API_KEY'],
+            IntegrationType.LIVE,
+        )
+    return WebpayOptions(
+        os.getenv('TBK_COMMERCE_CODE', IntegrationCommerceCodes.WEBPAY_PLUS),
+        os.getenv('TBK_API_KEY', IntegrationApiKeys.WEBPAY),
+        IntegrationType.TEST,
+    )
+
+
 def _validar_monto_contra_producto(buy_order, amount):
     """Valida que `amount` coincida con el precio autoritativo del Producto.
 
@@ -1128,11 +1154,7 @@ class PaymentStrategy(ABC):
 
 class TransbankPaymentStrategy(PaymentStrategy):
     def create_transaction(self, amount, buy_order, session_id):
-        options = WebpayOptions(
-            IntegrationCommerceCodes.WEBPAY_PLUS,
-            IntegrationApiKeys.WEBPAY,
-            IntegrationType.TEST
-        )
+        options = _build_webpay_options()
         tx = Transaction(options)
         return_url = _frontend_return_url()
         response = tx.create(buy_order, session_id, amount, return_url)
@@ -1151,11 +1173,7 @@ class TransbankPaymentStrategy(PaymentStrategy):
                 "message": "Esta transacción ya fue procesada."
             }
 
-        options = WebpayOptions(
-            IntegrationCommerceCodes.WEBPAY_PLUS,
-            IntegrationApiKeys.WEBPAY,
-            IntegrationType.TEST
-        )
+        options = _build_webpay_options()
         tx = Transaction(options)
         result = tx.commit(token)
 
