@@ -180,6 +180,20 @@ REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS': (
         'django_filters.rest_framework.DjangoFilterBackend',
     ),
+    # Rate limiting base (por IP para anónimos, por usuario para autenticados).
+    # Los endpoints sensibles usan scopes más estrictos (ver accounts/throttles.py).
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/min',          # navegación pública por IP
+        'user': '1000/min',         # usuario autenticado
+        'login': '10/min',          # intentos de login por IP
+        'password_reset': '5/hour', # solicitudes de reset por IP
+        'register': '10/hour',      # registros / reenvío de activación por IP
+        'twofa': '10/min',          # verificación de código TOTP por usuario
+    },
 }
 
 # ============================================================================
@@ -193,11 +207,19 @@ COURSE_LLM_ENABLED = os.environ.get('COURSE_LLM_ENABLED', '1') == '1' and bool(A
 COURSE_LLM_MODEL = os.environ.get('COURSE_LLM_MODEL', 'claude-sonnet-5')
 COURSE_LLM_MODEL_DRAFT = os.environ.get('COURSE_LLM_MODEL_DRAFT', 'claude-haiku-4-5-20251001')
 
-#SMTP CONFIGURATION
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
+# ============================================================================
+# Email — configuración por env (provider-agnóstico).
+# Default: Gmail SMTP (dev / MVP). Para un servicio transaccional en producción
+# (Resend, SendGrid, Amazon SES) basta cambiar estas env vars, sin tocar código:
+#   EMAIL_HOST=smtp.resend.com  EMAIL_PORT=587  EMAIL_USE_TLS=True
+#   EMAIL_HOST_USER=resend      EMAIL_HOST_PASSWORD=<api-key>
+# Gmail limita ~500 correos/día y marca transaccionales como spam: no usar a escala.
+# ============================================================================
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False') == 'True'
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 
@@ -211,6 +233,25 @@ DEFAULT_FROM_EMAIL = os.environ.get(
 )
 # Correo del que salen los mensajes de error del servidor a ADMINS.
 SERVER_EMAIL = EMAIL_HOST_USER or DEFAULT_FROM_EMAIL
+
+# Destinatarios de los reportes de error 500 (django.utils.log.AdminEmailHandler).
+# Formato env ADMINS: coma-separado, cada uno "Nombre <correo>" o solo "correo".
+#   ADMINS=Gabriel <alfons.diaz97@gmail.com>,ops@autotest.cl
+def _parse_admins(raw):
+    admins = []
+    for item in raw.split(','):
+        item = item.strip()
+        if not item:
+            continue
+        if '<' in item and item.endswith('>'):
+            name, _, email = item[:-1].partition('<')
+            admins.append((name.strip(), email.strip()))
+        else:
+            admins.append((item, item))
+    return admins
+
+ADMINS = _parse_admins(os.environ.get('ADMINS', ''))
+MANAGERS = ADMINS
 
 # ============================================================================
 # Autenticación en dos pasos (TOTP)

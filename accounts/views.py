@@ -55,10 +55,17 @@ from .permissions import (
     is_director,
     is_estudiante,
 )
+from .throttles import (
+    LoginRateThrottle,
+    PasswordResetRateThrottle,
+    RegisterRateThrottle,
+    TwoFAVerifyRateThrottle,
+)
 
 class UsuarioRegisterView(CreateAPIView):
     serializer_class = UsuariorRegisterSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [RegisterRateThrottle]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={'request': request})
@@ -119,6 +126,7 @@ class EscuelaConDirectorView(APIView):
 class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [LoginRateThrottle]
 
 class DirectorProfileViewSet(viewsets.ModelViewSet):
     queryset = DirectorProfile.objects.all()
@@ -145,6 +153,7 @@ class LogOutAPIView(APIView):
 class PasswordResetRequestView(APIView):
     serializer_class = SendEmailSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [PasswordResetRateThrottle]
 
     def post(self, request, *args, **kwargs):
         email = request.data.get('email')
@@ -241,6 +250,7 @@ class PasswordResetInviteView(APIView):
 class CustomPasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = ResetPasswordSerializer
+    throttle_classes = [PasswordResetRateThrottle]
 
     def post(self, request, *args, **kwargs):
         try:
@@ -311,6 +321,7 @@ class PruebaEjercicioViewSet(viewsets.ModelViewSet):
 class SendActivationEmailView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = SendEmailSerializer
+    throttle_classes = [RegisterRateThrottle]
 
     def post(self, request):
         email = request.data.get('email')
@@ -766,6 +777,7 @@ class TwoFAVerifyView(APIView):
     marca `is_2fa_enabled=True`.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [TwoFAVerifyRateThrottle]
 
     def post(self, request):
         import pyotp
