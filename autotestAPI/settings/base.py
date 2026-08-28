@@ -222,6 +222,12 @@ EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False') == 'True'
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+# Timeout de la conexión SMTP. Sin esto, un SMTP mal configurado (p. ej.
+# credenciales vacías) cuelga el request indefinidamente al intentar enviar.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+# True solo si hay credenciales SMTP reales. Se usa para no enganchar el handler
+# mail_admins (que enviaría correo en cada error 500) cuando el email no está listo.
+EMAIL_CONFIGURED = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
 
 # Remitente por defecto de todo correo transaccional. DEBE coincidir con la
 # cuenta SMTP autenticada (EMAIL_HOST_USER): Gmail rechaza o marca como spam un

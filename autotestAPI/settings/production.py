@@ -50,7 +50,9 @@ LOGGING = {
     },
     'loggers': {
         'django.request': {
-            'handlers': ['console', 'mail_admins'],
+            # mail_admins solo si hay SMTP real configurado; si no, un error 500
+            # intentaría enviar correo con credenciales vacías y colgaría el request.
+            'handlers': ['console', 'mail_admins'] if EMAIL_CONFIGURED else ['console'],
             'level': 'ERROR',
             'propagate': False,
         },
