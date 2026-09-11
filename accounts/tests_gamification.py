@@ -238,3 +238,46 @@ class MultiRespuestaTest(TestCase):
         e = make_ejercicio(categoria=self.cat, correcta="a")  # respuesta='a'
         self.assertTrue(self._corregir(e, "a"))
         self.assertFalse(self._corregir(e, "b"))
+
+
+class CalificarPruebaGratisTest(TestCase):
+    """Corrección de práctica pública (sin login), incl. multi-respuesta."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.cat = Categoria.objects.create(nombre="General")
+        self.single = make_ejercicio(categoria=self.cat, correcta="a")  # respuesta='a'
+        self.multi = make_ejercicio(categoria=self.cat)
+        self.multi.multiple = True
+        self.multi.respuestas_correctas = ["a", "c"]
+        self.multi.save(update_fields=["multiple", "respuestas_correctas"])
+
+    def _grade(self, respuestas):
+        from django.urls import reverse
+        return self.client.post(reverse("grade_free_test"), {"respuestas": respuestas}, format="json")
+
+    def test_corrige_single_y_multi_sin_login(self):
+        r = self._grade({
+            str(self.single.id): "a",           # correcta
+            str(self.multi.id): ["a", "c"],      # correcta (set exacto)
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["total"], 2)
+        self.assertEqual(r.data["total_correctas"], 2)
+        self.assertEqual(r.data["score"], 100)
+
+    def test_multi_incompleta_reprueba(self):
+        r = self._grade({
+            str(self.single.id): "b",            # incorrecta
+            str(self.multi.id): ["a"],           # incompleta → incorrecta
+        })
+        self.assertEqual(r.data["total_correctas"], 0)
+        # No expone la clave en las preguntas, pero sí en el detalle de corrección.
+        det = {d["pregunta_id"]: d for d in r.data["detalles"]}
+        self.assertEqual(det[self.multi.id]["opciones_correctas"], ["a", "c"])
+
+    def test_body_invalido_400(self):
+        from django.urls import reverse
+        r = self.client.post(reverse("grade_free_test"), {"respuestas": "x"}, format="json")
+        self.assertEqual(r.status_code, 400)

@@ -22,6 +22,7 @@ from .views import (
     EstudianteLeccionViewSet,
     GenerarPruebaView,
     GenerarPruebaGratisView,
+    CalificarPruebaGratisView,
     ProgresoEstudiantesView,
     EscuelaConDirectorView,
     SubmitPruebaView,
@@ -73,6 +74,7 @@ urlpatterns = [
     path('activate/<str:token>/', ActivateAccountView.as_view(), name='activate_account'),
     path('tests/generate/', GenerarPruebaView.as_view(), name='generate_test'),
     path('tests/generate_free/', GenerarPruebaGratisView.as_view(), name='generate_free_test'),
+    path('tests/grade_free/', CalificarPruebaGratisView.as_view(), name='grade_free_test'),
     path("progreso-estudiantes/<int:escuela_id>/", ProgresoEstudiantesView.as_view(), name="progreso-estudiantes"),
     path("registrar-escuela-director/", EscuelaConDirectorView.as_view(), name="registrar_escuela_director"),
 

@@ -1070,6 +1070,27 @@ class GenerarPruebaGratisView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+class CalificarPruebaGratisView(APIView):
+    """Corrige una práctica pública SIN persistir (sin login).
+
+    La práctica gratuita no crea `Prueba` (usuario anónimo), así que no puede
+    usar el submit autoritativo. Esta vista corrige en el servidor a partir de
+    los ids de ejercicio + la selección del alumno, sin exponer la clave en el
+    payload de las preguntas. Body: `{ respuestas: { ejercicio_id: 'a' | ['a','b'] } }`.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        respuestas = request.data.get('respuestas')
+        if not isinstance(respuestas, dict):
+            return Response(
+                {"detail": "respuestas debe ser un objeto { ejercicio_id: selección }."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        resultado = accounts_services.corregir_seleccion_libre(respuestas)
+        return Response(resultado, status=status.HTTP_200_OK)
+
+
 class ProgresoEstudiantesView(APIView):
     """Progreso agregado de estudiantes por escuela.
 

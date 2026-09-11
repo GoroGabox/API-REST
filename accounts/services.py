@@ -247,6 +247,66 @@ def _normalizar_seleccion(valor) -> set:
     return {str(x).strip().lower() for x in items if str(x).strip().lower() in _KEYS_VALIDAS}
 
 
+def corregir_seleccion_libre(respuestas: dict) -> dict:
+    """Corrige respuestas SIN persistir — práctica pública sin login.
+
+    `respuestas` mapea ejercicio_id -> 'a' | ['a','b'] (una key o varias). La
+    corrección es idéntica a la de una prueba real (set exacto), pero no crea
+    `Prueba` ni toca gamificación, y la clave nunca sale del servidor.
+
+    Devuelve `{aprobado, score, total_correctas, total, detalles}` con el mismo
+    shape de detalle que `submit_prueba`.
+    """
+    ids = []
+    for raw_id in (respuestas or {}):
+        try:
+            ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    ejercicios = {
+        e.id: e
+        for e in Ejercicio.objects.filter(id__in=ids).select_related('categoria')
+    }
+
+    detalles = []
+    correctas = 0
+    total = 0
+    for raw_id, sel in (respuestas or {}).items():
+        try:
+            eid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        ejercicio = ejercicios.get(eid)
+        if ejercicio is None:
+            continue
+        total += 1
+        seleccion = _normalizar_seleccion(sel)
+        correctas_set = _claves_correctas(ejercicio)
+        es_correcta = bool(correctas_set) and seleccion == correctas_set
+        if es_correcta:
+            correctas += 1
+        correctas_ord = sorted(correctas_set)
+        detalles.append({
+            "pregunta_id": ejercicio.id,
+            "pregunta": ejercicio.pregunta,
+            "correcta": es_correcta,
+            "opcion_correcta": correctas_ord[0] if len(correctas_ord) == 1 else None,
+            "opciones_correctas": correctas_ord,
+            "multiple": bool(getattr(ejercicio, 'multiple', False)),
+            "respuesta_estudiante": ",".join(sorted(seleccion)),
+            "explicacion": ejercicio.explicacion or "",
+        })
+
+    score = round((correctas / total) * 100, 2) if total else 0
+    return {
+        "aprobado": score >= float(APROBACION_MIN_PCT),
+        "score": score,
+        "total_correctas": correctas,
+        "total": total,
+        "detalles": detalles,
+    }
+
+
 @transaction.atomic
 def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     """Corrige una prueba con las respuestas enviadas y persiste resultados.
