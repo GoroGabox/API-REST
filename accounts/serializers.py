@@ -282,9 +282,11 @@ class PruebaDetalleSerializer(serializers.ModelSerializer):
 
 
 class SubmitPruebaSerializer(serializers.Serializer):
+    # El valor por pregunta puede ser una key única ("a"), una lista de keys
+    # (["a", "b"]) para selección múltiple, o una cadena separada ("a,b").
     respuestas = serializers.DictField(
-        child=serializers.CharField(max_length=2, allow_blank=True),
-        help_text="Mapa pregunta_id -> opcion_key ('a'..'f')",
+        child=serializers.JSONField(),
+        help_text="Mapa pregunta_id -> 'a' | ['a','b'] (single o multi-respuesta)",
     )
 
 class PruebaSerializer(serializers.ModelSerializer):

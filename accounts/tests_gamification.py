@@ -196,3 +196,45 @@ class ExamenFinalTest(TestCase):
         elig2 = services.elegibilidad_examen_final(u, self.curso)
         self.assertFalse(elig2["puede"])
         self.assertEqual(elig2["razon"], "curso_completado")
+
+
+class MultiRespuestaTest(TestCase):
+    """Corrección de preguntas de selección múltiple (varias opciones correctas).
+
+    La respuesta es correcta solo si el estudiante marca EXACTAMENTE el conjunto
+    correcto (sin faltar ni sobrar). Las preguntas de respuesta única siguen
+    funcionando como antes.
+    """
+
+    def setUp(self):
+        self.cat = Categoria.objects.create(nombre="General")
+        self.u = make_student()
+
+    def _multi(self, correctas):
+        e = make_ejercicio(categoria=self.cat)
+        e.multiple = True
+        e.respuestas_correctas = correctas
+        e.save(update_fields=["multiple", "respuestas_correctas"])
+        return e
+
+    def _corregir(self, ejercicio, seleccion):
+        prueba = services.crear_prueba_con_ejercicios(self.u, [ejercicio], tipo="rapida")
+        res = services.submit_prueba(prueba, {ejercicio.id: seleccion})
+        return res["detalles"][0]["correcta"]
+
+    def test_multi_set_exacto_aprueba(self):
+        e = self._multi(["a", "c"])
+        self.assertTrue(self._corregir(e, ["a", "c"]))
+        self.assertTrue(self._corregir(e, ["c", "a"]))   # orden no importa
+        self.assertTrue(self._corregir(e, "a,c"))         # string separado
+
+    def test_multi_incompleta_o_con_extra_reprueba(self):
+        e = self._multi(["a", "c"])
+        self.assertFalse(self._corregir(e, ["a"]))        # falta una
+        self.assertFalse(self._corregir(e, ["a", "c", "b"]))  # sobra una
+        self.assertFalse(self._corregir(e, []))           # vacío
+
+    def test_single_sigue_funcionando(self):
+        e = make_ejercicio(categoria=self.cat, correcta="a")  # respuesta='a'
+        self.assertTrue(self._corregir(e, "a"))
+        self.assertFalse(self._corregir(e, "b"))

@@ -642,12 +642,16 @@ class MisPruebasDetalleView(APIView):
 
         detalles = []
         for item in prueba.items.all():
+            correctas_ord = sorted(accounts_services._claves_correctas(item.ejercicio))
             detalles.append({
                 "pregunta_id": item.ejercicio_id,
                 "pregunta": item.ejercicio.pregunta,
                 "respuesta_estudiante": item.respuesta_estudiante,
                 "correcta": item.correcta,
-                "opcion_correcta": accounts_services._opcion_correcta_para(item.ejercicio),
+                # Back-compat: key única (None si multi) + lista completa.
+                "opcion_correcta": correctas_ord[0] if len(correctas_ord) == 1 else None,
+                "opciones_correctas": correctas_ord,
+                "multiple": bool(getattr(item.ejercicio, 'multiple', False)),
                 "explicacion": item.ejercicio.explicacion or "",
             })
         return Response({

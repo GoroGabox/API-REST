@@ -42,6 +42,7 @@ data/output/*/*
 /*.pdf
 /curso_*.json
 /prueba*.json
+/ejercicios_*.json
 
 # IDE
 .vscode/

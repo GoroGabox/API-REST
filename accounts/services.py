@@ -4,6 +4,7 @@ Concentra la lógica de generación y presentación de pruebas para reusar entre
 los endpoints autenticado (`GenerarPruebaView`) y gratis (`GenerarPruebaGratisView`).
 """
 import random
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -162,6 +163,8 @@ def serializar_preguntas_publicas(ejercicios):
             "categoria_id": e.categoria_id,
             "curso_id": e.curso_id,
             "leccion_id": e.leccion_id,
+            # El cliente usa esto para renderizar checkboxes (multi) vs radio.
+            "multiple": bool(getattr(e, 'multiple', False)),
         }
         for e in ejercicios
     ]
@@ -214,6 +217,36 @@ def _opcion_correcta_para(ejercicio) -> Optional[str]:
     return None
 
 
+_KEYS_VALIDAS = {'a', 'b', 'c', 'd', 'e', 'f'}
+
+
+def _claves_correctas(ejercicio) -> set:
+    """Conjunto de keys correctas (a..f) de un ejercicio.
+
+    Soporta selección múltiple: si `respuestas_correctas` trae keys, esas son la
+    verdad; si no, cae a la respuesta única (`_opcion_correcta_para`).
+    """
+    crudas = getattr(ejercicio, 'respuestas_correctas', None) or []
+    if crudas:
+        return {str(k).strip().lower() for k in crudas if str(k).strip().lower() in _KEYS_VALIDAS}
+    unica = _opcion_correcta_para(ejercicio)
+    return {unica} if unica else set()
+
+
+def _normalizar_seleccion(valor) -> set:
+    """Normaliza la respuesta enviada por el estudiante a un set de keys.
+
+    Acepta 'a' (única), ['a','b'] (lista JSON) o 'a,b' / 'a b' (separadores).
+    """
+    if valor is None:
+        return set()
+    if isinstance(valor, (list, tuple, set)):
+        items = valor
+    else:
+        items = re.split(r'[\s,;/]+', str(valor))
+    return {str(x).strip().lower() for x in items if str(x).strip().lower() in _KEYS_VALIDAS}
+
+
 @transaction.atomic
 def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     """Corrige una prueba con las respuestas enviadas y persiste resultados.
@@ -240,19 +273,27 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     correctas = 0
     actualizar = []
     for item in items:
-        respuesta_enviada = (respuestas.get(item.ejercicio_id) or '').strip().lower()
-        opcion_correcta = _opcion_correcta_para(item.ejercicio)
-        es_correcta = bool(respuesta_enviada) and respuesta_enviada == opcion_correcta
+        seleccion = _normalizar_seleccion(respuestas.get(item.ejercicio_id))
+        correctas_set = _claves_correctas(item.ejercicio)
+        # Correcta si seleccionó EXACTAMENTE el conjunto correcto (para single
+        # es el caso de 1 elemento; para multi exige acertar todas sin sobrar).
+        es_correcta = bool(correctas_set) and seleccion == correctas_set
+        # Persistimos la selección como texto ordenado ('a' o 'a,b').
+        respuesta_enviada = ",".join(sorted(seleccion))
         item.respuesta_estudiante = respuesta_enviada
         item.correcta = es_correcta
         actualizar.append(item)
         if es_correcta:
             correctas += 1
+        correctas_ord = sorted(correctas_set)
         detalles.append({
             "pregunta_id": item.ejercicio_id,
             "pregunta": item.ejercicio.pregunta,
             "correcta": es_correcta,
-            "opcion_correcta": opcion_correcta,
+            # Back-compat: `opcion_correcta` expone la key única (None si multi).
+            "opcion_correcta": correctas_ord[0] if len(correctas_ord) == 1 else None,
+            "opciones_correctas": correctas_ord,
+            "multiple": bool(getattr(item.ejercicio, 'multiple', False)),
             "respuesta_estudiante": respuesta_enviada,
             "explicacion": item.ejercicio.explicacion or "",
         })

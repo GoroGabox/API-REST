@@ -70,6 +70,7 @@ class EjercicioSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'categoria', 'curso', 'leccion', 'pregunta', 'imagen',
             'opcion_a', 'opcion_b', 'opcion_c', 'opcion_d', 'opcion_e', 'opcion_f',
+            'multiple',
         ]
 
 

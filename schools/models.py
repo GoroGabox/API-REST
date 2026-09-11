@@ -197,6 +197,13 @@ class Ejercicio(models.Model):
     opcion_e = models.CharField(max_length=255, null=True, blank=True)
     opcion_f = models.CharField(max_length=255, null=True, blank=True)
     respuesta = models.CharField(max_length=255, null=True)
+    # Selección múltiple: `multiple=True` indica que hay varias opciones
+    # correctas (el cliente renderiza checkboxes). `respuestas_correctas` es la
+    # fuente de verdad para esos casos — lista de keys, p.ej. ["c", "e"]. Para
+    # preguntas de respuesta única se sigue usando `respuesta` (texto de la
+    # opción correcta); así no se rompe el catálogo ni el importador existentes.
+    multiple = models.BooleanField(default=False)
+    respuestas_correctas = models.JSONField(default=list, blank=True)
     explicacion = models.TextField(blank=True, default="")
 
     class Meta:
