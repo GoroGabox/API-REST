@@ -115,3 +115,41 @@ class GenerateCourseCommandTests(TestCase):
                 out="out.json",
                 stdout=StringIO(),
             )
+
+    def test_genera_sin_temario(self):
+        """Sin --temario, la estructura se infiere del contenido (pipeline mockeado)."""
+        from unittest.mock import patch
+
+        tmp = Path(tempfile.mkdtemp())
+        contenido = tmp / "libro.pdf"
+        contenido.write_bytes(b"%PDF-fake")
+        out = tmp / "curso_sin_temario.json"
+
+        fake_pages = [{"page": 1, "text": "x" * 80, "char_count": 80, "has_text": True}]
+        fake_segments = [
+            {"segment_id": f"seg_{i}", "title": f"Tema: Concepto {i}", "keywords": [f"k{i}"],
+             "text": "y" * 60, "page_start": i, "page_end": i}
+            for i in range(1, 7)
+        ]
+        fake_lessons = [{"nombre": "L1", "tipo": "texto", "posicion": 1, "contenido": "c", "fuentes": []}]
+
+        mod = "schools.management.commands.generate_course."
+        with patch("content_pipeline.llm.client.LLMClient.is_available", lambda: False), \
+             patch(mod + "extract_pdf_pages", return_value=fake_pages), \
+             patch(mod + "segment_pages", return_value=fake_segments), \
+             patch(mod + "map_topics_to_segments", return_value=[]), \
+             patch(mod + "generate_lessons_generic", return_value=fake_lessons):
+            call_command(
+                "generate_course",
+                contenido=str(contenido),
+                nombre="Curso Sin Temario", codigo="NOTEM", costo=5000,
+                unidades=2, out=str(out), stdout=StringIO(),
+            )
+
+        data = json.loads(out.read_text(encoding="utf-8"))
+        self.assertIn("manifest", data)
+        self.assertIn("lessons", data)
+        self.assertGreaterEqual(len(data["manifest"]["unidades"]), 1)
+        self.assertEqual(data["manifest"]["curso"]["codigo"], "NOTEM")
+        self.assertEqual(data["manifest"]["curso"]["costo"], 5000)
+        self.assertEqual(len(data["lessons"]), 1)
