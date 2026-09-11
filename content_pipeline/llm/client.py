@@ -111,11 +111,25 @@ class LLMError(RuntimeError):
     pass
 
 
+def _is_temperature_unsupported(exc: Exception) -> bool:
+    """True si el error del SDK indica que el modelo no acepta `temperature`.
+
+    Modelos nuevos (p. ej. claude-sonnet-5) devuelven un 400
+    `invalid_request_error` con un mensaje sobre `temperature` deprecado/no
+    soportado. Se detecta por el texto para no depender de una lista de modelos.
+    """
+    msg = str(exc).lower()
+    return "temperature" in msg and ("deprecat" in msg or "not supported" in msg or "unsupported" in msg)
+
+
 class LLMClient:
     def __init__(self, model: str | None = None):
         self.model = model or default_model()
         self._client = None
         self.meter = CostMeter()
+        # Algunos modelos ya no aceptan `temperature`; se descubre en la 1ra
+        # llamada (400) y se omite en las siguientes de este cliente.
+        self._omit_temperature = False
 
     # -- disponibilidad --------------------------------------------------
     @staticmethod
@@ -170,20 +184,27 @@ class LLMClient:
         )
         last_err: Exception | None = None
         for attempt in range(retries + 1):
+            kwargs: dict = {
+                "model": mdl,
+                "max_tokens": max_tokens,
+                "system": system_param,
+                "messages": [{"role": "user", "content": user}],
+            }
+            if temperature is not None and not self._omit_temperature:
+                kwargs["temperature"] = temperature
             try:
-                resp = client.messages.create(
-                    model=mdl,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    system=system_param,
-                    messages=[{"role": "user", "content": user}],
-                )
+                resp = client.messages.create(**kwargs)
                 self.meter.record(resp.usage, mdl)
                 return "".join(
                     block.text for block in resp.content if getattr(block, "type", None) == "text"
                 ).strip()
             except Exception as exc:  # reintenta ante rate limit / red
                 last_err = exc
+                # Modelo que no acepta `temperature`: reintenta de inmediato sin
+                # ese parámetro (no consume el presupuesto de reintentos de red).
+                if not self._omit_temperature and _is_temperature_unsupported(exc):
+                    self._omit_temperature = True
+                    continue
                 if attempt < retries:
                     time.sleep(min(2 ** attempt, 8))
         raise LLMError(f"Fallo la llamada al LLM tras {retries + 1} intentos: {last_err}") from last_err

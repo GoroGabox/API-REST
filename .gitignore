@@ -36,6 +36,13 @@ data/output/*
 data/output/*/*
 !data/output/*/.gitkeep
 
+# Generación de cursos — insumos y artefactos dejados en la raíz del proyecto
+# (no versionar). Los PDFs de origen y los JSON generados por `generate_course`
+# son datos, no código. Tip: escribir --out bajo data/output/ los ignora igual.
+/*.pdf
+/curso_*.json
+/prueba*.json
+
 # IDE
 .vscode/
 .idea/
