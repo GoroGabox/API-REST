@@ -5,6 +5,7 @@ import json
 
 from django.test import TestCase
 
+from content_pipeline.llm.client import LLMError
 from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
@@ -88,7 +89,8 @@ class LLMContentManifestTests(TestCase):
         self.assertEqual(manifest["unidades"][0]["temas"], ["Tema 1", "Tema 2"])
 
     def test_llm_sin_unidades_falla(self):
-        with self.assertRaises(ValueError):
+        # Tras agotar los reintentos, se propaga como LLMError.
+        with self.assertRaises(LLMError):
             build_manifest_from_content_llm(
                 _segments(3), nombre="Y", codigo="Y", is_profesional=False,
                 max_lecciones=10, client=_StubClient({"curso": {}, "unidades": []}),

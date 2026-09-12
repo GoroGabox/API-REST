@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
+from content_pipeline.llm.client import LLMClient, LLMError, default_model, parse_json_object
 from content_pipeline.processors.clean_text import shorten_text
 from content_pipeline.processors.manifest_builder import _cap_to_max_lessons
 
@@ -80,7 +80,10 @@ def _segments_digest(segments: list[dict[str, Any]], *, limit: int = _MAX_SEGMEN
         title = shorten_text(str(s.get("title") or "").strip(), 120)
         kws = ", ".join(str(k) for k in (s.get("keywords") or [])[:kw])
         pg = s.get("page_start")
-        lines.append(f"- (p{pg}) {title} :: {kws}")
+        # Un fragmento del texto ayuda al LLM a inferir el tema real cuando el
+        # título auto-generado es ruidoso (encabezados, portada, etc.).
+        snippet = shorten_text(" ".join(str(s.get("text") or "").split()), 200)
+        lines.append(f"- (p{pg}) {title} :: {kws}\n    {snippet}")
     return "\n".join(lines)
 
 
@@ -135,10 +138,13 @@ def build_manifest_from_content_llm(
     n_unidades: int | None = None,
     client: LLMClient | None = None,
     model: str | None = None,
+    retries: int = 2,
 ) -> dict[str, Any]:
     """Infiere la estructura del curso con LLM a partir de los segmentos.
 
-    Lanza excepción si falla (el orquestador hace fallback a la heurística).
+    Reintenta si el LLM devuelve JSON malformado o sin unidades válidas (ocurre
+    de vez en cuando y suele resolverse con otra pasada). Si agota los intentos,
+    lanza excepción y el orquestador cae a la heurística.
     """
     digest = _segments_digest(segments)
     if not digest.strip():
@@ -150,14 +156,42 @@ def build_manifest_from_content_llm(
         else "Usa entre 4 y 8 unidades según lo que pida el material."
     )
     client = client or LLMClient()
-    raw = client.complete(
-        system=CONTENT_SYSTEM.format(max_lecciones=max_lecciones, unidades_instr=unidades_instr),
-        user=CONTENT_USER.format(nombre=nombre, codigo=codigo, digest=digest),
-        max_tokens=4000,
-        model=model or default_model(),
-        temperature=0.3,
+    system = CONTENT_SYSTEM.format(max_lecciones=max_lecciones, unidades_instr=unidades_instr)
+    user = CONTENT_USER.format(nombre=nombre, codigo=codigo, digest=digest)
+
+    last_err: Exception | None = None
+    for _attempt in range(retries + 1):
+        raw = client.complete(
+            system=system,
+            user=user,
+            max_tokens=8000,
+            model=model or default_model(),
+            temperature=0.2,
+        )
+        try:
+            return _parse_content_manifest(
+                raw,
+                nombre=nombre,
+                codigo=codigo,
+                is_profesional=is_profesional,
+                max_lecciones=max_lecciones,
+            )
+        except (LLMError, ValueError) as exc:
+            last_err = exc  # JSON malformado / sin unidades: reintenta con otra pasada
+    raise LLMError(
+        f"El LLM no devolvió una estructura válida tras {retries + 1} intentos: {last_err}"
     )
-    data = parse_json_object(raw)
+
+
+def _parse_content_manifest(
+    raw: str,
+    *,
+    nombre: str,
+    codigo: str,
+    is_profesional: bool,
+    max_lecciones: int,
+) -> dict[str, Any]:
+    data = parse_json_object(raw)  # puede lanzar LLMError si el JSON es inválido
 
     raw_units = data.get("unidades")
     if not isinstance(raw_units, list) or not raw_units:
