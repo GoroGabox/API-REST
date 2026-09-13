@@ -37,6 +37,7 @@ from .services import (
     CompraCursoError,
     precio_final_producto,
     precio_final_curso,
+    plan_dias_desde_monto,
     tiene_acceso_a_curso,
     llaves_para_dias,
 )
@@ -135,9 +136,13 @@ def _validar_monto_contra_curso(buy_order, amount):
             {"error": "Este curso no está disponible para compra individual."},
             status=status.HTTP_400_BAD_REQUEST,
         ), None
-    if int(round(float(amount))) != esperado:
+    # El monto debe corresponder a un plan válido: precio × 1/2/5 llaves
+    # (7/14/35 días). Anti-tampering server-side.
+    dias, _keys = plan_dias_desde_monto(curso, amount)
+    if dias is None:
         return Response(
-            {"error": "El monto no coincide con el precio del curso.", "expected": esperado},
+            {"error": "El monto no corresponde a un plan válido (7, 14 o 35 días).",
+             "base": esperado},
             status=status.HTTP_400_BAD_REQUEST,
         ), None
     return None, curso
@@ -690,18 +695,28 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
         codigo = (request.data.get('codigo_escuela') or '').strip().upper()
         curso_id = request.data.get('curso_id')
         mensaje = (request.data.get('mensaje') or '').strip()
-        if not codigo or not curso_id:
-            return Response({"detail": "Se requieren 'codigo_escuela' y 'curso_id'."},
+        if not curso_id:
+            return Response({"detail": "Se requiere 'curso_id'."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        escuela = Escuela.objects.filter(codigo=codigo).first()
-        if escuela is None:
-            return Response({"detail": "Código de escuela inválido."},
-                            status=status.HTTP_404_NOT_FOUND)
-        # Si ya pertenece a una escuela, solo puede pedir a la suya.
-        if request.user.escuela_id and request.user.escuela_id != escuela.id:
-            return Response({"detail": "Ya perteneces a otra escuela; pide acceso a esa."},
-                            status=status.HTTP_409_CONFLICT)
+        # Resolución de la escuela:
+        #  - Con código: valida el código (y que no sea de OTRA escuela si ya
+        #    pertenece a una).
+        #  - Sin código: usa la escuela ya ligada al estudiante (evita pedirle
+        #    el código cuando ya pertenece a una escuela).
+        if codigo:
+            escuela = Escuela.objects.filter(codigo=codigo).first()
+            if escuela is None:
+                return Response({"detail": "Código de escuela inválido."},
+                                status=status.HTTP_404_NOT_FOUND)
+            if request.user.escuela_id and request.user.escuela_id != escuela.id:
+                return Response({"detail": "Ya perteneces a otra escuela; pide acceso a esa."},
+                                status=status.HTTP_409_CONFLICT)
+        elif request.user.escuela_id:
+            escuela = request.user.escuela
+        else:
+            return Response({"detail": "Ingresa el código de tu escuela."},
+                            status=status.HTTP_400_BAD_REQUEST)
         try:
             curso = Curso.objects.get(id=curso_id)
         except (Curso.DoesNotExist, ValueError, TypeError):

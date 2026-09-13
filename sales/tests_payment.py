@@ -22,6 +22,7 @@ from schools.models import Curso, Escuela
 from sales.models import (
     Producto, TransbankTransaction, AccessKey, EstudianteCurso, Venta,
 )
+from sales.services import plan_dias_desde_monto
 
 
 def make_student(email="comprador@example.com", escuela=None):
@@ -393,3 +394,107 @@ class CursoCompradoYEscuelaTests(TestCase):
         self.assertGreater(ak.valid_until, vu_antes)  # extendido
         self.escuela.refresh_from_db()
         self.assertEqual(self.escuela.basic_key, 0)  # 7 días = 1 llave
+
+
+class PlanDiasDesdeMontoTests(TestCase):
+    """Deriva días/llaves del monto: precio × 1/2/5 → 7/14/35 días."""
+
+    def setUp(self):
+        self.curso = make_curso(costo=15000)
+
+    def test_multiplos_validos(self):
+        self.assertEqual(plan_dias_desde_monto(self.curso, 15000), (7, 1))
+        self.assertEqual(plan_dias_desde_monto(self.curso, 30000), (14, 2))
+        self.assertEqual(plan_dias_desde_monto(self.curso, 75000), (35, 5))
+
+    def test_multiplo_no_permitido(self):
+        # 3 llaves (45000) no está en {1,2,5}.
+        self.assertEqual(plan_dias_desde_monto(self.curso, 45000), (None, None))
+
+    def test_monto_no_multiplo(self):
+        self.assertEqual(plan_dias_desde_monto(self.curso, 20000), (None, None))
+
+    def test_monto_cero_o_negativo(self):
+        self.assertEqual(plan_dias_desde_monto(self.curso, 0), (None, None))
+        self.assertEqual(plan_dias_desde_monto(self.curso, -15000), (None, None))
+
+    def test_curso_sin_precio(self):
+        gratis = make_curso(nombre="Gratis", costo=0)
+        self.assertEqual(plan_dias_desde_monto(gratis, 0), (None, None))
+
+
+class PlanesCompraIndividualTests(TestCase):
+    """La compra individual otorga el plan (7/14/35 días) derivado del monto."""
+
+    def setUp(self):
+        self.student = make_student()  # sin escuela
+        self.curso = make_curso(costo=15000)
+        self.client = APIClient()
+        self.client.force_authenticate(self.student)
+
+    def _init(self, amount):
+        return {
+            "amount": amount,
+            "session_id": "s",
+            "buy_order": f"order_{self.curso.id}_{self.student.id}",
+            "payment_method": "transbank",
+            "item_type": "curso",
+        }
+
+    def _commit(self, amount):
+        return {
+            "status": "AUTHORIZED",
+            "amount": amount,
+            "buy_order": f"order_{self.curso.id}_{self.student.id}",
+            "transaction_date": timezone.now(),
+            "payment_type_code": "VN",
+        }
+
+    def _confirm(self, token="TOK"):
+        return {
+            "token_ws": token,
+            "product_id": self.curso.id,
+            "user_id": self.student.id,
+            "payment_method": "transbank",
+            "item_type": "curso",
+        }
+
+    @patch("sales.views.Transaction")
+    def test_init_acepta_multiplo_valido(self, MockTx):
+        MockTx.return_value.create.return_value = {"url": "u", "token": "t"}
+        r = self.client.post("/api/v1/sales/pay_init/", self._init(75000), format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+
+    @patch("sales.views.Transaction")
+    def test_init_rechaza_multiplo_invalido(self, MockTx):
+        # 3 llaves (45000) no es un plan válido.
+        r = self.client.post("/api/v1/sales/pay_init/", self._init(45000), format="json")
+        self.assertEqual(r.status_code, 400)
+        MockTx.assert_not_called()
+
+    @patch("sales.views.Transaction")
+    def test_confirm_14_dias(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit(30000)
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        ak = EstudianteCurso.objects.get(estudiante_id=self.student, curso_id=self.curso).access_key_id
+        dias = (ak.valid_until - timezone.now()).days
+        self.assertTrue(13 <= dias <= 14)
+
+    @patch("sales.views.Transaction")
+    def test_confirm_35_dias(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit(75000)
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        ak = EstudianteCurso.objects.get(estudiante_id=self.student, curso_id=self.curso).access_key_id
+        dias = (ak.valid_until - timezone.now()).days
+        self.assertTrue(34 <= dias <= 35)
+
+    @patch("sales.views.Transaction")
+    def test_confirm_rechaza_multiplo_invalido(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit(45000)
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(
+            EstudianteCurso.objects.filter(estudiante_id=self.student, curso_id=self.curso).exists()
+        )

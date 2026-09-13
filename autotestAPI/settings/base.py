@@ -208,6 +208,16 @@ COURSE_LLM_MODEL = os.environ.get('COURSE_LLM_MODEL', 'claude-sonnet-5')
 COURSE_LLM_MODEL_DRAFT = os.environ.get('COURSE_LLM_MODEL_DRAFT', 'claude-haiku-4-5-20251001')
 
 # ============================================================================
+# Media (TTS) para audio-cursos — agnóstico al proveedor (como el email).
+# El comando `generate_media` sintetiza la voz de las lecciones. Hoy: ElevenLabs.
+# Sin credenciales, el comando avisa y no corre (no rompe el resto del sistema).
+# ============================================================================
+TTS_PROVIDER = os.environ.get('TTS_PROVIDER', 'elevenlabs')
+ELEVENLABS_API_KEY = os.environ.get('ELEVENLABS_API_KEY', '')
+ELEVENLABS_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', '')
+ELEVENLABS_MODEL = os.environ.get('ELEVENLABS_MODEL', 'eleven_multilingual_v2')
+
+# ============================================================================
 # Email — configuración por env (provider-agnóstico).
 # Default: Gmail SMTP (dev / MVP). Para un servicio transaccional en producción
 # (Resend, SendGrid, Amazon SES) basta cambiar estas env vars, sin tocar código:

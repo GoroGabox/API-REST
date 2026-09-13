@@ -23,3 +23,8 @@ urlpatterns = [
     path('api/v1/sales/', include('sales.urls')),
     path('api/v1/schools/', include('schools.urls')),
 ]
+
+# En desarrollo, servir los archivos subidos/generados (audio de cursos, etc.).
+# En producción los sirve el storage/CDN (o WhiteNoise para estáticos), no Django.
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

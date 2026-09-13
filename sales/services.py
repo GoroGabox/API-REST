@@ -14,6 +14,9 @@ from .utils import extract_ids_from_buy_order
 DIAS_POR_LLAVE = 7
 # Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
 DIAS_COMPRA_INDIVIDUAL = DIAS_POR_LLAVE
+# Nº de llaves (múltiplos de 7 días) que se pueden comprar en un solo pago
+# individual de curso. 1→7 días, 2→14, 5→35 ("1 mes + 5 días de regalo").
+LLAVES_CURSO_PERMITIDAS = (1, 2, 5)
 
 
 def llaves_para_dias(dias) -> int:
@@ -58,6 +61,28 @@ def tiene_acceso_a_curso(user, curso_id) -> bool:
 def precio_final_curso(curso: Curso) -> int:
     """Precio autoritativo (CLP entero) de un curso individual: su `costo`."""
     return int(curso.costo or 0)
+
+
+def plan_dias_desde_monto(curso: Curso, amount):
+    """Deriva el plan (días y llaves) de una compra individual desde el monto.
+
+    El acceso se vende en llaves de 7 días al precio `curso.costo` por llave.
+    Anti-tampering: el monto debe ser EXACTAMENTE `curso.costo × keys`, con
+    `keys` en LLAVES_CURSO_PERMITIDAS (1/2/5 → 7/14/35 días). Así el cliente no
+    puede pagar un monto arbitrario y reclamar más días.
+
+    Devuelve (dias, keys) o (None, None) si el monto no es un plan válido.
+    """
+    precio = precio_final_curso(curso)
+    if precio <= 0:
+        return None, None
+    monto = int(round(float(amount or 0)))
+    if monto <= 0 or monto % precio != 0:
+        return None, None
+    keys = monto // precio
+    if keys not in LLAVES_CURSO_PERMITIDAS:
+        return None, None
+    return keys * DIAS_POR_LLAVE, keys
 
 
 def precio_final_producto(producto: Producto) -> int:
@@ -194,17 +219,19 @@ class CompraCursoError(Exception):
 
 @transaction.atomic
 def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
-                                      dias=DIAS_COMPRA_INDIVIDUAL):
+                                      dias=None):
     """Registra la compra individual de un curso por un estudiante.
 
-    Otorga acceso por `dias` días (equivale a comprar 1 llave): crea una
-    AccessKey(origen='purchase') con expiración, la inscripción del estudiante
-    (EstudianteCurso) y la Venta (con `curso`, sin `producto`).
+    Otorga acceso por un plan de 7/14/35 días (1/2/5 llaves), derivado del
+    MONTO pagado: crea una AccessKey(origen='purchase') con expiración, la
+    inscripción del estudiante (EstudianteCurso) y la Venta (con `curso`, sin
+    `producto`).
 
     Seguridad: el curso y el monto se derivan del `result['buy_order']`
     AUTORITATIVO devuelto por Transbank (no de datos que el cliente pueda
-    manipular en la confirmación), y el monto pagado se revalida contra el
-    precio del curso. Así no se puede pagar un curso barato y reclamar otro.
+    manipular en la confirmación). El plan (días) se calcula desde el monto
+    pagado, que debe ser un múltiplo exacto del precio del curso (1/2/5 llaves).
+    Así no se puede pagar un monto arbitrario y reclamar más días.
 
     Raise CompraCursoError en cualquier violación.
     """
@@ -224,9 +251,15 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
     except Curso.DoesNotExist:
         raise CompraCursoError("Curso no existe.", 'curso_not_found')
 
-    # Defensa en profundidad: el monto cobrado debe coincidir con el precio.
-    if int(round(float(result.get('amount') or 0))) != precio_final_curso(curso):
-        raise CompraCursoError("El monto cobrado no coincide con el precio del curso.", 'price_mismatch')
+    # El plan (días) se deriva del monto pagado: debe ser un múltiplo exacto
+    # del precio del curso (1/2/5 llaves → 7/14/35 días). Defensa anti-tampering.
+    dias_plan, _keys = plan_dias_desde_monto(curso, result.get('amount'))
+    if dias_plan is None:
+        raise CompraCursoError(
+            "El monto cobrado no corresponde a un plan válido (7, 14 o 35 días).",
+            'price_mismatch',
+        )
+    dias = dias_plan
 
     # ¿Ya inscrito? Distinguimos renovación de compra nueva:
     #  - Compra propia (origen='purchase') VENCIDA → renovar: extiende +dias.

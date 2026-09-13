@@ -7,7 +7,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 AutoTest es un SaaS de contenido teórico para aprender a conducir vehículos (cursos, lecciones video/audio, ejercicios, pruebas/exámenes, certificados). Tres roles de usuario:
 
 - **admin** — empleado interno de AutoTest. Gestiona catálogo (cursos, lecciones, ejercicios, escuelas, productos). Sin flag dedicado en el modelo; corresponde a `is_staff` / `is_superuser`.
-- **director** (`is_director=True`) — cliente empresa. Compra `AccessKey`s y suscripciones (`basic_access` / `professional_access`) **sobre su `Escuela`** para distribuirlas a sus trabajadores.
+- **director** (`is_director=True`) — cliente empresa. Sobre su `Escuela` compra **llaves** (`basic_key`; un único tipo — cada llave habilita **7 días** de acceso, así que otorgar N días cuesta `ceil(N/7)` llaves) y/o una **suscripción** (`basic_access`, acceso ilimitado en tiempo acotado por cupos `basic_seats_max`/`basic_seats_used`) para distribuirlas a sus trabajadores. No existe un tier profesional (llaves ni cupos); `Curso.is_profesional` sobrevive solo como etiqueta y no afecta acceso ni consumo.
 - **estudiante** (`is_estudiante=True`) — usuario final. Adquiere acceso vía (a) compra directa B2C (Webpay) o (b) un director le otorga una `AccessKey` desde su escuela.
 
 Esta distinción es la que justifica la lógica condicional `if user.is_director:` en los flujos de pago — director afecta a la `Escuela`, estudiante afecta a `EstudianteCurso`.
