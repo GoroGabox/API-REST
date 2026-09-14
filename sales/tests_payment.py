@@ -22,7 +22,8 @@ from schools.models import Curso, Escuela
 from sales.models import (
     Producto, TransbankTransaction, AccessKey, EstudianteCurso, Venta,
 )
-from sales.services import plan_dias_desde_monto
+from sales.services import precio_plan
+from schools.models import PlanCurso
 
 
 def make_student(email="comprador@example.com", escuela=None):
@@ -396,85 +397,92 @@ class CursoCompradoYEscuelaTests(TestCase):
         self.assertEqual(self.escuela.basic_key, 0)  # 7 días = 1 llave
 
 
-class PlanDiasDesdeMontoTests(TestCase):
-    """Deriva días/llaves del monto: precio × 1/2/5 → 7/14/35 días."""
+class PrecioPlanTests(TestCase):
+    """`precio_plan` lee el precio autoritativo del plan (PlanCurso)."""
 
     def setUp(self):
         self.curso = make_curso(costo=15000)
 
-    def test_multiplos_validos(self):
-        self.assertEqual(plan_dias_desde_monto(self.curso, 15000), (7, 1))
-        self.assertEqual(plan_dias_desde_monto(self.curso, 30000), (14, 2))
-        self.assertEqual(plan_dias_desde_monto(self.curso, 75000), (35, 5))
+    def test_lee_precio_del_plan(self):
+        # Precio independiente (no un múltiplo del unitario) → descuento posible.
+        PlanCurso.objects.create(curso=self.curso, dias=14, precio=25000, activo=True)
+        self.assertEqual(precio_plan(self.curso, 14), 25000)
 
-    def test_multiplo_no_permitido(self):
-        # 3 llaves (45000) no está en {1,2,5}.
-        self.assertEqual(plan_dias_desde_monto(self.curso, 45000), (None, None))
+    def test_plan_inexistente_devuelve_none(self):
+        PlanCurso.objects.create(curso=self.curso, dias=7, precio=15000, activo=True)
+        self.assertIsNone(precio_plan(self.curso, 35))
 
-    def test_monto_no_multiplo(self):
-        self.assertEqual(plan_dias_desde_monto(self.curso, 20000), (None, None))
+    def test_plan_inactivo_devuelve_none(self):
+        PlanCurso.objects.create(curso=self.curso, dias=14, precio=25000, activo=False)
+        self.assertIsNone(precio_plan(self.curso, 14))
 
-    def test_monto_cero_o_negativo(self):
-        self.assertEqual(plan_dias_desde_monto(self.curso, 0), (None, None))
-        self.assertEqual(plan_dias_desde_monto(self.curso, -15000), (None, None))
+    def test_fallback_a_costo_sin_planes(self):
+        # Sin PlanCurso: el plan de 7 días cae a `costo`; otros → None.
+        self.assertEqual(precio_plan(self.curso, 7), 15000)
+        self.assertIsNone(precio_plan(self.curso, 14))
 
-    def test_curso_sin_precio(self):
-        gratis = make_curso(nombre="Gratis", costo=0)
-        self.assertEqual(plan_dias_desde_monto(gratis, 0), (None, None))
+    def test_plan_7_sincroniza_costo(self):
+        PlanCurso.objects.create(curso=self.curso, dias=7, precio=9990, activo=True)
+        self.curso.refresh_from_db()
+        self.assertEqual(self.curso.costo, 9990)
 
 
 class PlanesCompraIndividualTests(TestCase):
-    """La compra individual otorga el plan (7/14/35 días) derivado del monto."""
+    """La compra individual otorga el plan (7/14/35) según el precio de PlanCurso."""
 
     def setUp(self):
         self.student = make_student()  # sin escuela
         self.curso = make_curso(costo=15000)
+        PlanCurso.objects.create(curso=self.curso, dias=7, precio=15000, activo=True)
+        PlanCurso.objects.create(curso=self.curso, dias=14, precio=30000, activo=True)
+        # 35 días con DESCUENTO: 60000 ≠ 5×15000 (75000) → prueba precio libre.
+        PlanCurso.objects.create(curso=self.curso, dias=35, precio=60000, activo=True)
         self.client = APIClient()
         self.client.force_authenticate(self.student)
 
-    def _init(self, amount):
+    def _bo(self, dias):
+        return f"order_{self.curso.id}_{self.student.id}_{dias}"
+
+    def _init(self, amount, dias):
         return {
-            "amount": amount,
-            "session_id": "s",
-            "buy_order": f"order_{self.curso.id}_{self.student.id}",
-            "payment_method": "transbank",
-            "item_type": "curso",
+            "amount": amount, "session_id": "s", "buy_order": self._bo(dias),
+            "payment_method": "transbank", "item_type": "curso",
         }
 
-    def _commit(self, amount):
+    def _commit(self, amount, dias):
         return {
-            "status": "AUTHORIZED",
-            "amount": amount,
-            "buy_order": f"order_{self.curso.id}_{self.student.id}",
-            "transaction_date": timezone.now(),
-            "payment_type_code": "VN",
+            "status": "AUTHORIZED", "amount": amount, "buy_order": self._bo(dias),
+            "transaction_date": timezone.now(), "payment_type_code": "VN",
         }
 
     def _confirm(self, token="TOK"):
         return {
-            "token_ws": token,
-            "product_id": self.curso.id,
-            "user_id": self.student.id,
-            "payment_method": "transbank",
-            "item_type": "curso",
+            "token_ws": token, "product_id": self.curso.id, "user_id": self.student.id,
+            "payment_method": "transbank", "item_type": "curso",
         }
 
     @patch("sales.views.Transaction")
-    def test_init_acepta_multiplo_valido(self, MockTx):
+    def test_init_acepta_precio_del_plan(self, MockTx):
         MockTx.return_value.create.return_value = {"url": "u", "token": "t"}
-        r = self.client.post("/api/v1/sales/pay_init/", self._init(75000), format="json")
+        r = self.client.post("/api/v1/sales/pay_init/", self._init(60000, 35), format="json")
         self.assertEqual(r.status_code, 200, r.data)
 
     @patch("sales.views.Transaction")
-    def test_init_rechaza_multiplo_invalido(self, MockTx):
-        # 3 llaves (45000) no es un plan válido.
-        r = self.client.post("/api/v1/sales/pay_init/", self._init(45000), format="json")
+    def test_init_rechaza_monto_incorrecto(self, MockTx):
+        r = self.client.post("/api/v1/sales/pay_init/", self._init(50000, 35), format="json")
+        self.assertEqual(r.status_code, 400)
+        MockTx.assert_not_called()
+
+    @patch("sales.views.Transaction")
+    def test_init_rechaza_plan_inexistente(self, MockTx):
+        # No hay plan de 21 días para este curso.
+        r = self.client.post("/api/v1/sales/pay_init/", self._init(15000, 21), format="json")
         self.assertEqual(r.status_code, 400)
         MockTx.assert_not_called()
 
     @patch("sales.views.Transaction")
     def test_confirm_14_dias(self, MockTx):
-        MockTx.return_value.commit.return_value = self._commit(30000)
+        MockTx.return_value.commit.return_value = self._commit(30000, 14)
         r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
         self.assertEqual(r.status_code, 201, r.data)
         ak = EstudianteCurso.objects.get(estudiante_id=self.student, curso_id=self.curso).access_key_id
@@ -482,8 +490,8 @@ class PlanesCompraIndividualTests(TestCase):
         self.assertTrue(13 <= dias <= 14)
 
     @patch("sales.views.Transaction")
-    def test_confirm_35_dias(self, MockTx):
-        MockTx.return_value.commit.return_value = self._commit(75000)
+    def test_confirm_35_dias_con_descuento(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit(60000, 35)
         r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
         self.assertEqual(r.status_code, 201, r.data)
         ak = EstudianteCurso.objects.get(estudiante_id=self.student, curso_id=self.curso).access_key_id
@@ -491,8 +499,8 @@ class PlanesCompraIndividualTests(TestCase):
         self.assertTrue(34 <= dias <= 35)
 
     @patch("sales.views.Transaction")
-    def test_confirm_rechaza_multiplo_invalido(self, MockTx):
-        MockTx.return_value.commit.return_value = self._commit(45000)
+    def test_confirm_rechaza_monto_incorrecto(self, MockTx):
+        MockTx.return_value.commit.return_value = self._commit(50000, 35)
         r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
         self.assertEqual(r.status_code, 400)
         self.assertFalse(

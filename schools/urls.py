@@ -9,6 +9,7 @@ from .views import (
     EjercicioViewSet,
     UnidadViewSet,
     RecursoViewSet,
+    PlanCursoViewSet,
     VincularEstudianteView,
     DesvincularEstudianteView,
     ImportarEstudiantesView,
@@ -25,6 +26,7 @@ from sales.views import SubscriptionStatusView, SubscriptionSeatsView
 router = DefaultRouter()
 router.register(r'schools', EscuelaViewSet)
 router.register(r'courses', CursoViewSet)
+router.register(r'plan-cursos', PlanCursoViewSet)
 router.register(r'lessons', LeccionViewSet)
 router.register(r'units', UnidadViewSet)
 router.register(r'glosary', GlosarioViewSet)

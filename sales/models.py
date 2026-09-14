@@ -16,6 +16,8 @@ class Producto(models.Model):
     
     cant_basic_key = models.IntegerField(default=0, blank=True, null=True)
     basic_access = models.BooleanField(default=False)
+    # Permite ocultar un paquete del catálogo sin borrarlo (control admin).
+    activo = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['id']

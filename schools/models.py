@@ -72,6 +72,41 @@ class Curso(models.Model):
     def __str__(self):
         return self.nombre
 
+
+class PlanCurso(models.Model):
+    """Precio B2C de un curso por plan/duración (listado de valores por curso).
+
+    Cada llave habilita 7 días; los planes son múltiplos de 7 (7/14/35). El
+    precio es INDEPENDIENTE por plan (no un múltiplo fijo del unitario), lo que
+    permite descuentos por duración. `precio_referencia` es el precio "antes"
+    (tachado) para mostrar el ahorro. El plan de 7 días es el valor unitario que
+    se muestra en /explore y mantiene sincronizado `Curso.costo`.
+    """
+    DIAS_CHOICES = [(7, "7 días"), (14, "14 días"), (35, "35 días (1 mes + 5 de regalo)")]
+
+    curso = models.ForeignKey(Curso, on_delete=models.CASCADE, related_name="planes")
+    dias = models.IntegerField(choices=DIAS_CHOICES)
+    precio = models.IntegerField()  # CLP, precio final del plan
+    precio_referencia = models.IntegerField(null=True, blank=True)  # "antes" (tachado)
+    etiqueta = models.CharField(max_length=60, blank=True, default="")
+    activo = models.BooleanField(default=True)
+    orden = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ("curso", "dias")
+        ordering = ["curso", "dias"]
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # El plan de 7 días es el valor unitario: mantiene Curso.costo en sync
+        # para no romper lecturas legacy que aún dependen de `costo`.
+        if self.dias == 7 and self.curso_id and self.curso.costo != self.precio:
+            Curso.objects.filter(pk=self.curso_id).update(costo=self.precio)
+
+    def __str__(self):
+        return f"{self.curso.nombre} · {self.dias}d · ${self.precio}"
+
+
 class Categoria(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)

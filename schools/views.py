@@ -16,10 +16,11 @@ from django.http import StreamingHttpResponse, HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
-from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso
+from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso
 from .serializers import (
     EscuelaSerializer,
     CursoSerializer,
+    PlanCursoSerializer,
     LeccionSerializer,
     LeccionDetalleSerializer,
     EjercicioSerializer,
@@ -697,7 +698,8 @@ class EditarEstudianteView(APIView):
 
 
 class CursoViewSet(viewsets.ModelViewSet):
-    queryset = Curso.objects.all()
+    # Prefetch de planes para exponer precio_unitario/planes sin N+1.
+    queryset = Curso.objects.all().prefetch_related('planes')
     serializer_class = CursoSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['costo']
@@ -729,6 +731,19 @@ class CursoViewSet(viewsets.ModelViewSet):
             .order_by('orden', 'id')
         )
         return Response(UnidadSerializer(unidades, many=True).data)
+
+
+class PlanCursoViewSet(viewsets.ModelViewSet):
+    """CRUD de planes de precio por curso. Lectura autenticada; escritura admin.
+
+    El público lee los planes anidados en el curso (/courses/); este endpoint es
+    para que el admin gestione precios/descuentos por plan.
+    """
+    queryset = PlanCurso.objects.select_related('curso').all()
+    serializer_class = PlanCursoSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['curso', 'dias', 'activo']
+    permission_classes = [ReadOnlyOrAdmin]
 
 
 class LeccionViewSet(viewsets.ModelViewSet):

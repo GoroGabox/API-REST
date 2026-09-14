@@ -13,7 +13,7 @@ from transbank.common.integration_type import IntegrationType
 from rest_framework.views import APIView
 from django.db import transaction as db_transaction
 from django.http import HttpResponse
-from .utils import extract_ids_from_buy_order, parse_accounting_date
+from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order, parse_accounting_date
 from rest_framework.exceptions import ValidationError
 from django_filters.rest_framework import DjangoFilterBackend
 from .serializers import EstudianteCursosActivosSerializer, CursoDisponibleSerializer
@@ -37,7 +37,7 @@ from .services import (
     CompraCursoError,
     precio_final_producto,
     precio_final_curso,
-    plan_dias_desde_monto,
+    precio_plan,
     tiene_acceso_a_curso,
     llaves_para_dias,
 )
@@ -130,19 +130,18 @@ def _validar_monto_contra_curso(buy_order, amount):
             {"error": "Curso no encontrado para esta compra."},
             status=status.HTTP_404_NOT_FOUND,
         ), None
-    esperado = precio_final_curso(curso)
-    if esperado <= 0:
+    # El plan (días) lo dicta el buy_order; legacy sin días → 7. El monto debe
+    # coincidir EXACTO con el precio del plan activo (PlanCurso). Anti-tampering.
+    dias = extract_dias_from_buy_order(buy_order) or 7
+    precio = precio_plan(curso, dias)
+    if precio is None:
         return Response(
-            {"error": "Este curso no está disponible para compra individual."},
+            {"error": "Plan de acceso no disponible para este curso."},
             status=status.HTTP_400_BAD_REQUEST,
         ), None
-    # El monto debe corresponder a un plan válido: precio × 1/2/5 llaves
-    # (7/14/35 días). Anti-tampering server-side.
-    dias, _keys = plan_dias_desde_monto(curso, amount)
-    if dias is None:
+    if int(round(float(amount))) != precio:
         return Response(
-            {"error": "El monto no corresponde a un plan válido (7, 14 o 35 días).",
-             "base": esperado},
+            {"error": "El monto no coincide con el precio del plan.", "expected": precio},
             status=status.HTTP_400_BAD_REQUEST,
         ), None
     return None, curso
@@ -444,7 +443,7 @@ class CursosDisponiblesParaUsuarioView(APIView):
         # Anotamos cantidad_lecciones para que el cliente calcule progreso sin
         # un fetch extra por curso (Leccion.curso es FK sin related_name → 'leccion').
         from django.db.models import Count
-        cursos = Curso.objects.annotate(cantidad_lecciones=Count('leccion'))
+        cursos = Curso.objects.annotate(cantidad_lecciones=Count('leccion')).prefetch_related('planes')
 
         serializer = CursoDisponibleSerializer(
             cursos,

@@ -6,19 +6,14 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
 
-from schools.models import Escuela, Curso
+from schools.models import Escuela, Curso, PlanCurso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
-from .utils import extract_ids_from_buy_order
+from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order
 
 # Días de acceso que habilita 1 llave. Otorgar N días cuesta ceil(N/7) llaves.
 DIAS_POR_LLAVE = 7
 # Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
 DIAS_COMPRA_INDIVIDUAL = DIAS_POR_LLAVE
-# Nº de llaves (múltiplos de 7 días) que se pueden comprar en un solo pago
-# individual de curso. 1→7 días, 2→14, 5→35 ("1 mes + 5 días de regalo").
-LLAVES_CURSO_PERMITIDAS = (1, 2, 5)
-
-
 def llaves_para_dias(dias) -> int:
     """Nº de llaves que cuesta habilitar `dias` de acceso (1 llave = 7 días).
 
@@ -59,30 +54,28 @@ def tiene_acceso_a_curso(user, curso_id) -> bool:
 
 
 def precio_final_curso(curso: Curso) -> int:
-    """Precio autoritativo (CLP entero) de un curso individual: su `costo`."""
+    """Precio unitario (CLP entero) de un curso: el plan de 7 días si existe,
+    sino `costo` (compat). Fuente para el 'valor unitario' mostrado al público."""
+    plan = PlanCurso.objects.filter(curso=curso, dias=DIAS_POR_LLAVE, activo=True).first()
+    if plan is not None:
+        return int(plan.precio)
     return int(curso.costo or 0)
 
 
-def plan_dias_desde_monto(curso: Curso, amount):
-    """Deriva el plan (días y llaves) de una compra individual desde el monto.
+def precio_plan(curso: Curso, dias) -> int | None:
+    """Precio autoritativo (CLP entero) del plan activo (curso, dias).
 
-    El acceso se vende en llaves de 7 días al precio `curso.costo` por llave.
-    Anti-tampering: el monto debe ser EXACTAMENTE `curso.costo × keys`, con
-    `keys` en LLAVES_CURSO_PERMITIDAS (1/2/5 → 7/14/35 días). Así el cliente no
-    puede pagar un monto arbitrario y reclamar más días.
-
-    Devuelve (dias, keys) o (None, None) si el monto no es un plan válido.
+    Fuente de verdad server-side para validar el `amount` del cliente. Devuelve
+    None si no existe un plan activo con esa duración. Compat: si no hay ningún
+    PlanCurso para el curso (data legacy) y `dias == 7`, cae a `curso.costo`.
     """
-    precio = precio_final_curso(curso)
-    if precio <= 0:
-        return None, None
-    monto = int(round(float(amount or 0)))
-    if monto <= 0 or monto % precio != 0:
-        return None, None
-    keys = monto // precio
-    if keys not in LLAVES_CURSO_PERMITIDAS:
-        return None, None
-    return keys * DIAS_POR_LLAVE, keys
+    plan = PlanCurso.objects.filter(curso=curso, dias=dias, activo=True).first()
+    if plan is not None:
+        return int(plan.precio)
+    if dias == DIAS_POR_LLAVE and not PlanCurso.objects.filter(curso=curso).exists():
+        costo = int(curso.costo or 0)
+        return costo if costo > 0 else None
+    return None
 
 
 def precio_final_producto(producto: Producto) -> int:
@@ -227,11 +220,11 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
     inscripción del estudiante (EstudianteCurso) y la Venta (con `curso`, sin
     `producto`).
 
-    Seguridad: el curso y el monto se derivan del `result['buy_order']`
+    Seguridad: el curso y el plan (días) se derivan del `result['buy_order']`
     AUTORITATIVO devuelto por Transbank (no de datos que el cliente pueda
-    manipular en la confirmación). El plan (días) se calcula desde el monto
-    pagado, que debe ser un múltiplo exacto del precio del curso (1/2/5 llaves).
-    Así no se puede pagar un monto arbitrario y reclamar más días.
+    manipular en la confirmación), y el monto se revalida contra el precio del
+    plan (PlanCurso). Así no se puede pagar un monto arbitrario y reclamar más
+    días ni otro plan.
 
     Raise CompraCursoError en cualquier violación.
     """
@@ -251,15 +244,16 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
     except Curso.DoesNotExist:
         raise CompraCursoError("Curso no existe.", 'curso_not_found')
 
-    # El plan (días) se deriva del monto pagado: debe ser un múltiplo exacto
-    # del precio del curso (1/2/5 llaves → 7/14/35 días). Defensa anti-tampering.
-    dias_plan, _keys = plan_dias_desde_monto(curso, result.get('amount'))
-    if dias_plan is None:
+    # El plan (días) lo dicta el buy_order; legacy sin días → 7. El monto debe
+    # coincidir EXACTO con el precio del plan activo. Defensa anti-tampering.
+    dias = extract_dias_from_buy_order(buy_order) or DIAS_COMPRA_INDIVIDUAL
+    precio = precio_plan(curso, dias)
+    if precio is None:
+        raise CompraCursoError("Plan de acceso no disponible para este curso.", 'plan_not_found')
+    if int(round(float(result.get('amount') or 0))) != precio:
         raise CompraCursoError(
-            "El monto cobrado no corresponde a un plan válido (7, 14 o 35 días).",
-            'price_mismatch',
+            "El monto cobrado no coincide con el precio del plan.", 'price_mismatch',
         )
-    dias = dias_plan
 
     # ¿Ya inscrito? Distinguimos renovación de compra nueva:
     #  - Compra propia (origen='purchase') VENCIDA → renovar: extiende +dias.

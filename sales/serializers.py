@@ -123,6 +123,9 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
     already_owned = serializers.SerializerMethodField()
     # Anotado en la vista con Count('leccion'); default 0 por robustez.
     cantidad_lecciones = serializers.IntegerField(read_only=True, default=0)
+    # Precios por plan (definidos por Admin) para la compra individual.
+    precio_unitario = serializers.SerializerMethodField()
+    planes = serializers.SerializerMethodField()
 
     class Meta:
         model = Curso
@@ -137,6 +140,26 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
             "cantidad_lecciones",
             "user_can_access",
             "already_owned",
+            "precio_unitario",
+            "planes",
+        ]
+
+    def _planes_activos(self, obj):
+        return sorted([p for p in obj.planes.all() if p.activo], key=lambda p: p.dias)
+
+    def get_precio_unitario(self, obj):
+        activos = self._planes_activos(obj)
+        return int(activos[0].precio) if activos else int(obj.costo or 0)
+
+    def get_planes(self, obj):
+        return [
+            {
+                "dias": p.dias,
+                "precio": int(p.precio),
+                "precio_referencia": p.precio_referencia,
+                "etiqueta": p.etiqueta,
+            }
+            for p in self._planes_activos(obj)
         ]
 
     def get_already_owned(self, obj):
