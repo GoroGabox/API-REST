@@ -702,7 +702,7 @@ class CursoViewSet(viewsets.ModelViewSet):
     queryset = Curso.objects.all().prefetch_related('planes')
     serializer_class = CursoSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['costo']
+    filterset_fields = ['is_profesional']
     permission_classes = [PublicReadOrAdmin]
 
     @action(detail=True, methods=['get'], url_path='units')
@@ -1215,14 +1215,15 @@ class CourseGenerateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Los cursos no pueden ser gratis: costo obligatorio y mayor a 0.
+        # Los cursos no pueden ser gratis: el precio unitario (plan de 7 días) es
+        # obligatorio y > 0. Crea el PlanCurso de 7 días al importar el curso.
         try:
-            costo = int(request.data.get("costo"))
+            precio_unitario = int(request.data.get("precio_unitario"))
         except (TypeError, ValueError):
-            costo = None
-        if not costo or costo <= 0:
+            precio_unitario = None
+        if not precio_unitario or precio_unitario <= 0:
             return Response(
-                {"detail": "El costo es obligatorio y debe ser mayor a 0."},
+                {"detail": "El precio unitario es obligatorio y debe ser mayor a 0."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1252,7 +1253,7 @@ class CourseGenerateView(APIView):
                     contenido_path=contenido_path,
                     nombre=nombre,
                     codigo=codigo,
-                    costo=costo,
+                    costo=precio_unitario,  # spec del pipeline → crea el plan de 7 días
                     is_profesional=is_profesional,
                     max_lecciones=max_lecciones,
                     idioma=idioma,

@@ -61,7 +61,8 @@ class Curso(models.Model):
     nombre = models.CharField(max_length=100)
     codigo = models.CharField(max_length=10, null=True)
     descripcion = models.TextField()
-    costo = models.IntegerField(null = True)
+    # El precio vive en PlanCurso (fuente única): el plan de 7 días es el valor
+    # unitario. `Curso` ya no guarda `costo`.
     url_image = models.URLField(null=True, default="http://placeholder.url")
     url_icon = models.URLField(null=True, default="http://placeholder.url")
     is_profesional = models.BooleanField(default=False)
@@ -80,7 +81,7 @@ class PlanCurso(models.Model):
     precio es INDEPENDIENTE por plan (no un múltiplo fijo del unitario), lo que
     permite descuentos por duración. `precio_referencia` es el precio "antes"
     (tachado) para mostrar el ahorro. El plan de 7 días es el valor unitario que
-    se muestra en /explore y mantiene sincronizado `Curso.costo`.
+    se muestra en /explore (fuente única de precio del curso).
     """
     DIAS_CHOICES = [(7, "7 días"), (14, "14 días"), (35, "35 días (1 mes + 5 de regalo)")]
 
@@ -95,13 +96,6 @@ class PlanCurso(models.Model):
     class Meta:
         unique_together = ("curso", "dias")
         ordering = ["curso", "dias"]
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        # El plan de 7 días es el valor unitario: mantiene Curso.costo en sync
-        # para no romper lecturas legacy que aún dependen de `costo`.
-        if self.dias == 7 and self.curso_id and self.curso.costo != self.precio:
-            Curso.objects.filter(pk=self.curso_id).update(costo=self.precio)
 
     def __str__(self):
         return f"{self.curso.nombre} · {self.dias}d · ${self.precio}"

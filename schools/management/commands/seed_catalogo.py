@@ -16,7 +16,7 @@ Tras seedear, los estudiantes ya pueden:
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from schools.models import Curso, Categoria, Unidad, Leccion, Ejercicio, Glosario
+from schools.models import Curso, Categoria, Unidad, Leccion, Ejercicio, Glosario, PlanCurso
 
 
 # ============================================================
@@ -718,13 +718,19 @@ class Command(BaseCommand):
                 defaults={
                     "nombre": spec["nombre"],
                     "descripcion": spec["descripcion"],
-                    "costo": spec["costo"],
                     "is_profesional": spec["is_profesional"],
                     "url_image": "http://placeholder.url",
                     "url_icon": "http://placeholder.url",
                 },
             )
             cursos_por_codigo[spec["codigo"]] = curso
+            # El precio vive en PlanCurso: el valor unitario (spec["costo"]) crea
+            # el plan de 7 días.
+            if spec.get("costo"):
+                PlanCurso.objects.get_or_create(
+                    curso=curso, dias=7,
+                    defaults={"precio": int(spec["costo"]), "activo": True, "orden": 7},
+                )
             tag = "creado" if created else "ya existia"
             self.stdout.write(f"  Curso: [{spec['codigo']}] {spec['nombre']} ({tag})")
 

@@ -15,12 +15,11 @@ class PlanCursoSerializer(serializers.ModelSerializer):
 
 
 class CursoSerializer(serializers.ModelSerializer):
-    # Los cursos no pueden ser gratis: costo obligatorio y > 0 al crear/editar.
-    # (min_value=1 rechaza 0 y negativos; required en create/PUT, validado si
-    # viene en un PATCH parcial.)
-    costo = serializers.IntegerField(min_value=1, required=True, allow_null=False)
-    # Precio unitario (plan de 7 días activo) para el público en /explore.
-    precio_unitario = serializers.SerializerMethodField()
+    # Precio unitario (plan de 7 días). WRITE: al crear/editar crea o actualiza
+    # el PlanCurso de 7 días (fuente única de precio; los cursos no pueden ser
+    # gratis → min_value=1, obligatorio al crear). READ: se inyecta en
+    # to_representation desde el plan de 7 días.
+    precio_unitario = serializers.IntegerField(min_value=1, required=False, write_only=True)
     # Lista de planes activos (para el detalle /explore/[id]).
     planes = serializers.SerializerMethodField()
 
@@ -34,14 +33,34 @@ class CursoSerializer(serializers.ModelSerializer):
             key=lambda p: p.dias,
         )
 
-    def get_precio_unitario(self, obj):
-        activos = self._planes_activos(obj)
-        if activos:
-            return int(activos[0].precio)  # menor duración = unitario (7 días)
-        return int(obj.costo or 0)
-
     def get_planes(self, obj):
         return PlanCursoSerializer(self._planes_activos(obj), many=True).data
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        activos = self._planes_activos(instance)
+        data["precio_unitario"] = int(activos[0].precio) if activos else 0
+        return data
+
+    def create(self, validated_data):
+        precio = validated_data.pop("precio_unitario", None)
+        if not precio or int(precio) < 1:
+            raise serializers.ValidationError(
+                {"precio_unitario": "El precio unitario es obligatorio y debe ser mayor a 0."}
+            )
+        curso = super().create(validated_data)
+        PlanCurso.objects.create(curso=curso, dias=7, precio=int(precio), activo=True, orden=7)
+        return curso
+
+    def update(self, instance, validated_data):
+        precio = validated_data.pop("precio_unitario", None)
+        curso = super().update(instance, validated_data)
+        if precio is not None:
+            PlanCurso.objects.update_or_create(
+                curso=curso, dias=7,
+                defaults={"precio": int(precio), "activo": True, "orden": 7},
+            )
+        return curso
 
 class LeccionSerializer(serializers.ModelSerializer):
     """Listado: solo metadatos. Para detalle completo usar LeccionDetalleSerializer."""

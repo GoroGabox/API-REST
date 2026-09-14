@@ -12,8 +12,6 @@ from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order
 
 # Días de acceso que habilita 1 llave. Otorgar N días cuesta ceil(N/7) llaves.
 DIAS_POR_LLAVE = 7
-# Días de acceso que otorga la compra individual de un curso (equivale a 1 llave).
-DIAS_COMPRA_INDIVIDUAL = DIAS_POR_LLAVE
 def llaves_para_dias(dias) -> int:
     """Nº de llaves que cuesta habilitar `dias` de acceso (1 llave = 7 días).
 
@@ -53,29 +51,14 @@ def tiene_acceso_a_curso(user, curso_id) -> bool:
     return cid in cursos_con_acceso_vigente(user)
 
 
-def precio_final_curso(curso: Curso) -> int:
-    """Precio unitario (CLP entero) de un curso: el plan de 7 días si existe,
-    sino `costo` (compat). Fuente para el 'valor unitario' mostrado al público."""
-    plan = PlanCurso.objects.filter(curso=curso, dias=DIAS_POR_LLAVE, activo=True).first()
-    if plan is not None:
-        return int(plan.precio)
-    return int(curso.costo or 0)
-
-
 def precio_plan(curso: Curso, dias) -> int | None:
     """Precio autoritativo (CLP entero) del plan activo (curso, dias).
 
-    Fuente de verdad server-side para validar el `amount` del cliente. Devuelve
-    None si no existe un plan activo con esa duración. Compat: si no hay ningún
-    PlanCurso para el curso (data legacy) y `dias == 7`, cae a `curso.costo`.
+    Fuente de verdad server-side (PlanCurso) para validar el `amount` del
+    cliente. Devuelve None si no existe un plan activo con esa duración.
     """
     plan = PlanCurso.objects.filter(curso=curso, dias=dias, activo=True).first()
-    if plan is not None:
-        return int(plan.precio)
-    if dias == DIAS_POR_LLAVE and not PlanCurso.objects.filter(curso=curso).exists():
-        costo = int(curso.costo or 0)
-        return costo if costo > 0 else None
-    return None
+    return int(plan.precio) if plan is not None else None
 
 
 def precio_final_producto(producto: Producto) -> int:
@@ -244,9 +227,11 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
     except Curso.DoesNotExist:
         raise CompraCursoError("Curso no existe.", 'curso_not_found')
 
-    # El plan (días) lo dicta el buy_order; legacy sin días → 7. El monto debe
-    # coincidir EXACTO con el precio del plan activo. Defensa anti-tampering.
-    dias = extract_dias_from_buy_order(buy_order) or DIAS_COMPRA_INDIVIDUAL
+    # El plan (días) lo dicta el buy_order (contrato estricto: siempre lo lleva).
+    # El monto debe coincidir EXACTO con el precio del plan activo. Anti-tampering.
+    dias = extract_dias_from_buy_order(buy_order)
+    if dias is None:
+        raise CompraCursoError("buy_order de curso sin plan (días).", 'bad_buy_order')
     precio = precio_plan(curso, dias)
     if precio is None:
         raise CompraCursoError("Plan de acceso no disponible para este curso.", 'plan_not_found')

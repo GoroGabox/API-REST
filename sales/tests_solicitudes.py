@@ -37,7 +37,7 @@ class SolicitudBaseTest(APITestCase):
         self.admin = make_user("adm@a.com", is_admin=True)
         # Estudiante SIN escuela (flujo escuela+curso: la aprobación lo vincula).
         self.est = make_user("est@x.com", is_estudiante=True)
-        self.curso = Curso.objects.create(nombre="Básico", descripcion="d", costo=10000, is_profesional=False)
+        self.curso = Curso.objects.create(nombre="Básico", descripcion="d", is_profesional=False)
 
     def crear_solicitud(self, codigo=None, curso_id=None):
         self.client.force_authenticate(self.est)

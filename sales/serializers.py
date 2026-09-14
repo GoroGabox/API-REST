@@ -135,7 +135,6 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
             "descripcion",
             "url_image",
             "url_icon",
-            "costo",
             "is_profesional",
             "cantidad_lecciones",
             "user_can_access",
@@ -149,7 +148,7 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
 
     def get_precio_unitario(self, obj):
         activos = self._planes_activos(obj)
-        return int(activos[0].precio) if activos else int(obj.costo or 0)
+        return int(activos[0].precio) if activos else 0
 
     def get_planes(self, obj):
         return [

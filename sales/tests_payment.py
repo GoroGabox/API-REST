@@ -44,10 +44,17 @@ def make_producto(valor_neto=10000, descuento=0):
 
 
 def make_curso(nombre="Curso X", costo=15000, profesional=False):
-    return Curso.objects.create(
-        nombre=nombre, descripcion="d", costo=costo, codigo="CX",
-        is_profesional=profesional,
+    """Crea un curso con su plan de 7 días (valor unitario = `costo`).
+
+    `costo` se conserva como parámetro por conveniencia de los tests: ya no es
+    un campo del modelo, sino el precio del PlanCurso de 7 días. `costo<=0` crea
+    el curso sin plan (para probar cursos sin precio)."""
+    curso = Curso.objects.create(
+        nombre=nombre, descripcion="d", codigo="CX", is_profesional=profesional,
     )
+    if costo and costo > 0:
+        PlanCurso.objects.create(curso=curso, dias=7, precio=costo, activo=True, orden=7)
+    return curso
 
 
 def enrol_purchase(student, curso, dias=30):
@@ -203,7 +210,7 @@ class CompraCursoIndividualTests(TestCase):
         return {
             "amount": amount,
             "session_id": "s",
-            "buy_order": f"order_{curso.id}_{sid}",
+            "buy_order": f"order_{curso.id}_{sid}_7",
             "payment_method": "transbank",
             "item_type": "curso",
         }
@@ -214,7 +221,7 @@ class CompraCursoIndividualTests(TestCase):
         return {
             "status": "AUTHORIZED",
             "amount": amount,
-            "buy_order": f"order_{curso.id}_{sid}",
+            "buy_order": f"order_{curso.id}_{sid}_7",
             "transaction_date": timezone.now(),
             "payment_type_code": "VN",
         }
@@ -398,10 +405,10 @@ class CursoCompradoYEscuelaTests(TestCase):
 
 
 class PrecioPlanTests(TestCase):
-    """`precio_plan` lee el precio autoritativo del plan (PlanCurso)."""
+    """`precio_plan` lee el precio autoritativo del plan (PlanCurso). Sin `costo`."""
 
     def setUp(self):
-        self.curso = make_curso(costo=15000)
+        self.curso = make_curso(costo=0)  # curso sin planes; los creamos por test
 
     def test_lee_precio_del_plan(self):
         # Precio independiente (no un múltiplo del unitario) → descuento posible.
@@ -416,15 +423,9 @@ class PrecioPlanTests(TestCase):
         PlanCurso.objects.create(curso=self.curso, dias=14, precio=25000, activo=False)
         self.assertIsNone(precio_plan(self.curso, 14))
 
-    def test_fallback_a_costo_sin_planes(self):
-        # Sin PlanCurso: el plan de 7 días cae a `costo`; otros → None.
-        self.assertEqual(precio_plan(self.curso, 7), 15000)
-        self.assertIsNone(precio_plan(self.curso, 14))
-
-    def test_plan_7_sincroniza_costo(self):
-        PlanCurso.objects.create(curso=self.curso, dias=7, precio=9990, activo=True)
-        self.curso.refresh_from_db()
-        self.assertEqual(self.curso.costo, 9990)
+    def test_sin_planes_devuelve_none(self):
+        # Ya no hay fallback a `costo`: sin plan → None (compra no habilitada).
+        self.assertIsNone(precio_plan(self.curso, 7))
 
 
 class PlanesCompraIndividualTests(TestCase):
@@ -432,7 +433,7 @@ class PlanesCompraIndividualTests(TestCase):
 
     def setUp(self):
         self.student = make_student()  # sin escuela
-        self.curso = make_curso(costo=15000)
+        self.curso = make_curso(costo=0)  # creamos los planes explícitamente
         PlanCurso.objects.create(curso=self.curso, dias=7, precio=15000, activo=True)
         PlanCurso.objects.create(curso=self.curso, dias=14, precio=30000, activo=True)
         # 35 días con DESCUENTO: 60000 ≠ 5×15000 (75000) → prueba precio libre.
@@ -479,6 +480,31 @@ class PlanesCompraIndividualTests(TestCase):
         r = self.client.post("/api/v1/sales/pay_init/", self._init(15000, 21), format="json")
         self.assertEqual(r.status_code, 400)
         MockTx.assert_not_called()
+
+    @patch("sales.views.Transaction")
+    def test_init_rechaza_buy_order_sin_dias(self, MockTx):
+        # Contrato estricto: curso SIEMPRE lleva días (4 segmentos). Sin días → 400.
+        payload = {
+            "amount": 15000, "session_id": "s",
+            "buy_order": f"order_{self.curso.id}_{self.student.id}",  # legacy 3 seg
+            "payment_method": "transbank", "item_type": "curso",
+        }
+        r = self.client.post("/api/v1/sales/pay_init/", payload, format="json")
+        self.assertEqual(r.status_code, 400)
+        MockTx.assert_not_called()
+
+    @patch("sales.views.Transaction")
+    def test_confirm_rechaza_buy_order_sin_dias(self, MockTx):
+        MockTx.return_value.commit.return_value = {
+            "status": "AUTHORIZED", "amount": 15000,
+            "buy_order": f"order_{self.curso.id}_{self.student.id}",  # sin días
+            "transaction_date": timezone.now(), "payment_type_code": "VN",
+        }
+        r = self.client.post("/api/v1/sales/pay_confirm/", self._confirm(), format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(
+            EstudianteCurso.objects.filter(estudiante_id=self.student, curso_id=self.curso).exists()
+        )
 
     @patch("sales.views.Transaction")
     def test_confirm_14_dias(self, MockTx):

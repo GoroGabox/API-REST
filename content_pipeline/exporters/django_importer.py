@@ -7,7 +7,7 @@ from typing import Any
 
 from django.db import transaction
 
-from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, Unidad
+from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, PlanCurso, Unidad
 
 
 @dataclass
@@ -84,12 +84,20 @@ def import_a2_course(
                 "nombre": curso_spec["nombre"],
                 "descripcion": curso_spec["descripcion"],
                 "is_profesional": bool(curso_spec.get("is_profesional", True)),
-                "costo": curso_spec.get("costo"),
                 "url_image": "http://placeholder.url",
                 "url_icon": "http://placeholder.url",
             },
         )
         summary.add("curso_create" if created else "curso_update")
+
+        # El precio vive en PlanCurso: el valor unitario (`costo` del spec) crea
+        # o actualiza el plan de 7 días. Los planes 14/35 se editan en Admin.
+        precio_unitario = int(curso_spec.get("costo") or 0)
+        if precio_unitario > 0:
+            PlanCurso.objects.update_or_create(
+                curso=curso, dias=7,
+                defaults={"precio": precio_unitario, "activo": True, "orden": 7},
+            )
 
         categorias: dict[str, Categoria] = {}
         for unidad in unidades_spec:

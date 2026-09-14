@@ -13,12 +13,15 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.tests import make_user
-from schools.models import Curso, Leccion, Ejercicio, Escuela
+from schools.models import Curso, Leccion, Ejercicio, Escuela, PlanCurso
 from sales.models import AccessKey, EstudianteCurso
 
 
 def make_curso(nombre="Curso", costo=10000):
-    return Curso.objects.create(nombre=nombre, descripcion="d", costo=costo, codigo="C")
+    curso = Curso.objects.create(nombre=nombre, descripcion="d", codigo="C")
+    if costo and costo > 0:
+        PlanCurso.objects.create(curso=curso, dias=7, precio=costo, activo=True, orden=7)
+    return curso
 
 
 def enrol(student, curso, dias=30):

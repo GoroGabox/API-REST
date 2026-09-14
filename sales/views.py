@@ -36,7 +36,6 @@ from .services import (
     registrar_compra_curso_individual,
     CompraCursoError,
     precio_final_producto,
-    precio_final_curso,
     precio_plan,
     tiene_acceso_a_curso,
     llaves_para_dias,
@@ -130,9 +129,15 @@ def _validar_monto_contra_curso(buy_order, amount):
             {"error": "Curso no encontrado para esta compra."},
             status=status.HTTP_404_NOT_FOUND,
         ), None
-    # El plan (días) lo dicta el buy_order; legacy sin días → 7. El monto debe
-    # coincidir EXACTO con el precio del plan activo (PlanCurso). Anti-tampering.
-    dias = extract_dias_from_buy_order(buy_order) or 7
+    # El plan (días) lo dicta el buy_order (contrato estricto: siempre 4
+    # segmentos para curso). El monto debe coincidir EXACTO con el precio del
+    # plan activo (PlanCurso). Anti-tampering.
+    dias = extract_dias_from_buy_order(buy_order)
+    if dias is None:
+        return Response(
+            {"error": "buy_order de curso sin plan (días). Formato: order_<curso>_<student>_<dias>."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
     precio = precio_plan(curso, dias)
     if precio is None:
         return Response(
