@@ -8,7 +8,7 @@ AutoTest es un SaaS de contenido teórico para aprender a conducir vehículos (c
 
 - **admin** — empleado interno de AutoTest. Gestiona catálogo (cursos, lecciones, ejercicios, escuelas, productos). Sin flag dedicado en el modelo; corresponde a `is_staff` / `is_superuser`.
 - **director** (`is_director=True`) — cliente empresa. Sobre su `Escuela` compra **llaves** (`basic_key`; un único tipo — cada llave habilita **7 días** de acceso, así que otorgar N días cuesta `ceil(N/7)` llaves) y/o una **suscripción** (`basic_access`, acceso ilimitado en tiempo acotado por cupos `basic_seats_max`/`basic_seats_used`) para distribuirlas a sus trabajadores. No existe un tier profesional (llaves ni cupos); `Curso.is_profesional` sobrevive solo como etiqueta y no afecta acceso ni consumo.
-- **estudiante** (`is_estudiante=True`) — usuario final. Adquiere acceso vía (a) compra directa B2C (Webpay) o (b) un director le otorga una `AccessKey` desde su escuela.
+- **estudiante** (`is_estudiante=True`) — usuario final. Adquiere acceso vía (a) compra directa B2C (Webpay) — planes 7/14/35 días cuyo precio vive en `schools.PlanCurso` (no en `Curso`) — o (b) un director le otorga una `AccessKey` desde su escuela.
 
 Esta distinción es la que justifica la lógica condicional `if user.is_director:` en los flujos de pago — director afecta a la `Escuela`, estudiante afecta a `EstudianteCurso`.
 
@@ -58,7 +58,7 @@ Swagger UI: `http://127.0.0.1:8000/api/v1/swagger/` · ReDoc: `/api/v1/redoc/` �
 Three Django apps mounted under `/api/v1/` from `autotestAPI/urls.py`:
 
 - **`accounts/`** — auth, users, student progress, test/exam taking. Custom user model `accounts.Usuario` (`AUTH_USER_MODEL`) keyed on `email`, with mutually-exclusive role flags `is_director` / `is_estudiante` that ALSO auto-add the user to `Directores` / `Estudiantes` `Group` via `UserManager.create_user`. Profile tables (`DirectorProfile`, `EstudianteProfile`) are 1:1 shells — most user data lives on `Usuario` itself. Holds `Prueba` / `PruebaEjercicio` (exam attempts), `EstudianteLeccion` (lesson progress), `Certificado`.
-- **`schools/`** — content catalog. `Escuela` → has many `Usuario` (FK from `accounts.Usuario.escuela`). `Curso` → `Leccion` → `Ejercicio`; `Categoria` cross-cuts `Leccion` and `Ejercicio`. `Glosario` is standalone. Views in `schools/views.py` are thin (~33 lines) — almost pure `ModelViewSet` over the router in `schools/urls.py`.
+- **`schools/`** — content catalog. `Escuela` → has many `Usuario` (FK from `accounts.Usuario.escuela`). `Curso` → `Leccion` → `Ejercicio`; `Categoria` cross-cuts `Leccion` and `Ejercicio`. `Glosario` is standalone. **`PlanCurso`** (FK → `Curso`, `related_name="planes"`) holds B2C pricing per duration: one row per `(curso, dias)` (7/14/35) with `precio`, `precio_referencia`, `etiqueta`, `activo` — **fuente única de precio del curso; `Curso` ya NO tiene campo `costo`**. El plan de 7 días es el valor unitario (`precio_unitario`, expuesto por `CursoSerializer`). CRUD admin en `PlanCursoViewSet` (router `plan-cursos`).
 - **`sales/`** — commerce. `Producto` (type: `llave` or `suscripcion`), `Venta`, `AccessKey` (UUID PK, auto-generates 12-char hex `key` on save, status `active/used/revoked`, time-bounded by `valid_from`/`valid_until`), `EstudianteCurso` (the join giving a student access to a course via one `AccessKey`), `TransbankTransaction` (1:1 with `Venta`).
 
 ### Cross-app coupling to know
@@ -76,7 +76,9 @@ Two payment surfaces coexist:
 1. Legacy Webpay-only: `POST /api/v1/sales/webpay_init/` → `SaleInitiationViewSet` (Transbank `Transaction.create`) → user redirects to Transbank → `POST /api/v1/sales/webpay_confirm/` → `PaymentConfirmationView` calls `Transaction.commit(token)`, marks `Venta.payment_status`, persists `TransbankTransaction`, and on success calls `sales.services.asignar_llave_y_curso(estudiante, curso, dias)` (atomic: creates `AccessKey` + `EstudianteCurso`).
 2. Unified (newer): `pay_init/` + `pay_confirm/` — same idea but pluggable payment system; `payment_status` on `Venta` is the source of truth.
 
-`buy_order` convention is `order_{course_id}_{student_id}` and is parsed back via `sales.utils.extract_ids_from_buy_order`. Preserve that format if you touch initiation/confirmation.
+**`buy_order` convention (estricto, sin fallbacks):** producto → `order_{producto_id}_{student_id}` (3 segmentos); compra individual de curso (`item_type='curso'`) → `order_{curso_id}_{student_id}_{dias}` (**4 segmentos, siempre lleva `dias`**). Parseado con `sales.utils.extract_ids_from_buy_order` (ids) y `extract_dias_from_buy_order` (días del curso). Preservar ese formato.
+
+**Compra individual de curso (B2C, estudiante):** `pay_init`/`pay_confirm` con `item_type='curso'`. El precio autoritativo es `sales.services.precio_plan(curso, dias)` = `PlanCurso.precio` del plan activo; el monto pagado debe coincidir EXACTO (anti-tampering) y los días se derivan del `buy_order` (sin `dias` → 400). `sales.services.registrar_compra_curso_individual` crea la `AccessKey(origen='purchase')` + `EstudianteCurso` + `Venta(curso)` y maneja renovación de compra vencida. Crear/generar un curso exige `precio_unitario` > 0 (write-only en `schools.serializers.CursoSerializer` y en `CourseGenerateView`), que crea el `PlanCurso` de 7 días.
 
 Manual activation (school-admin path): `POST /api/v1/sales/activar_curso/` → `ActivarCursoView`, also funnels through `asignar_llave_y_curso`.
 
@@ -95,4 +97,4 @@ Spanish resource names in URLs (`pruebas`, `perfil-estudiante`, `ventas`, `curso
 - Models, fields, and serializers use Spanish identifiers (`Usuario`, `nombre`, `apellido`, `escuela`, `pregunta`, `respuesta`). Match that — don't introduce English names mid-domain.
 - `__str__` methods on `Prueba` / `PruebaEjercicio` concatenate an int PK with `+` (`'#'+self.id+...`) — that's a latent bug (`TypeError`); don't copy the pattern. Cast with `str()` or use f-strings if you touch them.
 - View files are large (`accounts/views.py` 541 LOC, `sales/views.py` 460 LOC) and mix `APIView`, `ViewSet`, and generics — when extending, follow the existing pattern in the same file rather than refactoring.
-- Business logic that crosses models lives in `sales/services.py` (currently only `asignar_llave_y_curso`). Prefer adding to `services.py` over inflating views.
+- Business logic that crosses models lives in `sales/services.py` (`asignar_llave_y_curso`, `registrar_compra_curso_individual`, `registrar_venta_unificada`, `precio_plan`, `precio_final_producto`, `tiene_acceso_a_curso`, `llaves_para_dias`, …). Prefer adding to `services.py` over inflating views.
