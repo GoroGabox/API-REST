@@ -37,8 +37,7 @@ class RegistroPublicoTests(APITestCase):
         user = Usuario.objects.get(email="x@y.com")
         self.assertFalse(user.is_director)
         self.assertTrue(user.is_estudiante)
-        self.assertFalse(user.is_active)
-        self.assertIsNotNone(user.activation_token)
+        self.assertTrue(user.is_active)
 
     def test_passwords_distintas_falla(self):
         url = reverse('user_register_view')
@@ -48,23 +47,6 @@ class RegistroPublicoTests(APITestCase):
         }
         r = self.client.post(url, payload, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
-
-
-class ActivacionTokenTests(APITestCase):
-    def test_activacion_marca_usuario_activo_y_consume_token(self):
-        user = Usuario.objects.create_user(
-            email="a@b.com", nombre="A", apellido="B",
-            password="Abcdef12!@#", is_estudiante=True,
-        )
-        user.is_active = False
-        user.save(update_fields=['is_active'])
-        token = user.activation_token
-
-        r = self.client.get(reverse('activate_account', args=[str(token)]))
-        self.assertEqual(r.status_code, status.HTTP_200_OK)
-        user.refresh_from_db()
-        self.assertTrue(user.is_active)
-        self.assertIsNone(user.activation_token)
 
 
 class GenerarPruebaServiceTests(APITestCase):

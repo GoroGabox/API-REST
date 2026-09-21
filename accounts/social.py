@@ -124,8 +124,7 @@ def obtener_o_crear_usuario_social(payload: dict):
         is_estudiante=True,
     )
     user.is_active = True  # email validado por el IdP
-    user.activation_token = None
-    user.save(update_fields=['is_active', 'activation_token'])
+    user.save(update_fields=['is_active'])
     return user, True
 
 

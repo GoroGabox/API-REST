@@ -86,8 +86,6 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     is_estudiante = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True, null=True)
 
-    activation_token = models.UUIDField(default=uuid.uuid4, editable=False, null=True, blank=True, db_index=True)
-
     # Gamificación — recursos consumibles
     hearts = models.IntegerField(default=5)             # vidas; -1 por error en EVALUACIÓN
     next_heart_regen_at = models.DateTimeField(null=True, blank=True)

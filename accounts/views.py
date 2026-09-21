@@ -1,11 +1,9 @@
 import os
 from collections import defaultdict
 from django.conf import settings
-from django.http import Http404
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
-from django.urls import reverse
 from django.utils.encoding import force_bytes
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth.password_validation import validate_password
@@ -317,55 +315,6 @@ class PruebaEjercicioViewSet(viewsets.ModelViewSet):
             PruebaEjercicio.objects.all(), self.request.user,
             estudiante_field='prueba__estudiante',
         )
-
-class SendActivationEmailView(APIView):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = SendEmailSerializer
-    throttle_classes = [RegisterRateThrottle]
-
-    def post(self, request):
-        email = request.data.get('email')
-        try:
-            user = Usuario.objects.get(email=email)
-            if user.is_active:
-                return Response({"detail": "La cuenta ya está activa."}, status=status.HTTP_400_BAD_REQUEST)
-
-            # Rotar el token si fue invalidado por un activate previo.
-            if user.activation_token is None:
-                import uuid as _uuid
-                user.activation_token = _uuid.uuid4()
-                user.save(update_fields=['activation_token'])
-
-            activation_url = request.build_absolute_uri(
-                reverse('activate_account', args=[str(user.activation_token)])
-            )
-            send_mail(
-                subject="Activa tu cuenta",
-                message=f"Por favor activa tu cuenta usando el siguiente enlace: {activation_url}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-            )
-            return Response({"detail": "Correo de activación enviado."}, status=status.HTTP_200_OK)
-        except Usuario.DoesNotExist:
-            return Response({"detail": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
-class ActivateAccountView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def get(self, request, token):
-        try:
-            user = Usuario.objects.get(activation_token=token)
-        except (Usuario.DoesNotExist, ValueError, Http404):
-            return Response({"detail": "Token inválido o usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
-        if user.is_active:
-            return Response({"detail": "La cuenta ya está activa."}, status=status.HTTP_200_OK)
-
-        user.is_active = True
-        # Invalidar el token de activación (un solo uso).
-        user.activation_token = None
-        user.save(update_fields=['is_active', 'activation_token'])
-        return Response({"detail": "Cuenta activada con éxito."}, status=status.HTTP_200_OK)
 
 class GroupViewSet(viewsets.ModelViewSet):
     """Gestión de Grupos — solo admin."""

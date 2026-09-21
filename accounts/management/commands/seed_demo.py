@@ -69,9 +69,8 @@ class Command(BaseCommand):
                 user.is_staff = True
                 user.is_superuser = True
 
-            # Activación inmediata (saltamos email)
+            # Activación inmediata
             user.is_active = True
-            user.activation_token = None
 
             # Asignar escuela
             if escuela_nombre:

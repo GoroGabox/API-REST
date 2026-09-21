@@ -42,14 +42,15 @@ class UsuariorRegisterSerializer(serializers.ModelSerializer):
         validated_data.pop('password2')
         password = validated_data.pop('password')
 
-        # Endpoint público = siempre estudiante, nunca director, nunca pre-activo.
+        # Endpoint público = siempre estudiante, nunca director. Activo desde el
+        # momento de creación (sin email-flow previo de activación).
         user = Usuario.objects.create_user(
             password=password,
             is_director=False,
             is_estudiante=True,
             **validated_data
         )
-        user.is_active = False
+        user.is_active = True
         user.save(update_fields=['is_active'])
         return user
 
