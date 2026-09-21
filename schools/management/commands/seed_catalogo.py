@@ -16,6 +16,7 @@ Tras seedear, los estudiantes ya pueden:
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from content_pipeline import taxonomy
 from schools.models import Curso, Categoria, Unidad, Leccion, Ejercicio, Glosario, PlanCurso
 
 
@@ -694,16 +695,20 @@ class Command(BaseCommand):
         if opts.get("reset"):
             self._reset()
 
-        # 1. Categorias
+        # 1. Categorias — se mapean a la taxonomía canónica compartida: varias
+        # etiquetas granulares del seed colapsan en una sola categoría oficial.
+        # El dict se indexa por el nombre original (lo que referencian lecciones
+        # y ejercicios) apuntando a la fila canónica.
         categorias = {}
-        for nombre, color in CATEGORIAS:
+        for nombre, _color in CATEGORIAS:
+            canonical = taxonomy.resolve(nombre)
             cat, created = Categoria.objects.get_or_create(
-                nombre=nombre,
-                defaults={"color_hex": color},
+                nombre=canonical,
+                defaults={"color_hex": taxonomy.color_for(canonical)},
             )
             categorias[nombre] = cat
             tag = "creada" if created else "ya existia"
-            self.stdout.write(f"  Categoria: {nombre} ({tag})")
+            self.stdout.write(f"  Categoria: {nombre} -> {canonical} ({tag})")
 
         # 2. Glosario
         for termino, significado in GLOSARIO:
@@ -827,7 +832,8 @@ class Command(BaseCommand):
         deleted.append(("Lecciones", Leccion.objects.all().delete()[0]))
         deleted.append(("Unidades", Unidad.objects.all().delete()[0]))
         deleted.append(("Cursos", Curso.objects.filter(codigo__in=[c["codigo"] for c in CURSOS]).delete()[0]))
-        deleted.append(("Categorias", Categoria.objects.filter(nombre__in=[c[0] for c in CATEGORIAS]).delete()[0]))
+        _cat_canonicas = {taxonomy.resolve(c[0]) for c in CATEGORIAS}
+        deleted.append(("Categorias", Categoria.objects.filter(nombre__in=_cat_canonicas).delete()[0]))
         deleted.append(("Glosario", Glosario.objects.filter(termino__in=[g[0] for g in GLOSARIO]).delete()[0]))
         for label, n in deleted:
             self.stdout.write(self.style.WARNING(f"  Reset {label}: {n} borrados"))

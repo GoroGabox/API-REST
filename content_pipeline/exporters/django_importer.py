@@ -7,6 +7,7 @@ from typing import Any
 
 from django.db import transaction
 
+from content_pipeline import taxonomy
 from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, PlanCurso, Unidad
 
 
@@ -48,6 +49,27 @@ def _would_update(model, **lookup: Any) -> bool:
     return model.objects.filter(**lookup).exists()
 
 
+def _get_or_create_categoria(
+    name: str, cache: dict[str, Categoria], summary: ImportSummary
+) -> Categoria:
+    """Resuelve un nombre libre a la categoría canónica y la upserta.
+
+    Deduplica por CLAVE CANÓNICA (sin acentos/casing): todas las variantes de un
+    mismo concepto colapsan en una única fila, con su color oficial. Cachea por
+    nombre canónico para no repetir consultas dentro de un import.
+    """
+    canonical = taxonomy.resolve(name)
+    cached = cache.get(canonical)
+    if cached is not None:
+        return cached
+    categoria, created = Categoria.objects.get_or_create(
+        nombre=canonical, defaults={"color_hex": taxonomy.color_for(canonical)}
+    )
+    cache[canonical] = categoria
+    summary.add("categoria_create" if created else "categoria_update")
+    return categoria
+
+
 def import_a2_course(
     manifest: dict[str, Any],
     lessons: list[dict[str, Any]],
@@ -67,8 +89,9 @@ def import_a2_course(
             else:
                 exists = False
             summary.add("unidad_update" if exists else "unidad_create")
-        category_names = {str(unidad.get("categoria")) for unidad in unidades_spec}
-        category_names.update(str(lesson.get("categoria")) for lesson in lessons if lesson.get("categoria"))
+        # Nombres canónicos: distintas variantes cuentan como una sola categoría.
+        category_names = {taxonomy.resolve(unidad.get("categoria")) for unidad in unidades_spec}
+        category_names.update(taxonomy.resolve(lesson.get("categoria")) for lesson in lessons)
         for name in category_names:
             summary.add("categoria_update" if _would_update(Categoria, nombre=name) else "categoria_create")
         for lesson in lessons:
@@ -101,10 +124,7 @@ def import_a2_course(
 
         categorias: dict[str, Categoria] = {}
         for unidad in unidades_spec:
-            name = str(unidad.get("categoria", "General"))
-            categoria, created = Categoria.objects.get_or_create(nombre=name, defaults={"color_hex": "#545050"})
-            categorias[name] = categoria
-            summary.add("categoria_create" if created else "categoria_update")
+            _get_or_create_categoria(unidad.get("categoria"), categorias, summary)
 
         unidades: dict[int, Unidad] = {}
         for unidad_spec in unidades_spec:
@@ -121,12 +141,7 @@ def import_a2_course(
 
         for lesson in lessons:
             unidad = unidades[int(lesson["unidad_orden"])]
-            categoria_name = str(lesson.get("categoria") or "General")
-            categoria = categorias.get(categoria_name)
-            if categoria is None:
-                categoria, created = Categoria.objects.get_or_create(nombre=categoria_name, defaults={"color_hex": "#545050"})
-                categorias[categoria_name] = categoria
-                summary.add("categoria_create" if created else "categoria_update")
+            categoria = _get_or_create_categoria(lesson.get("categoria"), categorias, summary)
 
             leccion, created = Leccion.objects.get_or_create(
                 curso=curso,
@@ -251,15 +266,17 @@ def import_ejercicios(
 
         if dry_run:
             summary.add("ejercicio_create")
-            summary.add(f"categoria::{categoria_nombre}")
+            summary.add(f"categoria::{taxonomy.resolve(categoria_nombre)}")
             continue
 
-        categoria = categoria_cache.get(categoria_nombre)
+        # Categoría canónica compartida con las lecciones (misma taxonomía).
+        canonical = taxonomy.resolve(categoria_nombre)
+        categoria = categoria_cache.get(canonical)
         if categoria is None:
             categoria, created = Categoria.objects.get_or_create(
-                nombre=categoria_nombre, defaults={"color_hex": "#545050"}
+                nombre=canonical, defaults={"color_hex": taxonomy.color_for(canonical)}
             )
-            categoria_cache[categoria_nombre] = categoria
+            categoria_cache[canonical] = categoria
             summary.add("categoria_create" if created else "categoria_reuse")
 
         es_multi = bool(e.get("multi"))

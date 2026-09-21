@@ -28,6 +28,7 @@ from content_pipeline.processors.clean_text import (
     normalize_for_matching,
     shorten_text,
 )
+from content_pipeline.taxonomy import resolve
 
 # "Unidad 3", "Módulo IV", "Capítulo 2", "Bloque 1", "Sección 5"
 _UNIT_RE = re.compile(
@@ -117,7 +118,10 @@ def build_manifest_from_temario(
         current = {
             "orden": len(units) + 1,
             "nombre": shorten_text(name, 100),
-            "categoria": shorten_text(name, 100),
+            # El parser por regex no conoce la categoría real del módulo; se
+            # resuelve por nombre contra la taxonomía y cae a "General" si no
+            # encaja (el LLM sí clasifica bien en manifest_llm).
+            "categoria": resolve(name),
             "horas_elearning": 0,
             "temas": [],
         }

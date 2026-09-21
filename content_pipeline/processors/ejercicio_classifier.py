@@ -13,21 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from content_pipeline.llm.client import LLMClient, draft_model, parse_json_object
+from content_pipeline.taxonomy import CATEGORY_NAMES, FALLBACK, resolve
 
-# Vocabulario controlado de categorías (Clase B). Ajustable.
-TAXONOMIA = [
-    "Mecánica y mantención",
-    "Señales de tránsito",
-    "Prioridad y derecho de paso",
-    "Velocidad y distancias",
-    "Conducción defensiva y riesgos",
-    "Adelantamiento y maniobras",
-    "Estacionamiento y detención",
-    "Alcohol, drogas y estado del conductor",
-    "Condiciones ambientales y visibilidad",
-    "Normativa, documentación y seguridad",
-]
-CATEGORIA_FALLBACK = "Normativa, documentación y seguridad"
+# Vocabulario controlado: la MISMA taxonomía canónica que las lecciones de curso
+# (ver content_pipeline.taxonomy). Así lecciones y banco de exámenes comparten
+# categorías y el filtro por categoría es consistente en todo el frontend.
+TAXONOMIA = list(CATEGORY_NAMES)
+CATEGORIA_FALLBACK = FALLBACK
 
 _BATCH = 25
 
@@ -63,8 +55,6 @@ def clasificar(
     if not ejercicios:
         return resultado
 
-    taxonomia_set = set(TAXONOMIA)
-
     if not LLMClient.is_available():
         return {e["numero"]: CATEGORIA_FALLBACK for e in ejercicios}
 
@@ -85,8 +75,8 @@ def clasificar(
 
         for e in lote:
             cat = mapping.get(str(e["numero"])) or mapping.get(e["numero"])
-            if cat not in taxonomia_set:
-                cat = CATEGORIA_FALLBACK
-            resultado[e["numero"]] = cat
+            # resolve() normaliza variantes/tildes y manda a "General" lo que no
+            # sea una etiqueta canónica válida.
+            resultado[e["numero"]] = resolve(cat)
 
     return resultado

@@ -16,10 +16,15 @@ from typing import Any
 from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
 from content_pipeline.processors.clean_text import shorten_text
 from content_pipeline.processors.manifest_builder import _cap_to_max_lessons
+from content_pipeline.taxonomy import CATEGORY_NAMES, FALLBACK, resolve
 
 # Tope defensivo de tokens del temario que mandamos (por si llega un PDF enorme
 # mal clasificado como temario). ~40k caracteres ≈ ~10k tokens.
 _MAX_TEMARIO_CHARS = 40_000
+
+# Lista cerrada de categorías (taxonomía compartida) inyectada en el prompt para
+# que el LLM clasifique cada módulo en UNA de ellas, en vez de inventar nombres.
+_CATEGORIAS_BLOQUE = "\n".join(f"- {name}" for name in CATEGORY_NAMES)
 
 MANIFEST_SYSTEM = """\
 Eres un diseñador instruccional experto en cursos de licencias de conducir en Chile.
@@ -33,7 +38,8 @@ Incluye SOLO contenido de enseñanza:
 - módulos/unidades del curso (en su orden real),
 - objetivos de aprendizaje de cada módulo,
 - horas e-learning de cada módulo (número entero; 0 si no se indica),
-- los temas/contenidos concretos de cada módulo.
+- los temas/contenidos concretos de cada módulo,
+- la CATEGORÍA de cada módulo, elegida de una lista cerrada (ver abajo).
 
 DESCARTA todo lo administrativo: nombre/región de la escuela, responsable,
 plataforma LMS, requisitos técnicos, formato de ejecución, datos de contacto,
@@ -45,23 +51,27 @@ Reglas:
 - No inventes módulos ni temas que no estén en el Anexo.
 - Si un módulo no lista temas explícitos, deriva 2-5 temas razonables desde su
   objetivo de aprendizaje.
+- "categoria" DEBE ser EXACTAMENTE una de estas etiquetas (copia el texto tal
+  cual, con sus tildes); elige la que mejor describe el módulo. Si ninguna
+  encaja, usa "{fallback}":
+{categorias}
 - Responde EXCLUSIVAMENTE con el JSON, sin ```fences ni comentarios.
 
 Formato JSON exacto:
-{
-  "curso": {"descripcion": "1-2 frases sobre el curso"},
+{{
+  "curso": {{"descripcion": "1-2 frases sobre el curso"}},
   "unidades": [
-    {
+    {{
       "orden": 1,
       "nombre": "Nombre del módulo",
-      "categoria": "Nombre del módulo",
+      "categoria": "una etiqueta EXACTA de la lista",
       "horas_elearning": 4,
       "objetivos": ["objetivo de aprendizaje", "..."],
       "temas": ["tema 1", "tema 2", "..."]
-    }
+    }}
   ]
-}
-"""
+}}
+""".format(categorias=_CATEGORIAS_BLOQUE, fallback=FALLBACK)
 
 MANIFEST_USER = """\
 Curso: {nombre} (código {codigo}).
@@ -123,7 +133,9 @@ def _normalize_manifest(
             {
                 "orden": len(unidades) + 1,
                 "nombre": nombre_unidad,
-                "categoria": shorten_text(str(raw.get("categoria") or nombre_unidad), 100),
+                # Categoría canónica: el LLM elige de la lista cerrada; resolve()
+                # normaliza variantes y manda a "General" lo que no encaje.
+                "categoria": resolve(raw.get("categoria")),
                 "horas_elearning": max(0, horas),
                 "objetivos": _clean_str_list(raw.get("objetivos"), 300),
                 "temas": temas,

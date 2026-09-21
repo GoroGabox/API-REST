@@ -4,12 +4,14 @@ from pathlib import Path
 
 from django.test import SimpleTestCase, TestCase
 
+from content_pipeline import taxonomy
 from content_pipeline.llm.client import LLMResponse
+from content_pipeline.processors.ejercicio_classifier import clasificar
 from content_pipeline.processors.llm_lesson_writer import (
     _REQUIRED_SECTIONS,
     _write_body,
 )
-from content_pipeline.exporters.django_importer import import_a2_course
+from content_pipeline.exporters.django_importer import import_a2_course, import_ejercicios
 from content_pipeline.exporters.json_exporter import read_json
 from content_pipeline.processors.clean_text import clean_extracted_text, hash_text_fragment
 from content_pipeline.processors.lesson_generator import build_lesson_context, render_student_lesson
@@ -169,7 +171,10 @@ class DjangoImporterTests(TestCase):
         import_a2_course(self._manifest(), self._lessons(), dry_run=False)
 
         self.assertEqual(Curso.objects.filter(codigo="A2").count(), 1)
-        self.assertEqual(Categoria.objects.filter(nombre="Legislación").count(), 1)
+        # "Legislación" se canonicaliza a la etiqueta de la taxonomía compartida.
+        self.assertEqual(
+            Categoria.objects.filter(nombre="Legislación y Normativa de Tránsito").count(), 1
+        )
         self.assertEqual(Unidad.objects.count(), 1)
         self.assertEqual(Leccion.objects.count(), 2)
         self.assertEqual(LeccionFuente.objects.count(), 2)
@@ -413,4 +418,133 @@ class LessonBodyTruncationTests(SimpleTestCase):
         body = self._write(client)
         self.assertIn("segundo", body)
         self.assertEqual(client.budgets, [3_200, 4_096])
+
+
+class TaxonomyResolveTests(SimpleTestCase):
+    def test_variants_collapse_to_canonical(self):
+        cases = {
+            "Primeros auxilios": "Primeros Auxilios",
+            "Mecánica y mantención": "Mecánica y Mantención del Vehículo",
+            "Mecánica y Mantención Preventiva": "Mecánica y Mantención del Vehículo",
+            "Mecanica basica": "Mecánica y Mantención del Vehículo",
+            "Transporte de carga": "Transporte Profesional (Carga y Pasajeros)",
+            "Reglamentación aplicada al transporte de pasajeros": "Transporte Profesional (Carga y Pasajeros)",
+            "Introducción a la seguridad vial y el vehículo": "Conducción Defensiva",
+            "Señales reglamentarias": "Señales de Tránsito",
+            "Reglas de prioridad": "Prioridad y Derecho de Paso",
+            "Normativa, documentación y seguridad": "Legislación y Normativa de Tránsito",
+        }
+        for raw, canonical in cases.items():
+            self.assertEqual(taxonomy.resolve(raw), canonical, raw)
+
+    def test_unknown_and_empty_fall_back_to_general(self):
+        self.assertEqual(taxonomy.resolve("algo que no existe"), taxonomy.FALLBACK)
+        self.assertEqual(taxonomy.resolve(""), taxonomy.FALLBACK)
+        self.assertEqual(taxonomy.resolve(None), taxonomy.FALLBACK)
+
+    def test_every_canonical_resolves_to_itself(self):
+        for name in taxonomy.CATEGORY_NAMES:
+            self.assertEqual(taxonomy.resolve(name), name)
+
+
+class CategoriaDedupImportTests(TestCase):
+    def _course(self, codigo, categorias):
+        """Manifest + lecciones de una unidad por cada categoría dada."""
+        unidades = []
+        lessons = []
+        for i, cat in enumerate(categorias, start=1):
+            unidades.append(
+                {
+                    "orden": i,
+                    "nombre": f"Módulo {i}",
+                    "horas_elearning": 1,
+                    "categoria": cat,
+                    "temas": [f"Tema {i}"],
+                }
+            )
+            lessons.append(
+                {
+                    "unidad_orden": i,
+                    "unidad_nombre": f"Módulo {i}",
+                    "categoria": cat,
+                    "tema_regulatorio": f"Tema {i}",
+                    "nombre": f"Lección {i}",
+                    "posicion": 1,
+                    "tipo": "texto",
+                    "descripcion": "d",
+                    "duracion_min": 20,
+                    "contenido": "# x",
+                    "transcripcion": "",
+                    "fuentes": [],
+                }
+            )
+        manifest = {
+            "curso": {"nombre": f"Curso {codigo}", "codigo": codigo, "descripcion": "d"},
+            "unidades": unidades,
+        }
+        return manifest, lessons
+
+    def test_variant_categories_across_courses_dedupe(self):
+        # Dos cursos con la misma familia de conceptos escrita distinto.
+        m1, l1 = self._course("B", ["Primeros Auxilios", "Mecánica y Mantención Preventiva"])
+        m2, l2 = self._course("A2", ["primeros auxilios", "Mecánica y mantención"])
+        import_a2_course(m1, l1, dry_run=False)
+        import_a2_course(m2, l2, dry_run=False)
+
+        self.assertEqual(Categoria.objects.filter(nombre="Primeros Auxilios").count(), 1)
+        self.assertEqual(
+            Categoria.objects.filter(nombre="Mecánica y Mantención del Vehículo").count(), 1
+        )
+        # Sin filas fuera de la taxonomía (ni "primeros auxilios" ni variantes).
+        canon = set(taxonomy.CATEGORY_NAMES) | {taxonomy.FALLBACK}
+        for name in Categoria.objects.values_list("nombre", flat=True):
+            self.assertIn(name, canon, name)
+
+    def test_every_lesson_has_a_category(self):
+        m, l = self._course("C", ["Señales reglamentarias", "algo inclasificable"])
+        import_a2_course(m, l, dry_run=False)
+        self.assertFalse(Leccion.objects.filter(categoria__isnull=True).exists())
+        # La categoría desconocida cae a "General", no a null.
+        self.assertTrue(Categoria.objects.filter(nombre=taxonomy.FALLBACK).exists())
+
+    def test_canonical_category_gets_official_color(self):
+        m, l = self._course("B", ["Señales de tránsito"])
+        import_a2_course(m, l, dry_run=False)
+        cat = Categoria.objects.get(nombre="Señales de Tránsito")
+        self.assertEqual(cat.color_hex, taxonomy.color_for("Señales de Tránsito"))
+
+    def test_ejercicios_share_taxonomy_with_lessons(self):
+        # Lección en "Señales de Tránsito" + ejercicio clasificado como variante:
+        # ambos deben apuntar a la MISMA fila canónica.
+        m, l = self._course("B", ["Señales de tránsito"])
+        import_a2_course(m, l, dry_run=False)
+        import_ejercicios(
+            [
+                {
+                    "pregunta": "¿Qué indica un disco PARE?",
+                    "opciones": {"a": "Detenerse", "b": "Seguir"},
+                    "respuestas": ["a"],
+                    "categoria": "Señales reglamentarias",
+                }
+            ],
+            dry_run=False,
+        )
+        self.assertEqual(Categoria.objects.filter(nombre="Señales de Tránsito").count(), 1)
+
+
+class EjercicioClassifierTaxonomyTests(SimpleTestCase):
+    def test_classifier_shares_canonical_taxonomy(self):
+        from content_pipeline.processors import ejercicio_classifier as ec
+
+        self.assertEqual(ec.TAXONOMIA, taxonomy.CATEGORY_NAMES)
+        self.assertEqual(ec.CATEGORIA_FALLBACK, taxonomy.FALLBACK)
+
+    def test_classifier_falls_back_when_llm_unavailable(self):
+        from unittest.mock import patch
+
+        from content_pipeline.llm.client import LLMClient
+
+        with patch.object(LLMClient, "is_available", return_value=False):
+            got = clasificar([{"numero": 1, "pregunta": "x", "opciones": {"a": "1"}}])
+        self.assertEqual(got, {1: taxonomy.FALLBACK})
 
