@@ -177,9 +177,12 @@ class PayConfirmIdempotencyTest(TestCase):
         self.assertEqual(r1.status_code, 201)
         self.assertEqual(TransbankTransaction.objects.filter(token="TOKX").count(), 1)
 
-        # Segundo intento con el mismo token → rechazado, sin segunda venta.
+        # Segundo intento con el mismo token → rechazo de negocio (200 con
+        # success:false, no 401: evita colisionar con el refresh JWT del front),
+        # sin segunda venta.
         r2 = self.client.post("/api/v1/sales/pay_confirm/", payload, format="json")
-        self.assertIn(r2.status_code, (400, 401))
+        self.assertEqual(r2.status_code, 200)
+        self.assertFalse(r2.data["success"])
         self.assertEqual(TransbankTransaction.objects.filter(token="TOKX").count(), 1)
 
     @patch("sales.views.Transaction")

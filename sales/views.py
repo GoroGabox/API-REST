@@ -1327,7 +1327,12 @@ class UnifiedPaymentConfirmationView(APIView):
                 return Response({"error": str(e)}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
             if not result["success"]:
-                return Response({"success": False, "details": result.get("message", "Pago no autorizado.")}, status=status.HTTP_401_UNAUTHORIZED)
+                # Rechazo de negocio (pago no autorizado / token ya procesado): NO
+                # es un fallo de autenticación. Devolver 401 acá colisiona con el
+                # interceptor de refresh JWT del frontend, que reintenta el POST y
+                # dispara un segundo commit sobre el mismo token. Respondemos 200
+                # con success:false; el frontend inspecciona el flag `success`.
+                return Response({"success": False, "details": result.get("message", "Pago no autorizado.")}, status=status.HTTP_200_OK)
 
             item_type = (request.data.get("item_type") or "producto").lower().strip()
 
