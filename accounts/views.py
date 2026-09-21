@@ -121,6 +121,191 @@ class EscuelaConDirectorView(APIView):
         instance = serializer.save()
         return Response(serializer.to_representation(instance), status=status.HTTP_201_CREATED)
 
+
+class BulkStudentCreateView(APIView):
+    """POST /api/v1/accounts/bulk-students/ — alta masiva de estudiantes.
+
+    Crea cuentas de estudiante ligadas a una escuela a partir de una lista de
+    filas (parseadas de un CSV en el cliente). Opcionalmente envía la invitación
+    "configura tu contraseña" y/o activa un curso para cada uno (consumiendo
+    llaves/cupos de la escuela, salvo admin).
+
+    Permisos:
+    - director: alta en SU escuela (el campo `escuela` del body se ignora).
+    - admin: debe indicar `escuela` destino; activa sin descontar saldo.
+    - estudiante: 403.
+
+    Body:
+      escuela: int            (admin: requerido; director: ignorado)
+      estudiantes: [{nombre, apellido, email, rut?, telefono?}, ...]
+      enviar_invitacion: bool (default True)
+      activar_curso: bool     (default False)
+      curso_id: int           (requerido si activar_curso)
+      source: 'auto'|'key'|'seat'  (default 'auto')
+      days: int               (default 7)
+
+    Respuesta 200:
+      { escuela_id, resumen: {total, creados, omitidos, errores}, resultados: [...] }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    MAX_ROWS = 500
+
+    def post(self, request):
+        import re as _re
+        from django.utils.crypto import get_random_string
+        from schools.models import Escuela, Curso
+        from sales.services import activar_curso_para_estudiante, SinSaldoError
+        from . import services as _accounts_services
+
+        if not (is_admin(request.user) or is_director(request.user)):
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+        estudiantes = request.data.get("estudiantes")
+        if not isinstance(estudiantes, list) or not estudiantes:
+            return Response({"detail": "estudiantes debe ser una lista no vacía."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if len(estudiantes) > self.MAX_ROWS:
+            return Response({"detail": f"Máximo {self.MAX_ROWS} filas por carga."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        enviar_invitacion = bool(request.data.get("enviar_invitacion", True))
+        activar = bool(request.data.get("activar_curso", False))
+        source = (request.data.get("source") or "auto").lower().strip()
+        if source not in ("auto", "key", "seat"):
+            return Response({"detail": "source debe ser 'auto', 'key' o 'seat'."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            days = int(request.data.get("days") or 7)
+            if days <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            days = 7
+
+        es_admin = is_admin(request.user)
+
+        # Escuela destino.
+        if es_admin:
+            escuela_id = request.data.get("escuela")
+            if not escuela_id:
+                return Response({"detail": "Debes indicar la escuela destino."},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:  # director
+            escuela_id = request.user.escuela_id
+            if not escuela_id:
+                return Response({"detail": "Tu cuenta no tiene una escuela asociada."},
+                                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            escuela = Escuela.objects.get(pk=escuela_id)
+        except (Escuela.DoesNotExist, ValueError, TypeError):
+            return Response({"detail": "Escuela no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Curso a activar (opcional).
+        curso = None
+        if activar:
+            curso_id = request.data.get("curso_id")
+            if not curso_id:
+                return Response({"detail": "Indica el curso a activar (curso_id)."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                curso = Curso.objects.get(pk=curso_id)
+            except (Curso.DoesNotExist, ValueError, TypeError):
+                return Response({"detail": "Curso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        email_re = _re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+        vistos = set()  # emails ya procesados en ESTE lote (evita duplicados internos)
+        resultados = []
+        creados = omitidos = errores = 0
+
+        for idx, row in enumerate(estudiantes):
+            fila = idx + 1
+            if not isinstance(row, dict):
+                errores += 1
+                resultados.append({"fila": fila, "estado": "error", "detalle": "Fila con formato inválido."})
+                continue
+
+            email = (row.get("email") or "").strip().lower()
+            nombre = (row.get("nombre") or "").strip()
+            apellido = (row.get("apellido") or "").strip()
+
+            if not (email and nombre and apellido):
+                errores += 1
+                resultados.append({"fila": fila, "email": email, "estado": "error",
+                                   "detalle": "Faltan nombre, apellido o email."})
+                continue
+            if not email_re.match(email):
+                errores += 1
+                resultados.append({"fila": fila, "email": email, "estado": "error",
+                                   "detalle": "Email con formato inválido."})
+                continue
+            if email in vistos:
+                omitidos += 1
+                resultados.append({"fila": fila, "email": email, "estado": "omitido",
+                                   "detalle": "Email duplicado en el archivo."})
+                continue
+            vistos.add(email)
+            if Usuario.objects.filter(email=email).exists():
+                omitidos += 1
+                resultados.append({"fila": fila, "email": email, "estado": "omitido",
+                                   "detalle": "Ya existe una cuenta con ese email."})
+                continue
+
+            try:
+                user = Usuario.objects.create_user(
+                    email=email,
+                    nombre=nombre,
+                    apellido=apellido,
+                    # Contraseña aleatoria inutilizable: el alumno define la suya
+                    # vía la invitación. No se expone ni se comunica.
+                    password=get_random_string(32),
+                    is_estudiante=True,
+                    escuela=escuela,
+                    rut=(row.get("rut") or "").strip(),
+                    telefono=(row.get("telefono") or "").strip(),
+                )
+                user.is_active = True
+                user.save(update_fields=["is_active"])
+            except Exception as e:  # noqa: BLE001 — se reporta por fila, no rompe el lote
+                errores += 1
+                resultados.append({"fila": fila, "email": email, "estado": "error",
+                                   "detalle": f"No se pudo crear: {e}"})
+                continue
+
+            item = {"fila": fila, "email": email,
+                    "nombre": f"{nombre} {apellido}".strip(),
+                    "estado": "creado", "user_id": user.id}
+
+            if activar and curso is not None:
+                try:
+                    activar_curso_para_estudiante(
+                        estudiante=user, curso=curso, days=days,
+                        source=source, es_admin=es_admin, escuela=escuela,
+                    )
+                    item["curso_activado"] = True
+                except SinSaldoError as e:
+                    item["curso_activado"] = False
+                    item["activacion_error"] = str(e)
+                except Exception as e:  # noqa: BLE001
+                    item["curso_activado"] = False
+                    item["activacion_error"] = str(e)
+
+            if enviar_invitacion:
+                try:
+                    _accounts_services.enviar_invitacion_password(user)
+                    item["invitacion"] = "enviada"
+                except Exception:
+                    item["invitacion"] = "error"
+
+            creados += 1
+            resultados.append(item)
+
+        return Response({
+            "escuela_id": escuela.id,
+            "resumen": {"total": len(estudiantes), "creados": creados,
+                        "omitidos": omitidos, "errores": errores},
+            "resultados": resultados,
+        }, status=status.HTTP_200_OK)
+
+
 class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
@@ -218,24 +403,9 @@ class PasswordResetInviteView(APIView):
             )
         cache.set(cache_key, now, self.COOLDOWN_SECONDS)
 
-        uid = urlsafe_base64_encode(force_bytes(target.id))
-        token = default_token_generator.make_token(target)
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
-        link = f'{frontend_url}/change-password?uidb64={uid}&token={token}'
-
+        from . import services as _accounts_services
         try:
-            send_mail(
-                subject='Configura tu contraseña — AutoTest',
-                message=(
-                    f'Hola {target.nombre or ""},\n\n'
-                    f'Tu cuenta AutoTest ha sido creada. Define tu contraseña '
-                    f'accediendo al siguiente enlace:\n\n{link}\n\n'
-                    f'Si no reconoces esta invitación, ignora este correo.'
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[target.email],
-                fail_silently=True,
-            )
+            _accounts_services.enviar_invitacion_password(target)
         except Exception:
             pass
 

@@ -88,8 +88,10 @@ class ImportCourseCommandTests(TestCase):
         self.assertEqual(Leccion.objects.count(), 1)
         self.assertEqual(LeccionFuente.objects.count(), 1)
 
-        curso = Curso.objects.get(codigo="CLI")
-        self.assertEqual(curso.costo, 12345)
+        # El precio ya no vive en el Curso (`costo` fue eliminado): el comando de
+        # importación ignora ese campo del payload; el precio se define aparte en
+        # PlanCurso. Basta con verificar que el curso se creó (idempotente).
+        self.assertTrue(Curso.objects.filter(codigo="CLI").exists())
 
     def test_file_invalido_falla(self):
         bad = self.tmp / "bad.json"

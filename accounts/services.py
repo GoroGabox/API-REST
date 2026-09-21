@@ -514,3 +514,48 @@ def elegibilidad_examen_final(user, curso) -> dict:
             }
 
     return {**base, 'puede': True, 'razon': 'ok'}
+
+
+# ============================================================
+# Invitación "configura tu contraseña"
+# ============================================================
+
+def construir_link_password(user):
+    """Devuelve el enlace de reset/definición de contraseña para `user`.
+
+    Mismo formato que consume el front (/change-password?uidb64=..&token=..).
+    """
+    import os
+    from django.contrib.auth.tokens import default_token_generator
+    from django.utils.http import urlsafe_base64_encode
+    from django.utils.encoding import force_bytes
+
+    uid = urlsafe_base64_encode(force_bytes(user.id))
+    token = default_token_generator.make_token(user)
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+    return f'{frontend_url}/change-password?uidb64={uid}&token={token}'
+
+
+def enviar_invitacion_password(user):
+    """Envía el correo de "configura tu contraseña" a `user` (best-effort).
+
+    Reutilizado por el alta 1×1 (director/admin) y el alta masiva. Devuelve el
+    enlace generado. No propaga errores de envío (fail_silently).
+    """
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    link = construir_link_password(user)
+    send_mail(
+        subject='Configura tu contraseña — AutoTest',
+        message=(
+            f'Hola {user.nombre or ""},\n\n'
+            f'Tu cuenta AutoTest ha sido creada. Define tu contraseña '
+            f'accediendo al siguiente enlace:\n\n{link}\n\n'
+            f'Si no reconoces esta invitación, ignora este correo.'
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=True,
+    )
+    return link

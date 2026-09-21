@@ -39,6 +39,11 @@ from .services import (
     precio_plan,
     tiene_acceso_a_curso,
     llaves_para_dias,
+    # Helpers de activación seat/key (fuente única en services; ver más abajo).
+    resolver_source_director as _resolver_source_director,
+    decrementar_saldo as _decrementar_saldo,
+    mensaje_sin_saldo as _mensaje_sin_saldo,
+    asignar_por_source as _asignar_por_source,
 )
 from accounts.notifications import notificar
 
@@ -597,71 +602,9 @@ class ActivarCursoView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
-# ---- helpers para activación con seat/key ----
-
-def _resolver_source_director(escuela, source, keys_needed):
-    """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela.
-
-    Un seat consume 1 cupo (acceso ilimitado en tiempo). Una llave habilita 7
-    días, así que otorgar `days` días vía key cuesta `keys_needed` = ceil(days/7)
-    llaves.
-    """
-    if source == "seat":
-        return "seat" if _tiene_seat(escuela) else None
-    if source == "key":
-        return "key" if _tiene_key(escuela, keys_needed) else None
-    # auto: seat primero (más barato), luego key.
-    if _tiene_seat(escuela):
-        return "seat"
-    if _tiene_key(escuela, keys_needed):
-        return "key"
-    return None
-
-
-def _tiene_seat(escuela):
-    return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
-
-
-def _tiene_key(escuela, keys_needed):
-    return escuela.basic_key >= keys_needed
-
-
-def _decrementar_saldo(escuela, resolved_source, keys_needed):
-    if resolved_source == "seat":
-        escuela.basic_seats_used += 1
-    else:  # key
-        escuela.basic_key -= keys_needed
-
-
-def _mensaje_sin_saldo(source, keys_needed=1):
-    if source == "seat":
-        return "Tu escuela no tiene cupos disponibles en la suscripción."
-    if source == "key":
-        return f"Tu escuela no tiene suficientes llaves disponibles (se requieren {keys_needed})."
-    return "Tu escuela no tiene ni cupos ni llaves disponibles."
-
-
-def _asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None):
-    """Crea AccessKey + EstudianteCurso según el origen."""
-    from django.utils import timezone
-    from datetime import timedelta
-    with db_transaction.atomic():
-        if resolved_source == "seat":
-            access_key = AccessKey.objects.create(
-                valid_until=None,
-                origen="seat",
-            )
-        else:
-            access_key = AccessKey.objects.create(
-                valid_until=timezone.now() + timedelta(days=days),
-                origen="key",
-            )
-        EstudianteCurso.objects.create(
-            estudiante_id=estudiante,
-            curso_id=curso,
-            access_key_id=access_key,
-        )
-    return access_key
+# Los helpers de activación seat/key (_resolver_source_director, _decrementar_saldo,
+# _mensaje_sin_saldo, _asignar_por_source) viven en `sales.services` y se importan
+# arriba con alias, para compartir la lógica de saldo con el alta masiva (accounts).
 
 
 class SolicitudAccesoViewSet(mixins.ListModelMixin,

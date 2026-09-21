@@ -145,6 +145,114 @@ def asignar_llave_y_curso(estudiante, curso, dias):
         return access_key
 
 
+# ============================================================
+# Activación de curso (seat / key) — reutilizable
+# ------------------------------------------------------------
+# Estos helpers y el servicio `activar_curso_para_estudiante` concentran las
+# reglas de consumo de cupos/llaves de una escuela. Los usan tanto la vista
+# `ActivarCursoView` / `SolicitudAccesoViewSet.aprobar` (sales) como el alta
+# masiva de estudiantes (accounts) para no duplicar la lógica de saldo.
+# ============================================================
+
+class SinSaldoError(Exception):
+    """La escuela no tiene cupos ni llaves suficientes para activar el curso."""
+    def __init__(self, message, code='sin_saldo'):
+        super().__init__(message)
+        self.code = code
+
+
+def tiene_seat(escuela):
+    return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
+
+
+def tiene_key(escuela, keys_needed):
+    return escuela.basic_key >= keys_needed
+
+
+def resolver_source_director(escuela, source, keys_needed):
+    """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela.
+
+    Un seat consume 1 cupo (acceso ilimitado en tiempo). Una llave habilita 7
+    días, así que otorgar `days` días vía key cuesta `keys_needed` = ceil(days/7)
+    llaves.
+    """
+    if source == "seat":
+        return "seat" if tiene_seat(escuela) else None
+    if source == "key":
+        return "key" if tiene_key(escuela, keys_needed) else None
+    # auto: seat primero (más barato), luego key.
+    if tiene_seat(escuela):
+        return "seat"
+    if tiene_key(escuela, keys_needed):
+        return "key"
+    return None
+
+
+def decrementar_saldo(escuela, resolved_source, keys_needed):
+    if resolved_source == "seat":
+        escuela.basic_seats_used += 1
+    else:  # key
+        escuela.basic_key -= keys_needed
+
+
+def mensaje_sin_saldo(source, keys_needed=1):
+    if source == "seat":
+        return "Tu escuela no tiene cupos disponibles en la suscripción."
+    if source == "key":
+        return f"Tu escuela no tiene suficientes llaves disponibles (se requieren {keys_needed})."
+    return "Tu escuela no tiene ni cupos ni llaves disponibles."
+
+
+def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None):
+    """Crea AccessKey + EstudianteCurso según el origen ('seat' | 'key')."""
+    with transaction.atomic():
+        if resolved_source == "seat":
+            access_key = AccessKey.objects.create(
+                valid_until=None,
+                origen="seat",
+            )
+        else:
+            access_key = AccessKey.objects.create(
+                valid_until=timezone.now() + timedelta(days=days),
+                origen="key",
+            )
+        EstudianteCurso.objects.create(
+            estudiante_id=estudiante,
+            curso_id=curso,
+            access_key_id=access_key,
+        )
+    return access_key
+
+
+@transaction.atomic
+def activar_curso_para_estudiante(*, estudiante, curso, days, source, es_admin, escuela=None):
+    """Activa un curso para un estudiante, consumiendo saldo si aplica.
+
+    - Admin (`es_admin=True`): activa sin descontar saldo ('seat' o 'key' según
+      `source`; el default 'auto' cae a 'key').
+    - Director / escuela: bloquea la fila de la escuela (`select_for_update`),
+      resuelve seat/key con `source`, descuenta `ceil(days/7)` llaves o 1 cupo y
+      crea la inscripción. Si no hay saldo → `SinSaldoError`.
+
+    Devuelve la `AccessKey` creada. Es atómico: si algo falla, no descuenta.
+    """
+    if es_admin:
+        resolved = "seat" if source == "seat" else "key"
+        return asignar_por_source(estudiante, curso, days, resolved)
+
+    if escuela is None:
+        raise SinSaldoError("No se indicó la escuela para descontar el saldo.")
+
+    keys_needed = llaves_para_dias(days)
+    escuela_locked = Escuela.objects.select_for_update().get(pk=escuela.pk)
+    resolved = resolver_source_director(escuela_locked, source, keys_needed)
+    if resolved is None:
+        raise SinSaldoError(mensaje_sin_saldo(source, keys_needed))
+    decrementar_saldo(escuela_locked, resolved, keys_needed)
+    escuela_locked.save()
+    return asignar_por_source(estudiante, curso, days, resolved)
+
+
 def _aplicar_efectos_a_escuela(escuela_id: int, producto, is_director: bool):
     """Aplica accesos / contadores de llaves a la escuela bajo lock de fila."""
     if not is_director or escuela_id is None:

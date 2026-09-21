@@ -32,7 +32,8 @@ def make_student(email="est@example.com", hearts=5):
 
 
 def make_curso(nombre="Curso Demo"):
-    return Curso.objects.create(nombre=nombre, descripcion="d", costo=0, codigo="C1")
+    # El precio del curso vive en PlanCurso (schools); `Curso.costo` fue eliminado.
+    return Curso.objects.create(nombre=nombre, descripcion="d", codigo="C1")
 
 
 def make_ejercicio(curso=None, leccion=None, categoria=None, correcta="a"):
