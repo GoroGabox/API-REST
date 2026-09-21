@@ -35,6 +35,32 @@ from content_pipeline.processors.lesson_generator import (
 # Tope de fuente por lección (~2k tokens): mantiene el costo bajo y el foco.
 _MAX_SOURCE_CHARS = 8_000
 
+# Presupuesto de salida del cuerpo. La lección tiene 9 secciones; 1800 tokens
+# no alcanzaban y algunas quedaban truncadas a mitad de sección. Se sube y,
+# ante corte por `max_tokens` o secciones faltantes, se reintenta con más margen.
+_BODY_MAX_TOKENS = 3_200
+_BODY_MAX_TOKENS_RETRY = 4_096
+
+# Encabezados obligatorios (mismo set y orden que pide LESSON_SYSTEM, sin
+# "## Fuente" que se agrega después de forma determinista). Se usan para
+# detectar cuerpos incompletos (truncados o con secciones omitidas por el LLM).
+_REQUIRED_SECTIONS = (
+    "## Objetivo",
+    "## Introducción",
+    "## Desarrollo",
+    "## Aplicación práctica",
+    "## Puntos clave",
+    "## Ejemplo aplicado",
+    "## Errores frecuentes",
+    "## Actividad breve",
+    "## Resumen",
+)
+
+
+def _missing_sections(body: str) -> list[str]:
+    """Encabezados obligatorios ausentes en el cuerpo redactado."""
+    return [heading for heading in _REQUIRED_SECTIONS if heading not in body]
+
 LESSON_SYSTEM = """\
 Eres un redactor pedagógico experto en cursos de conducción en Chile. Escribes
 lecciones e-learning claras, en español neutro, para estudiantes adultos.
@@ -139,6 +165,44 @@ def _source_for_prompt(segments: list[dict[str, Any]]) -> str:
     return shorten_text(text, _MAX_SOURCE_CHARS) if text else ""
 
 
+def _complete_lesson_body(
+    *,
+    system: str,
+    user: str,
+    client: LLMClient,
+    model: str,
+) -> str:
+    """Redacta el cuerpo con LLM, validando que esté completo.
+
+    Detecta dos formas de cuerpo incompleto que el SDK NO reporta como error:
+    corte por `max_tokens` (`resp.truncated`) y secciones obligatorias
+    ausentes. Ante cualquiera, reintenta una vez con más presupuesto de salida;
+    si sigue incompleto, lanza para que el llamador degrade al extractivo.
+    """
+    last_error = "cuerpo vacío"
+    for max_tokens in (_BODY_MAX_TOKENS, _BODY_MAX_TOKENS_RETRY):
+        resp = client.complete_meta(
+            system=system,
+            user=user,
+            max_tokens=max_tokens,
+            model=model,
+            temperature=0.5,
+        )
+        body = resp.text
+        if not body.strip():
+            last_error = "cuerpo vacío"
+            continue
+        if resp.truncated:
+            last_error = "cuerpo truncado por max_tokens"
+            continue
+        missing = _missing_sections(body)
+        if missing:
+            last_error = f"secciones faltantes: {', '.join(missing)}"
+            continue
+        return body
+    raise ValueError(last_error)
+
+
 def _write_body(
     *,
     title: str,
@@ -157,7 +221,7 @@ def _write_body(
     if not fuente:
         fuente = "(Sin extractos mapeados para este tema en el material fuente.)"
     try:
-        body = client.complete(
+        body = _complete_lesson_body(
             system=LESSON_SYSTEM.replace("{titulo}", title),
             user=LESSON_USER.format(
                 tema=tema,
@@ -166,12 +230,9 @@ def _write_body(
                 fuente=fuente,
                 titulo=title,
             ),
-            max_tokens=1800,
+            client=client,
             model=model,
-            temperature=0.5,
         )
-        if not body.strip():
-            raise ValueError("cuerpo vacío")
         # Cita de páginas determinista (trazabilidad exacta, no del LLM).
         return f"{body.rstrip()}\n\n## Fuente\n{_source_markdown(sources, source_name)}"
     except Exception:
@@ -189,16 +250,20 @@ def _write_quiz(
 ) -> dict[str, Any]:
     fuente = _source_for_prompt(segments) or "(Sin extractos; evalúa lo general de la unidad.)"
     try:
-        raw = client.complete(
+        resp = client.complete_meta(
             system=QUIZ_SYSTEM,
             user=QUIZ_USER.format(
                 unidad=unidad_nombre, temas=", ".join(temas), fuente=fuente
             ),
-            max_tokens=1500,
+            max_tokens=2_000,
             model=model,
             temperature=0.3,
         )
-        data = parse_json_object(raw)
+        # Un JSON truncado puede parsear con la última pregunta corrupta: se
+        # descarta y se cae al quiz extractivo en vez de guardar basura.
+        if resp.truncated:
+            raise ValueError("quiz truncado por max_tokens")
+        data = parse_json_object(resp.text)
         questions = data.get("questions")
         if isinstance(questions, list) and questions:
             return {"questions": questions, "passing_score": int(data.get("passing_score", 75))}

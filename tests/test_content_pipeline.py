@@ -2,8 +2,13 @@
 
 from pathlib import Path
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
+from content_pipeline.llm.client import LLMResponse
+from content_pipeline.processors.llm_lesson_writer import (
+    _REQUIRED_SECTIONS,
+    _write_body,
+)
 from content_pipeline.exporters.django_importer import import_a2_course
 from content_pipeline.exporters.json_exporter import read_json
 from content_pipeline.processors.clean_text import clean_extracted_text, hash_text_fragment
@@ -316,4 +321,96 @@ Libro del Nuevo Conductor Clase A2, páginas 1-2."""
         self.assertFalse(result.is_valid)
         self.assertIn("Lección no publicable", result.report)
         self.assertIn("mapeo", result.report.casefold())
+
+
+def _full_body(marker: str = "ok") -> str:
+    """Cuerpo de lección con todas las secciones obligatorias."""
+    parts = [f"# Título {marker}"]
+    for heading in _REQUIRED_SECTIONS:
+        parts.append(f"{heading}\nContenido {marker} para {heading}.")
+    return "\n\n".join(parts)
+
+
+class _FakeLLM:
+    """Cliente LLM falso: devuelve respuestas predefinidas y registra los
+    presupuestos de tokens con que fue llamado."""
+
+    def __init__(self, responses: list[LLMResponse]):
+        self._responses = list(responses)
+        self.budgets: list[int] = []
+
+    def complete_meta(self, *, max_tokens: int, **_kwargs) -> LLMResponse:
+        self.budgets.append(max_tokens)
+        return self._responses.pop(0)
+
+
+class LessonBodyTruncationTests(SimpleTestCase):
+    def _context(self):
+        return build_lesson_context(
+            "Los accidentes de tránsito",
+            "Los accidentes de tránsito",
+            "Legislación de Tránsito",
+            0,
+            1,
+            [],
+            [],
+        )
+
+    def _write(self, client):
+        return _write_body(
+            title="Los accidentes de tránsito",
+            tema="Los accidentes de tránsito",
+            unidad_nombre="Legislación de Tránsito",
+            objetivos=["Reconocer factores de riesgo"],
+            segments=[],
+            sources=[],
+            source_name="Libro del Nuevo Conductor",
+            client=client,
+            model="fake-model",
+            context=self._context(),
+        )
+
+    def test_complete_body_gets_fuente_appended(self):
+        client = _FakeLLM([LLMResponse(_full_body(), stop_reason="end_turn")])
+        body = self._write(client)
+        self.assertIn("## Fuente", body)
+        self.assertEqual(client.budgets, [3_200])  # sin reintento
+
+    def test_truncated_first_attempt_retries_with_more_budget(self):
+        client = _FakeLLM(
+            [
+                LLMResponse(_full_body("cortado")[:120], stop_reason="max_tokens"),
+                LLMResponse(_full_body("completo"), stop_reason="end_turn"),
+            ]
+        )
+        body = self._write(client)
+        self.assertIn("completo", body)
+        self.assertIn("## Fuente", body)
+        self.assertEqual(client.budgets, [3_200, 4_096])  # reintentó con más margen
+
+    def test_persistent_truncation_falls_back_to_extractive(self):
+        client = _FakeLLM(
+            [
+                LLMResponse("# T\n\n## Objetivo\ncortado", stop_reason="max_tokens"),
+                LLMResponse("# T\n\n## Objetivo\ncortado de nuevo", stop_reason="max_tokens"),
+            ]
+        )
+        body = self._write(client)
+        # El extractivo neutral emite las 9 secciones completas + la fuente.
+        for heading in _REQUIRED_SECTIONS:
+            self.assertIn(heading, body)
+        self.assertIn("## Fuente", body)
+        self.assertEqual(len(client.budgets), 2)  # agotó ambos intentos
+
+    def test_missing_section_is_treated_as_incomplete(self):
+        incomplete = _full_body().replace("## Resumen", "## OtroTitulo")
+        client = _FakeLLM(
+            [
+                LLMResponse(incomplete, stop_reason="end_turn"),
+                LLMResponse(_full_body("segundo"), stop_reason="end_turn"),
+            ]
+        )
+        body = self._write(client)
+        self.assertIn("segundo", body)
+        self.assertEqual(client.budgets, [3_200, 4_096])
 

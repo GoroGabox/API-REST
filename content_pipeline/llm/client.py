@@ -111,6 +111,22 @@ class LLMError(RuntimeError):
     pass
 
 
+@dataclass
+class LLMResponse:
+    """Resultado de una llamada al LLM con metadatos de terminación.
+
+    `truncated` es True cuando el modelo cortó por `max_tokens` (respuesta
+    incompleta): el texto NO debe tratarse como una respuesta completa.
+    """
+
+    text: str
+    stop_reason: str | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.stop_reason == "max_tokens"
+
+
 def _is_temperature_unsupported(exc: Exception) -> bool:
     """True si el error del SDK indica que el modelo no acepta `temperature`.
 
@@ -164,7 +180,7 @@ class LLMClient:
         return self._client
 
     # -- llamada ---------------------------------------------------------
-    def complete(
+    def complete_meta(
         self,
         *,
         system: str,
@@ -174,7 +190,12 @@ class LLMClient:
         temperature: float = 0.4,
         cache_system: bool = True,
         retries: int = 2,
-    ) -> str:
+    ) -> LLMResponse:
+        """Como `complete`, pero devuelve el texto junto con `stop_reason`.
+
+        Permite al llamador detectar respuestas truncadas por `max_tokens`
+        (que el SDK no señala como error) y decidir reintentar o degradar.
+        """
         client = self._ensure()
         mdl = model or self.model
         system_param = (
@@ -195,9 +216,10 @@ class LLMClient:
             try:
                 resp = client.messages.create(**kwargs)
                 self.meter.record(resp.usage, mdl)
-                return "".join(
+                text = "".join(
                     block.text for block in resp.content if getattr(block, "type", None) == "text"
                 ).strip()
+                return LLMResponse(text=text, stop_reason=getattr(resp, "stop_reason", None))
             except Exception as exc:  # reintenta ante rate limit / red
                 last_err = exc
                 # Modelo que no acepta `temperature`: reintenta de inmediato sin
@@ -208,6 +230,10 @@ class LLMClient:
                 if attempt < retries:
                     time.sleep(min(2 ** attempt, 8))
         raise LLMError(f"Fallo la llamada al LLM tras {retries + 1} intentos: {last_err}") from last_err
+
+    def complete(self, **kwargs) -> str:
+        """Texto de la respuesta (descarta metadatos). Ver `complete_meta`."""
+        return self.complete_meta(**kwargs).text
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
