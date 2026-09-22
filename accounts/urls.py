@@ -85,7 +85,7 @@ urlpatterns = [
     path("me/certificates/", MisCertificadosView.as_view(), name="mis_certificados"),
     path("certificates/<uuid:codigo>/verify/", VerifyCertificadoView.as_view(), name="verify_certificado"),
 
-    # Examen final: estado / elegibilidad (puede rendir, cooldown, plazo)
+    # Examen final: estado / elegibilidad (puede rendir, plazo, curso completado)
     path("me/courses/<int:curso_id>/final-exam/", ExamenFinalElegibilidadView.as_view(), name="examen_final_elegibilidad"),
 
     # Perfil + gamificación

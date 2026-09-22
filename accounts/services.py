@@ -372,20 +372,11 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     prueba.completada_en = timezone.now()
     prueba.save(update_fields=['total_correctas', 'score', 'aprobado', 'completada_en'])
 
-    # ---- Gamificación: hearts, XP, streak, logros ----
+    # ---- Gamificación: XP, streak, logros ----
     from . import gamification
     user = prueba.estudiante
-    incorrectas = total - correctas
 
     xp_ganado = 0
-    # Vidas: se pierde 1 corazón por cada respuesta incorrecta en cualquier
-    # prueba externa (Gimnasio temática/simulacro y Examen Final), salvo la
-    # rápida ("calentamiento", sin riesgo). Los quizzes DENTRO de una lección
-    # no crean una Prueba, así que nunca llegan aquí y no descuentan vidas.
-    consume_corazones = prueba.tipo != 'rapida'
-    if consume_corazones and incorrectas > 0:
-        gamification.consumir_corazones(user, incorrectas)
-
     if prueba.modalidad == 'evaluacion':
         xp_ganado = correctas * gamification.XP_POR_CORRECTA_EVALUACION
         if aprobado:
@@ -407,7 +398,6 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
         "total": total,
         "detalles": detalles,
         "xp_ganado": xp_ganado,
-        "corazones_restantes": user.hearts,
         "streak_actual": user.streak_current,
         "logros_nuevos": nuevos_logros,
     }
@@ -442,22 +432,17 @@ def elegibilidad_examen_final(user, curso) -> dict:
     Reglas:
     - Si ya tiene certificado del curso → curso finalizado, no hay más intentos.
     - Si el acceso al curso venció (AccessKey.valid_until pasado) → sin intentos.
-    - Si rindió el examen final hace < FINAL_EXAM_RETRY_HOURS → en cooldown.
-    - En cualquier otro caso → puede rendir.
+    - En cualquier otro caso → puede rendir (sin espera entre intentos).
 
     Devuelve dict:
         {
           'puede': bool,
-          'razon': 'ok'|'curso_completado'|'plazo_vencido'|'cooldown',
-          'retry_after_seconds': int|None,   # sólo en cooldown
-          'proximo_intento': datetime|None,  # sólo en cooldown
+          'razon': 'ok'|'curso_completado'|'plazo_vencido',
           'expira_en': datetime|None,        # fin de plazo del curso (None = sin límite)
           'ultimo_intento': datetime|None,
         }
     """
-    from datetime import timedelta
     from sales.models import EstudianteCurso
-    from . import gamification
 
     now = timezone.now()
 
@@ -475,8 +460,6 @@ def elegibilidad_examen_final(user, curso) -> dict:
     base = {
         'puede': False,
         'razon': 'ok',
-        'retry_after_seconds': None,
-        'proximo_intento': None,
         'expira_en': expira_en,
         'ultimo_intento': None,
     }
@@ -489,7 +472,7 @@ def elegibilidad_examen_final(user, curso) -> dict:
     if expira_en is not None and now > expira_en:
         return {**base, 'razon': 'plazo_vencido'}
 
-    # Cooldown desde la última entrega del examen final de este curso.
+    # Última entrega del examen final (informativo, no restringe reintentos).
     ultima = (
         Prueba.objects
         .filter(
@@ -502,16 +485,6 @@ def elegibilidad_examen_final(user, curso) -> dict:
     )
     if ultima and ultima.completada_en:
         base['ultimo_intento'] = ultima.completada_en
-        cooldown = timedelta(hours=gamification.FINAL_EXAM_RETRY_HOURS)
-        transcurrido = now - ultima.completada_en
-        if transcurrido < cooldown:
-            restante = cooldown - transcurrido
-            return {
-                **base,
-                'razon': 'cooldown',
-                'retry_after_seconds': int(restante.total_seconds()),
-                'proximo_intento': ultima.completada_en + cooldown,
-            }
 
     return {**base, 'puede': True, 'razon': 'ok'}
 

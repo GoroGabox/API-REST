@@ -297,19 +297,13 @@ class GamificationTests(APITestCase):
                                 {"respuestas": respuestas}, format='json')
 
     def test_iniciar_prueba_no_consume_recursos(self):
-        """Energy removida del modelo: iniciar no consume nada."""
-        from accounts.gamification import MAX_HEARTS
-        hearts_before = self.user.hearts
+        """Energy y vidas removidas del modelo: iniciar no consume nada."""
         r = self._generar(modalidad='practica')
         self.assertEqual(r.status_code, 201, r.data)
-        self.user.refresh_from_db()
-        # Sin energy: lo que importa es que hearts no cambien y el modelo
-        # ya no expone `energy`.
-        self.assertEqual(self.user.hearts, hearts_before)
         self.assertFalse(hasattr(self.user, 'energy'))
+        self.assertFalse(hasattr(self.user, 'hearts'))
 
-    def test_evaluacion_completa_resta_corazones_por_incorrecta(self):
-        from accounts.gamification import MAX_HEARTS
+    def test_evaluacion_completa_toda_mal_no_expone_corazones(self):
         # Para tipo='completa' necesitamos 35+ ejercicios. Creamos extras.
         from schools.models import Ejercicio, Categoria
         cat = Categoria.objects.first()
@@ -324,27 +318,8 @@ class GamificationTests(APITestCase):
         # Responder todo incorrecto (b en vez de a)
         r2 = self._submit(r.data['prueba_id'], preguntas, respuesta='b')
         self.assertEqual(r2.status_code, 200, r2.data)
-        # 35 incorrectas -> hearts saturado en 0
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.hearts, 0)
-        self.assertEqual(r2.data['corazones_restantes'], 0)
-
-    def test_practica_no_resta_corazones(self):
-        from accounts.gamification import MAX_HEARTS
-        r = self._generar(modalidad='practica')
-        preguntas = r.data['preguntas']
-        self._submit(r.data['prueba_id'], preguntas, respuesta='b')
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.hearts, MAX_HEARTS)
-
-    def test_evaluacion_rapida_no_resta_corazones(self):
-        """Regla nueva: prueba rapida nunca consume vidas."""
-        from accounts.gamification import MAX_HEARTS
-        r = self._generar(modalidad='evaluacion', tipo='rapida')
-        preguntas = r.data['preguntas']
-        self._submit(r.data['prueba_id'], preguntas, respuesta='b')
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.hearts, MAX_HEARTS)
+        self.assertFalse(r2.data['aprobado'])
+        self.assertNotIn('corazones_restantes', r2.data)
 
     def test_xp_por_correcta_evaluacion(self):
         from accounts.gamification import XP_POR_CORRECTA_EVALUACION, XP_BONUS_APROBAR_EVALUACION
@@ -380,7 +355,7 @@ class MeEndpointsTests(APITestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data['email'], self.user.email)
         self.assertIn('stats', r.data)
-        self.assertIn('hearts', r.data['stats'])
+        self.assertNotIn('hearts', r.data['stats'])
         self.assertIn('level', r.data['stats'])
 
     def test_patch_me_actualiza_campos_de_perfil(self):
@@ -402,7 +377,8 @@ class MeEndpointsTests(APITestCase):
     def test_get_me_stats(self):
         r = self.client.get(reverse('me_stats'))
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.data['hearts'], 5)
+        self.assertNotIn('hearts', r.data)
+        self.assertNotIn('max_hearts', r.data)
         # energy fue removido del modelo, no debe aparecer en la respuesta.
         self.assertNotIn('energy', r.data)
         self.assertNotIn('max_energy', r.data)

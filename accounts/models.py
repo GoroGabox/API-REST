@@ -86,10 +86,6 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     is_estudiante = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True, null=True)
 
-    # Gamificación — recursos consumibles
-    hearts = models.IntegerField(default=5)             # vidas; -1 por error en EVALUACIÓN
-    next_heart_regen_at = models.DateTimeField(null=True, blank=True)
-
     # Gamificación — progresión
     xp = models.IntegerField(default=0)                 # acumulado total
     streak_current = models.IntegerField(default=0)     # días seguidos con actividad
@@ -245,10 +241,10 @@ class Prueba(models.Model):
         ('categoria', 'Por categoría'),
     ]
     MODALIDAD_CHOICES = [
-        # práctica: para entrenar; consume "energía". No otorga certificado.
+        # práctica: para entrenar. No otorga certificado.
         ('practica', 'Práctica'),
-        # evaluación: gating de unidad o examen final del curso; consume
-        # "corazones" al fallar. Si tipo='completa' y aprobado → certificado.
+        # evaluación: examen final del curso. Si tipo='completa' y aprobado
+        # → certificado.
         ('evaluacion', 'Evaluación'),
     ]
 

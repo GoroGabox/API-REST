@@ -1,10 +1,9 @@
 """Tests de flujos críticos de gamificación y evaluación del estudiante.
 
 Cubre:
-  - Economía de vidas: ganar por lección, gastar por error en tests externos,
-    rápida sin costo, gate a 0 vidas, regeneración pasiva, examen final exento.
-  - Examen final del curso: preguntas SOLO del curso, umbral 80%, cooldown 24h,
-    curso completado tras certificado.
+  - Sin vidas: nada las otorga, consume ni bloquea.
+  - Examen final del curso: preguntas SOLO del curso, umbral 80%, reintento
+    sin espera, curso completado tras certificado.
   - Emisión de certificado al aprobar el examen final.
 
 Correr:  manage.py test accounts.tests_gamification --settings=autotestAPI.settings.test
@@ -20,13 +19,11 @@ from accounts import gamification, services
 from schools.models import Curso, Categoria, Leccion, Ejercicio
 
 
-def make_student(email="est@example.com", hearts=5):
+def make_student(email="est@example.com"):
     u = Usuario.objects.create_user(
         email=email, nombre="Est", apellido="Test", password="x", is_estudiante=True
     )
     u.is_active = True
-    u.hearts = hearts
-    u.next_heart_regen_at = None
     u.save()
     return u
 
@@ -44,18 +41,19 @@ def make_ejercicio(curso=None, leccion=None, categoria=None, correcta="a"):
     )
 
 
-class VidasEconomyTest(TestCase):
+class SinVidasTest(TestCase):
+    """Las vidas fueron eliminadas: nada las otorga, consume ni bloquea."""
+
     def setUp(self):
         self.cat = Categoria.objects.create(nombre="General")
 
-    def test_ganar_corazones_topa_en_maximo(self):
-        u = make_student(hearts=4)
-        self.assertEqual(gamification.ganar_corazones(u, 1), 5)
-        # No pasa del máximo.
-        self.assertEqual(gamification.ganar_corazones(u, 1), 5)
+    def test_modelo_sin_vidas(self):
+        u = make_student()
+        self.assertFalse(hasattr(u, "hearts"))
+        self.assertFalse(hasattr(u, "next_heart_regen_at"))
 
-    def test_completar_leccion_otorga_una_vida_idempotente(self):
-        u = make_student(hearts=3)
+    def test_completar_leccion_idempotente(self):
+        u = make_student()
         curso = make_curso()
         leccion = Leccion.objects.create(curso=curso, nombre="L1", posicion=1, tipo="texto")
         client = APIClient()
@@ -64,57 +62,22 @@ class VidasEconomyTest(TestCase):
         r1 = client.post("/api/v1/accounts/estudiante-leccion/",
                          {"curso": curso.id, "leccion": leccion.id}, format="json")
         self.assertEqual(r1.status_code, 201)
-        u.refresh_from_db()
-        self.assertEqual(u.hearts, 4)  # +1
-
-        # Repost de la misma lección: idempotente (200) y NO otorga otra vida.
+        # Repost de la misma lección: idempotente (200).
         r2 = client.post("/api/v1/accounts/estudiante-leccion/",
                          {"curso": curso.id, "leccion": leccion.id}, format="json")
         self.assertEqual(r2.status_code, 200)
-        u.refresh_from_db()
-        self.assertEqual(u.hearts, 4)
 
-    def test_test_externo_gasta_una_vida_por_error(self):
-        u = make_student(hearts=5)
+    def test_submit_no_expone_corazones(self):
+        u = make_student()
         ejs = [make_ejercicio(categoria=self.cat) for _ in range(3)]
         prueba = services.crear_prueba_con_ejercicios(
             u, ejs, tipo="completa", modalidad="practica"
         )
-        # 1 correcta ('a'), 2 incorrectas ('b') → -2 vidas.
-        respuestas = {ejs[0].id: "a", ejs[1].id: "b", ejs[2].id: "b"}
-        services.submit_prueba(prueba, respuestas)
-        u.refresh_from_db()
-        self.assertEqual(u.hearts, 3)
+        res = services.submit_prueba(prueba, {e.id: "b" for e in ejs})  # todas mal
+        self.assertNotIn("corazones_restantes", res)
 
-    def test_rapida_no_gasta_vidas(self):
-        u = make_student(hearts=5)
-        ejs = [make_ejercicio(categoria=self.cat) for _ in range(3)]
-        prueba = services.crear_prueba_con_ejercicios(u, ejs, tipo="rapida", modalidad="practica")
-        respuestas = {e.id: "z" for e in ejs}  # todas mal
-        services.submit_prueba(prueba, respuestas)
-        u.refresh_from_db()
-        self.assertEqual(u.hearts, 5)  # sin cambios
-
-    def test_regeneracion_pasiva(self):
-        u = make_student(hearts=0)
-        u.next_heart_regen_at = timezone.now() - timedelta(hours=5)  # 2h/vida → +3
-        u.save(update_fields=["next_heart_regen_at"])
-        gamification.regenerar_recursos(u)
-        self.assertEqual(u.hearts, 3)
-
-    def test_gate_bloquea_gimnasio_sin_vidas(self):
-        u = make_student(hearts=0)
-        client = APIClient()
-        client.force_authenticate(u)
-        # Simulacro (completa/practica) con 0 vidas → 403 sin_vidas (antes de
-        # seleccionar preguntas, así que no requiere banco).
-        r = client.post("/api/v1/accounts/tests/generate/", {"tipo": "completa"}, format="json")
-        self.assertEqual(r.status_code, 403)
-        self.assertEqual(r.json().get("razon"), "sin_vidas")
-
-    def test_rapida_no_esta_bloqueada_por_vidas(self):
-        u = make_student(hearts=0)
-        # Banco suficiente para rápida (10).
+    def test_rapida_generable(self):
+        u = make_student()
         for _ in range(10):
             make_ejercicio(categoria=self.cat)
         client = APIClient()
@@ -122,8 +85,8 @@ class VidasEconomyTest(TestCase):
         r = client.post("/api/v1/accounts/tests/generate/", {"tipo": "rapida"}, format="json")
         self.assertEqual(r.status_code, 201)
 
-    def test_examen_final_exento_del_gate_de_vidas(self):
-        u = make_student(hearts=0)
+    def test_examen_final_generable(self):
+        u = make_student()
         curso = make_curso()
         for _ in range(5):
             make_ejercicio(curso=curso, categoria=self.cat)
@@ -134,9 +97,7 @@ class VidasEconomyTest(TestCase):
             {"tipo": "completa", "modalidad": "evaluacion", "curso_id": curso.id},
             format="json",
         )
-        # No bloqueado por vidas (el examen final tiene su propio gate).
         self.assertEqual(r.status_code, 201)
-        self.assertNotEqual(r.json().get("razon"), "sin_vidas")
 
 
 class ExamenFinalTest(TestCase):
@@ -179,18 +140,19 @@ class ExamenFinalTest(TestCase):
         self.assertTrue(res["aprobado"])
         self.assertTrue(Certificado.objects.filter(estudiante=u, curso=self.curso).exists())
 
-    def test_cooldown_tras_entrega_y_curso_completado_tras_cert(self):
+    def test_reintento_inmediato_y_curso_completado_tras_cert(self):
         u = make_student()
-        # Entrega reciente (reprobada) → cooldown.
+        # Entrega reciente (reprobada) → puede reintentar de inmediato.
         p = Prueba.objects.create(
             estudiante=u, curso=self.curso, tipo="completa", modalidad="evaluacion", aprobado=False
         )
-        p.completada_en = timezone.now() - timedelta(hours=2)
+        p.completada_en = timezone.now() - timedelta(minutes=1)
         p.save(update_fields=["completada_en"])
         elig = services.elegibilidad_examen_final(u, self.curso)
-        self.assertFalse(elig["puede"])
-        self.assertEqual(elig["razon"], "cooldown")
-        self.assertGreater(elig["retry_after_seconds"], 0)
+        self.assertTrue(elig["puede"])
+        self.assertEqual(elig["razon"], "ok")
+        self.assertEqual(elig["ultimo_intento"], p.completada_en)
+        self.assertNotIn("retry_after_seconds", elig)
 
         # Con certificado → curso completado (sin más intentos).
         Certificado.objects.create(estudiante=u, curso=self.curso, prueba=p)

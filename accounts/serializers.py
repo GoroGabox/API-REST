@@ -157,12 +157,8 @@ class UsuarioMeSerializer(serializers.ModelSerializer):
 
     def get_stats(self, obj):
         from . import gamification
-        gamification.regenerar_recursos(obj)
         nivel = gamification.nivel_para_xp(obj.xp)
         return {
-            'hearts': obj.hearts,
-            'max_hearts': gamification.MAX_HEARTS,
-            'next_heart_regen_at': obj.next_heart_regen_at,
             'xp': obj.xp,
             **nivel,
             'streak_current': obj.streak_current,
