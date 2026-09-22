@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Count
 from django.http import StreamingHttpResponse, HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 
@@ -699,7 +699,14 @@ class EditarEstudianteView(APIView):
 
 class CursoViewSet(viewsets.ModelViewSet):
     # Prefetch de planes para exponer precio_unitario/planes sin N+1.
-    queryset = Curso.objects.all().prefetch_related('planes')
+    # Anotamos cantidad_lecciones para que el catálogo público (usado por el
+    # panel del estudiante B2C) pueda calcular el % de progreso; sin esto el
+    # front recibía total=0 y mostraba siempre 0% "sin comenzar".
+    queryset = (
+        Curso.objects.all()
+        .annotate(cantidad_lecciones=Count('leccion'))
+        .prefetch_related('planes')
+    )
     serializer_class = CursoSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['is_profesional']

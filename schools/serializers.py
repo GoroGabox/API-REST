@@ -22,6 +22,10 @@ class CursoSerializer(serializers.ModelSerializer):
     precio_unitario = serializers.IntegerField(min_value=1, required=False, write_only=True)
     # Lista de planes activos (para el detalle /explore/[id]).
     planes = serializers.SerializerMethodField()
+    # Nº de lecciones (anotado en CursoViewSet con Count('leccion')). Lo necesita
+    # el panel del estudiante para el % de progreso; default 0 en usos anidados
+    # sin anotación. read_only → no interfiere con create/update.
+    cantidad_lecciones = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Curso
