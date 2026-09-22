@@ -1230,11 +1230,16 @@ class CourseGenerateView(APIView):
         is_profesional = str(request.data.get("is_profesional", "")).lower() in (
             "true", "1", "on", "yes",
         )
-        try:
-            max_lecciones = int(request.data.get("max_lecciones") or 20)
-        except (TypeError, ValueError):
-            max_lecciones = 20
-        max_lecciones = max(1, min(max_lecciones, 100))
+        # Sin valor => None: el pipeline auto-dimensiona el curso al tamaño del
+        # libro. Con valor => techo (acotado al máximo del sistema).
+        raw_max = request.data.get("max_lecciones")
+        if raw_max in (None, ""):
+            max_lecciones = None
+        else:
+            try:
+                max_lecciones = max(1, min(int(raw_max), 100))
+            except (TypeError, ValueError):
+                max_lecciones = None
         idioma = (request.data.get("idioma") or "es").strip() or "es"
         modo = (request.data.get("modo") or "draft").strip() or "draft"
         source_name = getattr(contenido, "name", None) or f"Contenido: {nombre}"

@@ -88,6 +88,26 @@ class LLMContentManifestTests(TestCase):
         self.assertEqual(len(manifest["unidades"]), 2)
         self.assertEqual(manifest["unidades"][0]["temas"], ["Tema 1", "Tema 2"])
 
+    def test_categoria_se_clasifica_en_taxonomia(self):
+        # El path de contenido ahora clasifica cada unidad en la lista cerrada:
+        # una variante conocida resuelve a su canónica; algo libre cae a "General".
+        payload = {
+            "curso": {"descripcion": "d"},
+            "unidades": [
+                {"orden": 1, "nombre": "Mecánica del auto",
+                 "categoria": "Mecánica y mantención preventiva", "temas": ["T1"]},
+                {"orden": 2, "nombre": "Cosas varias",
+                 "categoria": "Título inventado del libro", "temas": ["T2"]},
+            ],
+        }
+        manifest = build_manifest_from_content_llm(
+            _segments(5), nombre="Y", codigo="CY", is_profesional=True,
+            max_lecciones=20, client=_StubClient(payload),
+        )
+        cats = [u["categoria"] for u in manifest["unidades"]]
+        self.assertEqual(cats[0], "Mecánica y Mantención del Vehículo")
+        self.assertEqual(cats[1], "General")
+
     def test_llm_sin_unidades_falla(self):
         # Tras agotar los reintentos, se propaga como LLMError.
         with self.assertRaises(LLMError):

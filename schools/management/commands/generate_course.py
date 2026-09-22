@@ -20,38 +20,42 @@ from content_pipeline.extractors.pdf_text_extractor import extract_pdf_pages
 from content_pipeline.llm.client import LLMClient, default_model, draft_model
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
 from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
-from content_pipeline.processors.manifest_builder import build_manifest_from_temario
 from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
 )
-from content_pipeline.processors.manifest_llm import build_manifest_from_temario_llm
 from content_pipeline.processors.map_topics import map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
+from content_pipeline.services.course_planning import (
+    extract_temario_topics,
+    resolve_max_lecciones,
+    truncation_notes,
+    validate_topics_present,
+)
 
 
 class Command(BaseCommand):
     help = (
-        "Genera un curso (manifest + lecciones) desde PDFs y lo escribe a un JSON, "
-        "SIN tocar la base de datos. Con --temario usa esa estructura; sin él, "
-        "infiere la estructura del propio contenido. Correr en local con "
-        "ANTHROPIC_API_KEY; luego subir el JSON con `import_course`."
+        "Genera un curso (manifest + lecciones) desde el CONTENIDO del libro y lo "
+        "escribe a un JSON, SIN tocar la base de datos. La estructura sale del libro "
+        "completo; --temario (opcional) se usa solo para VALIDAR que sus temas estén "
+        "en el curso. Correr en local con ANTHROPIC_API_KEY; luego subir con `import_course`."
     )
 
     def add_arguments(self, parser):
         parser.add_argument("--temario", default=None,
-                            help="PDF del temario (estructura). Opcional: sin él, la estructura se "
-                                 "infiere del contenido. Recomendado para cursos regulados (A2/A4…).")
+                            help="PDF del temario (opcional). Ya NO define la estructura: se usa como "
+                                 "checklist para validar que sus temas aparezcan en el curso generado.")
         parser.add_argument("--contenido", required=True, help="PDF del contenido fuente (material).")
         parser.add_argument("--nombre", required=True, help="Nombre del curso.")
         parser.add_argument("--codigo", required=True, help="Código del curso (<=10 chars).")
         parser.add_argument("--costo", type=int, required=True, help="Costo del curso (> 0).")
         parser.add_argument("--out", required=True, help="Ruta del JSON de salida ({manifest, lessons}).")
         parser.add_argument("--is-profesional", action="store_true", help="Marca el curso como profesional.")
-        parser.add_argument("--max-lecciones", type=int, default=20)
+        parser.add_argument("--max-lecciones", type=int, default=None,
+                            help="Techo de lecciones. Por defecto se auto-dimensiona al tamaño del libro.")
         parser.add_argument("--unidades", type=int, default=None,
-                            help="Solo sin --temario: número de unidades a inferir del contenido "
-                                 "(por defecto lo decide el generador).")
+                            help="Número de unidades a inferir del contenido (por defecto lo decide el generador).")
         parser.add_argument("--idioma", default="es")
         parser.add_argument("--modo", choices=["draft", "final"], default="draft",
                             help="draft usa el modelo barato para las lecciones; final usa el modelo principal.")
@@ -72,7 +76,8 @@ class Command(BaseCommand):
         if len(codigo) > 10:
             raise CommandError("El código no puede superar 10 caracteres.")
         nombre = opts["nombre"].strip()
-        max_lecciones = max(1, min(int(opts["max_lecciones"]), 100))
+        # None => auto-dimensionar al tamaño del libro (resolve_max_lecciones).
+        max_lecciones = opts.get("max_lecciones")
         n_unidades = opts.get("unidades")
         modo = opts["modo"]
         source_name = opts["source_name"] or f"Contenido: {nombre}"
@@ -87,8 +92,8 @@ class Command(BaseCommand):
         else:
             self.stdout.write("IA no configurada (sin ANTHROPIC_API_KEY): generación heurística extractiva.")
 
-        # El contenido se extrae y segmenta primero: es la fuente de las lecciones
-        # y —cuando no hay temario— también de la estructura inferida.
+        # El contenido es la fuente de la ESTRUCTURA (libro completo) y de las
+        # lecciones. El temario, si se pasa, solo se valida al final.
         self.stdout.write("Extrayendo el contenido fuente…")
         content_pages = extract_pdf_pages(contenido_path)
         self.stdout.write(f"{len(content_pages)} páginas de contenido extraídas.")
@@ -96,30 +101,53 @@ class Command(BaseCommand):
         segments = segment_pages(content_pages)
         self.stdout.write(f"{len(segments)} segmentos generados.")
 
-        if temario_path is not None:
-            manifest = self._manifest_desde_temario(
-                temario_path, nombre=nombre, codigo=codigo,
-                is_profesional=opts["is_profesional"], max_lecciones=max_lecciones,
-                use_llm=use_llm, client=client, final_model=final_model,
-            )
-        else:
-            manifest = self._manifest_desde_contenido(
-                segments, nombre=nombre, codigo=codigo,
-                is_profesional=opts["is_profesional"], max_lecciones=max_lecciones,
-                n_unidades=n_unidades, use_llm=use_llm, client=client, final_model=final_model,
-            )
+        # Dimensionar el curso al tamaño del libro (evita recortes hardcodeados).
+        max_lec, origen = resolve_max_lecciones(len(segments), max_lecciones)
+        self.stdout.write(
+            f"Objetivo: hasta {max_lec} lecciones "
+            f"({'fijado por el operador' if origen == 'operador' else 'auto-dimensionado'})."
+        )
+        for nota in truncation_notes(len(segments), max_lec, origen):
+            self.stderr.write(self.style.WARNING(f"⚠ {nota}"))
+
+        # Estructura desde el LIBRO COMPLETO (siempre), no desde el temario.
+        manifest = self._manifest_desde_contenido(
+            segments, nombre=nombre, codigo=codigo,
+            is_profesional=opts["is_profesional"], max_lecciones=max_lec,
+            n_unidades=n_unidades, use_llm=use_llm, client=client, final_model=final_model,
+        )
 
         # El costo lo fija el operador (obligatorio, > 0): sobrescribe el
-        # placeholder del manifest builder.
+        # placeholder del generador de estructura.
         manifest["curso"]["costo"] = costo
 
         n_units = len(manifest["unidades"])
         n_topics = sum(len(u["temas"]) for u in manifest["unidades"])
-        self.stdout.write(f"Estructura: {n_units} unidades · {n_topics} temas.")
+        self.stdout.write(f"Estructura del libro: {n_units} unidades · {n_topics} temas.")
 
         mappings = map_topics_to_segments(manifest, segments)
-        covered = sum(1 for m in mappings if m.get("matched_segments"))
-        self.stdout.write(f"{covered}/{len(mappings)} temas con fuente encontrada.")
+
+        # Temario como checklist: validar que sus temas estén en el curso.
+        if temario_path is not None:
+            self.stdout.write("Leyendo el temario para validación…")
+            temario_pages = extract_pdf_pages(temario_path)
+            expected = extract_temario_topics(
+                temario_pages, nombre=nombre, codigo=codigo,
+                is_profesional=opts["is_profesional"], use_llm=use_llm,
+                client=client, model=final_model,
+            )
+            validacion = validate_topics_present(expected, manifest)
+            self.stdout.write(
+                f"Temario: {len(validacion['present'])}/{validacion['expected']} "
+                f"temas presentes en el curso."
+            )
+            faltantes = validacion["missing"]
+            if faltantes:
+                self.stderr.write(self.style.WARNING(
+                    f"⚠ {len(faltantes)} tema(s) del temario NO representados en el curso del libro:"
+                ))
+                for label in faltantes:
+                    self.stderr.write(self.style.WARNING(f"    - {label}"))
 
         if use_llm:
             self.stdout.write("Redactando lecciones con IA…")
@@ -156,30 +184,10 @@ class Command(BaseCommand):
 
     # -- construcción del manifest ------------------------------------------
 
-    def _manifest_desde_temario(self, temario_path, *, nombre, codigo, is_profesional,
-                                max_lecciones, use_llm, client, final_model):
-        """Estructura a partir del PDF de temario (IA con fallback heurístico)."""
-        self.stdout.write("Leyendo el temario…")
-        temario_pages = extract_pdf_pages(temario_path)
-        if use_llm:
-            self.stdout.write("Interpretando el temario con IA…")
-            try:
-                return build_manifest_from_temario_llm(
-                    temario_pages, nombre=nombre, codigo=codigo,
-                    is_profesional=is_profesional, max_lecciones=max_lecciones,
-                    client=client, model=final_model,
-                )
-            except Exception as exc:  # noqa: BLE001 — degradar a heurística
-                self.stderr.write(f"La IA no pudo interpretar el temario ({exc}); uso heurística.")
-        return build_manifest_from_temario(
-            temario_pages, nombre=nombre, codigo=codigo,
-            is_profesional=is_profesional, max_lecciones=max_lecciones,
-        )
-
     def _manifest_desde_contenido(self, segments, *, nombre, codigo, is_profesional,
                                   max_lecciones, n_unidades, use_llm, client, final_model):
         """Estructura inferida del propio contenido (IA con fallback heurístico)."""
-        self.stdout.write("Sin temario: infiriendo la estructura desde el contenido…")
+        self.stdout.write("Infiriendo la estructura desde el libro completo…")
         if use_llm:
             try:
                 return build_manifest_from_content_llm(

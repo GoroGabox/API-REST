@@ -5,14 +5,19 @@ persist) y lo expone como un *stream* de eventos NDJSON pensado para consumo
 directo por el frontend (`CourseGenerator.js`):
 
     {"event": "step",   "step": str, "message": str, "ts": int}
+    {"event": "warn",   "step": str, "message": str, ..., "ts": int}
     {"event": "lesson", "lesson": LessonPreview,      "ts": int}
     {"event": "done",   "curso": {id, nombre, codigo}, "total": int, "ts": int}
     {"event": "error",  "message": str,                "ts": int}
 
-Con ANTHROPIC_API_KEY usa el LLM para interpretar el temario
-(`manifest_llm`) y redactar las lecciones ancladas a la fuente
-(`llm_lesson_writer`). Sin API key cae al pipeline extractivo determinista
-(`manifest_builder` + `generic_lesson_generator`). El evento ``done`` incluye
+El curso se arma desde el CONTENIDO del libro completo (`manifest_from_content`),
+no desde el temario. El temario se usa como *checklist*: al final se valida que
+sus temas estén representados en el curso generado y se avisa de los faltantes.
+El curso se dimensiona al tamaño del libro (`course_planning`) para no truncarlo.
+
+Con ANTHROPIC_API_KEY usa el LLM para inferir la estructura y redactar las
+lecciones ancladas a la fuente (`llm_lesson_writer`). Sin API key cae al pipeline
+extractivo determinista (`generic_lesson_generator`). El evento ``done`` incluye
 el desglose de tokens/costo de IA cuando aplica.
 """
 from __future__ import annotations
@@ -26,10 +31,18 @@ from content_pipeline.extractors.pdf_text_extractor import extract_pdf_pages
 from content_pipeline.llm.client import LLMClient, default_model, draft_model
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
 from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
-from content_pipeline.processors.manifest_builder import build_manifest_from_temario
-from content_pipeline.processors.manifest_llm import build_manifest_from_temario_llm
+from content_pipeline.processors.manifest_from_content import (
+    build_manifest_from_content,
+    build_manifest_from_content_llm,
+)
 from content_pipeline.processors.map_topics import map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
+from content_pipeline.services.course_planning import (
+    extract_temario_topics,
+    resolve_max_lecciones,
+    truncation_notes,
+    validate_topics_present,
+)
 
 
 def _event(kind: str, **data: Any) -> dict[str, Any]:
@@ -50,13 +63,13 @@ def _lesson_preview(lesson: dict[str, Any]) -> dict[str, Any]:
 
 def generate_course_stream(
     *,
-    temario_path: str | Path,
+    temario_path: str | Path | None,
     contenido_path: str | Path,
     nombre: str,
     codigo: str,
     costo: int,
     is_profesional: bool = False,
-    max_lecciones: int = 20,
+    max_lecciones: int | None = None,
     idioma: str = "es",
     modo: str = "draft",
     source_name: str | None = None,
@@ -87,50 +100,7 @@ def generate_course_stream(
                 message="IA no configurada (sin ANTHROPIC_API_KEY): generación heurística extractiva.",
             )
 
-        yield _event("step", step="temario", message="Leyendo el temario…")
-        temario_pages = extract_pdf_pages(Path(temario_path))
-
-        manifest = None
-        if use_llm:
-            yield _event("step", step="temario_ia", message="Interpretando el temario con IA…")
-            try:
-                manifest = build_manifest_from_temario_llm(
-                    temario_pages,
-                    nombre=nombre,
-                    codigo=codigo,
-                    is_profesional=is_profesional,
-                    max_lecciones=max_lecciones,
-                    client=llm_client,
-                    model=final_model,
-                )
-            except Exception as exc:  # noqa: BLE001 — degradar a heurística
-                yield _event(
-                    "step",
-                    step="temario_warn",
-                    message=f"La IA no pudo interpretar el temario ({exc}); uso heurística.",
-                )
-                manifest = None
-        if manifest is None:
-            manifest = build_manifest_from_temario(
-                temario_pages,
-                nombre=nombre,
-                codigo=codigo,
-                is_profesional=is_profesional,
-                max_lecciones=max_lecciones,
-            )
-
-        # El costo lo define el operador (obligatorio, > 0): los cursos no
-        # pueden ser gratis. Sobrescribe el placeholder del manifest builder.
-        manifest["curso"]["costo"] = int(costo)
-
-        n_units = len(manifest["unidades"])
-        n_topics = sum(len(unit["temas"]) for unit in manifest["unidades"])
-        yield _event(
-            "step",
-            step="temario_ok",
-            message=f"Temario interpretado: {n_units} unidades · {n_topics} temas.",
-        )
-
+        # 1. CONTENIDO primero: es la fuente de la estructura y de las lecciones.
         yield _event("step", step="contenido", message="Extrayendo el contenido fuente…")
         content_pages = extract_pdf_pages(Path(contenido_path))
         yield _event(
@@ -139,18 +109,92 @@ def generate_course_stream(
             message=f"{len(content_pages)} páginas de contenido extraídas.",
         )
 
-        yield _event("step", step="segmentar", message="Segmentando el contenido por temas…")
+        yield _event("step", step="segmentar", message="Segmentando el contenido…")
         segments = segment_pages(content_pages)
         yield _event("step", step="segmentar_ok", message=f"{len(segments)} segmentos generados.")
 
-        yield _event("step", step="mapear", message="Asociando cada tema con su fuente…")
-        mappings = map_topics_to_segments(manifest, segments)
-        covered = sum(1 for mapping in mappings if mapping.get("matched_segments"))
+        # 2. Dimensionar el curso al tamaño del libro (evita recortes hardcodeados).
+        max_lec, origen = resolve_max_lecciones(len(segments), max_lecciones)
         yield _event(
             "step",
-            step="mapear_ok",
-            message=f"{covered}/{len(mappings)} temas con fuente encontrada.",
+            step="dimension",
+            message=(
+                f"Objetivo: hasta {max_lec} lecciones para cubrir el libro "
+                f"({'fijado por el operador' if origen == 'operador' else 'auto-dimensionado'})."
+            ),
         )
+        for nota in truncation_notes(len(segments), max_lec, origen):
+            yield _event("warn", step="truncamiento", message=f"⚠ {nota}")
+
+        # 3. ESTRUCTURA desde el libro COMPLETO (no desde el temario).
+        yield _event("step", step="estructura", message="Infiriendo la estructura desde el libro…")
+        manifest = None
+        if use_llm:
+            try:
+                manifest = build_manifest_from_content_llm(
+                    segments, nombre=nombre, codigo=codigo,
+                    is_profesional=is_profesional, max_lecciones=max_lec,
+                    client=llm_client, model=final_model,
+                )
+            except Exception as exc:  # noqa: BLE001 — degradar a heurística
+                yield _event(
+                    "step",
+                    step="estructura_warn",
+                    message=f"La IA no pudo inferir la estructura ({exc}); uso heurística.",
+                )
+                manifest = None
+        if manifest is None:
+            manifest = build_manifest_from_content(
+                segments, nombre=nombre, codigo=codigo,
+                is_profesional=is_profesional, max_lecciones=max_lec,
+            )
+
+        # El costo lo define el operador (obligatorio, > 0): sobrescribe el
+        # placeholder del generador de estructura.
+        manifest["curso"]["costo"] = int(costo)
+
+        n_units = len(manifest["unidades"])
+        n_topics = sum(len(unit["temas"]) for unit in manifest["unidades"])
+        yield _event(
+            "step",
+            step="estructura_ok",
+            message=f"Estructura del libro: {n_units} unidades · {n_topics} temas.",
+        )
+
+        # 4. Mapear cada tema generado con su fuente (para la redacción).
+        yield _event("step", step="mapear", message="Asociando cada tema con su fuente…")
+        mappings = map_topics_to_segments(manifest, segments)
+
+        # 5. TEMARIO como checklist: validar que sus temas estén en el curso.
+        if temario_path is not None:
+            yield _event("step", step="temario", message="Leyendo el temario para validación…")
+            temario_pages = extract_pdf_pages(Path(temario_path))
+            expected = extract_temario_topics(
+                temario_pages, nombre=nombre, codigo=codigo,
+                is_profesional=is_profesional, use_llm=use_llm,
+                client=llm_client, model=final_model,
+            )
+            validacion = validate_topics_present(expected, manifest)
+            presentes = len(validacion["present"])
+            yield _event(
+                "step",
+                step="temario_ok",
+                message=f"Temario: {presentes}/{validacion['expected']} temas presentes en el curso.",
+            )
+            faltantes = validacion["missing"]
+            if faltantes:
+                detalle = "; ".join(faltantes[:12])
+                if len(faltantes) > 12:
+                    detalle += f"; … (+{len(faltantes) - 12} más)"
+                yield _event(
+                    "warn",
+                    step="temario_faltante",
+                    message=(
+                        f"⚠ {len(faltantes)} tema(s) del temario no están representados en "
+                        f"el curso generado del libro. Revisar: {detalle}"
+                    ),
+                    temas_faltantes=list(faltantes),
+                )
 
         lessons: list[dict[str, Any]] = []
         if use_llm:

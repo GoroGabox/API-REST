@@ -182,6 +182,44 @@ def map_topics_to_segments(
     return mappings
 
 
+def _topic_label(mapping: dict[str, object]) -> str:
+    return f"U{mapping.get('unidad_orden')} · {mapping.get('tema')}"
+
+
+def coverage_alert(mappings: list[dict[str, object]]) -> dict[str, object]:
+    """Clasifica los temas por calidad de su anclaje a la fuente.
+
+    Pensado para avisar durante la generación (a diferencia del reporte extenso
+    `build_mapping_coverage_report`, que solo usan los comandos A2):
+
+    - ``solid``     — temas con al menos un segmento POR SOBRE el umbral.
+    - ``weak``      — temas cuyo ÚNICO match es forzado bajo umbral
+                      (``below_min_score``): la lección se anclará a un segmento
+                      poco relacionado. Señal de "revisar / posible tema del
+                      temario ausente del libro".
+    - ``uncovered`` — temas sin ningún segmento (no hay fuente en el libro).
+
+    ``weak`` y ``uncovered`` son las categorías que ameritan alerta.
+    """
+    solid: list[str] = []
+    weak: list[str] = []
+    uncovered: list[str] = []
+    for mapping in mappings:
+        matched = mapping.get("matched_segments") or []
+        if not matched:
+            uncovered.append(_topic_label(mapping))
+        elif all(bool(seg.get("below_min_score")) for seg in matched):
+            weak.append(_topic_label(mapping))
+        else:
+            solid.append(_topic_label(mapping))
+    return {
+        "total": len(mappings),
+        "solid": solid,
+        "weak": weak,
+        "uncovered": uncovered,
+    }
+
+
 def build_mapping_coverage_report(
     mappings: list[dict[str, object]],
     segments: list[dict[str, object]],

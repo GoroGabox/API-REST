@@ -15,7 +15,7 @@ from content_pipeline.exporters.django_importer import import_a2_course, import_
 from content_pipeline.exporters.json_exporter import read_json
 from content_pipeline.processors.clean_text import clean_extracted_text, hash_text_fragment
 from content_pipeline.processors.lesson_generator import build_lesson_context, render_student_lesson
-from content_pipeline.processors.map_topics import map_topics_to_segments
+from content_pipeline.processors.map_topics import coverage_alert, map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 from content_pipeline.processors.validators import validate_lessons, validate_manifest
 from schools.models import Categoria, Curso, Leccion, LeccionFuente, Unidad
@@ -418,6 +418,148 @@ class LessonBodyTruncationTests(SimpleTestCase):
         body = self._write(client)
         self.assertIn("segundo", body)
         self.assertEqual(client.budgets, [3_200, 4_096])
+
+
+class CoursePlanningTests(SimpleTestCase):
+    def test_resolve_max_lecciones_auto_scales_to_book(self):
+        from content_pipeline.services.course_planning import (
+            AUTO_FLOOR, HARD_CEILING, resolve_max_lecciones,
+        )
+        # Sin valor del operador => se dimensiona al nº de segmentos.
+        self.assertEqual(resolve_max_lecciones(45, None), (45, "auto"))
+        # Libro chico => piso.
+        self.assertEqual(resolve_max_lecciones(3, None), (AUTO_FLOOR, "auto"))
+        # Libro enorme => techo duro.
+        self.assertEqual(resolve_max_lecciones(500, None), (HARD_CEILING, "auto"))
+        # Operador manda => techo (acotado).
+        self.assertEqual(resolve_max_lecciones(500, 30), (30, "operador"))
+        self.assertEqual(resolve_max_lecciones(500, 999), (HARD_CEILING, "operador"))
+
+    def test_truncation_notes_fire_when_book_exceeds_cap(self):
+        from content_pipeline.services.course_planning import truncation_notes
+        # Libro (150 seg) > cap (100) => avisa recorte.
+        notes = truncation_notes(150, 100, "auto")
+        self.assertTrue(any("no quedar cubierta" in n for n in notes))
+        # Libro que cabe => sin alertas.
+        self.assertEqual(truncation_notes(40, 60, "auto"), [])
+
+    def test_validate_topics_present_flags_missing_temario_topics(self):
+        from content_pipeline.services.course_planning import validate_topics_present
+        manifest = {
+            "unidades": [
+                {"temas": ["Distancia de frenado y velocidad segura", "Señales reglamentarias"]},
+                {"temas": ["Uso del cinturón de seguridad"]},
+            ]
+        }
+        expected = [
+            "Distancia de frenado",              # presente (match con tema generado)
+            "Señales reglamentarias de tránsito",  # presente
+            "Transporte internacional de carga peligrosa",  # ausente del libro
+        ]
+        res = validate_topics_present(expected, manifest)
+        self.assertEqual(res["expected"], 3)
+        self.assertIn("Transporte internacional de carga peligrosa", res["missing"])
+        self.assertIn("Distancia de frenado", res["present"])
+
+    def test_validate_topics_present_all_missing_when_no_generated(self):
+        from content_pipeline.services.course_planning import validate_topics_present
+        res = validate_topics_present(["A", "B"], {"unidades": []})
+        self.assertEqual(res["missing"], ["A", "B"])
+        self.assertEqual(res["present"], [])
+
+
+class GenerateCourseStreamTests(SimpleTestCase):
+    def _run(self, *, n_segments, temario_topics, generated_temas, max_lecciones):
+        from unittest.mock import patch
+
+        import content_pipeline.services.course_generator as cg
+
+        pages = [{"page": 1, "text": "x" * 80, "char_count": 80, "has_text": True}]
+        segments = [
+            {"segment_id": f"seg_{i}", "title": f"T {i}", "keywords": [f"k{i}"],
+             "text": "y" * 60, "page_start": i, "page_end": i}
+            for i in range(1, n_segments + 1)
+        ]
+        manifest = {
+            "curso": {"nombre": "C", "codigo": "X", "descripcion": "d", "costo": 0},
+            "unidades": [{"orden": 1, "nombre": "U1", "categoria": "General",
+                          "horas_elearning": 1, "temas": list(generated_temas)}],
+        }
+        lessons = [{"nombre": "L1", "tipo": "texto", "posicion": 1,
+                    "unidad_orden": 1, "categoria": "General", "contenido": "c", "fuentes": []}]
+        curso = type("Curso", (), {"id": 7, "nombre": "C", "codigo": "X"})()
+
+        with patch.object(cg.LLMClient, "is_available", return_value=False), \
+             patch.object(cg, "extract_pdf_pages", return_value=pages), \
+             patch.object(cg, "segment_pages", return_value=segments), \
+             patch.object(cg, "build_manifest_from_content", return_value=manifest), \
+             patch.object(cg, "map_topics_to_segments", return_value=[]), \
+             patch.object(cg, "extract_temario_topics", return_value=temario_topics), \
+             patch.object(cg, "generate_lessons_generic", return_value=lessons), \
+             patch.object(cg, "import_generated_course", return_value=(None, curso)):
+            return list(cg.generate_course_stream(
+                temario_path="t.pdf", contenido_path="c.pdf",
+                nombre="C", codigo="X", costo=5000, max_lecciones=max_lecciones,
+            ))
+
+    def test_structure_from_content_and_temario_validation(self):
+        events = self._run(
+            n_segments=6,
+            temario_topics=["Concepto A", "Tema Ausente XYZ"],
+            generated_temas=["Concepto A", "Concepto B"],
+            max_lecciones=None,
+        )
+        steps = {e.get("step") for e in events if e["event"] == "step"}
+        self.assertIn("estructura_ok", steps)   # estructura desde el libro
+        self.assertIn("dimension", steps)        # dimensionado al libro
+        self.assertIn("temario_ok", steps)       # temario validado (no estructura)
+
+        # El tema del temario ausente del curso dispara un warn.
+        faltante = [e for e in events if e["event"] == "warn" and e.get("step") == "temario_faltante"]
+        self.assertEqual(len(faltante), 1)
+        self.assertIn("Tema Ausente XYZ", faltante[0]["temas_faltantes"])
+
+        # El curso se persiste y termina en 'done'.
+        self.assertTrue(any(e["event"] == "done" for e in events))
+
+    def test_truncation_warning_when_book_exceeds_ceiling(self):
+        events = self._run(
+            n_segments=150,  # > HARD_CEILING (100)
+            temario_topics=[],
+            generated_temas=["A"],
+            max_lecciones=None,
+        )
+        trunc = [e for e in events if e["event"] == "warn" and e.get("step") == "truncamiento"]
+        self.assertTrue(trunc)
+        self.assertIn("no quedar cubierta", trunc[0]["message"])
+
+
+class CoverageAlertTests(SimpleTestCase):
+    def _mapping(self, orden, tema, matched):
+        return {"unidad_orden": orden, "unidad_nombre": f"U{orden}", "tema": tema, "matched_segments": matched}
+
+    def test_classifies_solid_weak_and_uncovered(self):
+        mappings = [
+            self._mapping(1, "Sólido", [{"segment_id": "s1", "score": 0.5}]),
+            self._mapping(1, "Débil", [{"segment_id": "s2", "score": 0.1, "below_min_score": True}]),
+            self._mapping(2, "Sin fuente", []),
+            # Mezcla: un match sólido + uno bajo umbral => cuenta como sólido.
+            self._mapping(2, "Mixto", [
+                {"segment_id": "s3", "score": 0.4},
+                {"segment_id": "s4", "score": 0.1, "below_min_score": True},
+            ]),
+        ]
+        alert = coverage_alert(mappings)
+        self.assertEqual(alert["total"], 4)
+        self.assertEqual(alert["solid"], ["U1 · Sólido", "U2 · Mixto"])
+        self.assertEqual(alert["weak"], ["U1 · Débil"])
+        self.assertEqual(alert["uncovered"], ["U2 · Sin fuente"])
+
+    def test_all_solid_leaves_nothing_flagged(self):
+        mappings = [self._mapping(1, "A", [{"segment_id": "s1", "score": 0.6}])]
+        alert = coverage_alert(mappings)
+        self.assertEqual(alert["weak"], [])
+        self.assertEqual(alert["uncovered"], [])
 
 
 class TaxonomyResolveTests(SimpleTestCase):

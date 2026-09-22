@@ -25,9 +25,15 @@ from typing import Any
 from content_pipeline.llm.client import LLMClient, LLMError, default_model, parse_json_object
 from content_pipeline.processors.clean_text import shorten_text
 from content_pipeline.processors.manifest_builder import _cap_to_max_lessons
+from content_pipeline.taxonomy import CATEGORY_NAMES, FALLBACK, resolve
+
+# Lista cerrada de categorías (taxonomía compartida) para clasificar cada unidad.
+_CATEGORIAS_BLOQUE = "\n".join(f"- {name}" for name in CATEGORY_NAMES)
 
 # Tope defensivo de segmentos que resumimos para el LLM (compacto: título + kw).
-_MAX_SEGMENTS = 200
+# Se dimensiona para cubrir libros completos; si un libro lo excede, el
+# orquestador avisa (course_planning.truncation_notes) para no truncar en silencio.
+_MAX_SEGMENTS = 400
 
 CONTENT_SYSTEM = """\
 Eres un diseñador instruccional experto. Recibes una lista de SEGMENTOS extraídos
@@ -45,6 +51,10 @@ Reglas:
   tema + 1 quiz por unidad).
 - {unidades_instr}
 - No inventes temas ajenos al material.
+- "categoria" DEBE ser EXACTAMENTE una de estas etiquetas (copia el texto tal
+  cual, con sus tildes); elige la que mejor describe la unidad. Si ninguna
+  encaja, usa "{fallback}":
+{categorias}
 - Responde EXCLUSIVAMENTE con el JSON, sin ```fences ni comentarios.
 
 Formato JSON exacto:
@@ -54,7 +64,7 @@ Formato JSON exacto:
     {{
       "orden": 1,
       "nombre": "Nombre de la unidad",
-      "categoria": "Nombre de la unidad",
+      "categoria": "una etiqueta EXACTA de la lista",
       "horas_elearning": 0,
       "objetivos": ["objetivo de aprendizaje", "..."],
       "temas": ["tema 1", "tema 2", "..."]
@@ -156,7 +166,12 @@ def build_manifest_from_content_llm(
         else "Usa entre 4 y 8 unidades según lo que pida el material."
     )
     client = client or LLMClient()
-    system = CONTENT_SYSTEM.format(max_lecciones=max_lecciones, unidades_instr=unidades_instr)
+    system = CONTENT_SYSTEM.format(
+        max_lecciones=max_lecciones,
+        unidades_instr=unidades_instr,
+        categorias=_CATEGORIAS_BLOQUE,
+        fallback=FALLBACK,
+    )
     user = CONTENT_USER.format(nombre=nombre, codigo=codigo, digest=digest)
 
     last_err: Exception | None = None
@@ -164,7 +179,9 @@ def build_manifest_from_content_llm(
         raw = client.complete(
             system=system,
             user=user,
-            max_tokens=8000,
+            # Presupuesto amplio: un curso de libro completo puede tener muchas
+            # unidades/temas y el JSON no debe cortarse (cae a retry/heurística).
+            max_tokens=12000,
             model=model or default_model(),
             temperature=0.2,
         )
@@ -213,7 +230,9 @@ def _parse_content_manifest(
             {
                 "orden": len(unidades) + 1,
                 "nombre": nombre_unidad,
-                "categoria": shorten_text(str(raw_unit.get("categoria") or nombre_unidad), 100),
+                # Categoría canónica: el LLM elige de la lista cerrada; resolve()
+                # normaliza variantes y manda a "General" lo que no encaje.
+                "categoria": resolve(raw_unit.get("categoria")),
                 "horas_elearning": max(0, horas),
                 "objetivos": _clean_str_list(raw_unit.get("objetivos"), 300),
                 "temas": temas,
@@ -293,7 +312,8 @@ def build_manifest_from_content(
             {
                 "orden": len(unidades) + 1,
                 "nombre": shorten_text(nombre_unidad, 100),
-                "categoria": shorten_text(nombre_unidad, 100),
+                # Fallback determinista (sin IA): no clasifica bien, cae a "General".
+                "categoria": resolve(nombre_unidad),
                 "horas_elearning": 0,
                 "temas": temas,
             }
