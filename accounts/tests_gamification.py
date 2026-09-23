@@ -109,6 +109,46 @@ class ExamenFinalTest(TestCase):
         self.curso_ejs = [make_ejercicio(curso=self.curso, categoria=self.cat) for _ in range(10)]
         self.otros_ejs = [make_ejercicio(curso=self.otro_curso, categoria=self.cat) for _ in range(5)]
 
+    def test_lecciones_pendientes_bloquean_y_se_liberan_al_completar(self):
+        from accounts.models import EstudianteLeccion
+        u = make_student()
+        l1 = Leccion.objects.create(curso=self.curso, nombre="L1", posicion=1, tipo="texto")
+        l2 = Leccion.objects.create(curso=self.curso, nombre="L2", posicion=2, tipo="texto")
+        EstudianteLeccion.objects.create(estudiante=u, leccion=l1, curso=self.curso)
+
+        elig = services.elegibilidad_examen_final(u, self.curso)
+        self.assertFalse(elig["puede"])
+        self.assertEqual(elig["razon"], "lecciones_pendientes")
+        self.assertEqual((elig["lecciones_completadas"], elig["lecciones_total"]), (1, 2))
+
+        # El endpoint de generación aplica el mismo gate.
+        client = APIClient()
+        client.force_authenticate(u)
+        r = client.post(
+            "/api/v1/accounts/tests/generate/",
+            {"tipo": "completa", "modalidad": "evaluacion", "curso_id": self.curso.id},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.json().get("razon"), "lecciones_pendientes")
+
+        EstudianteLeccion.objects.create(estudiante=u, leccion=l2, curso=self.curso)
+        elig2 = services.elegibilidad_examen_final(u, self.curso)
+        self.assertTrue(elig2["puede"])
+        self.assertEqual(elig2["razon"], "ok")
+
+    def test_total_preguntas_es_el_real_del_curso(self):
+        u = make_student()
+        elig = services.elegibilidad_examen_final(u, self.curso)
+        self.assertEqual(elig["total_preguntas"], 10)  # el curso tiene 10 (< 35)
+
+    def test_sesion_tematica_tiene_15_preguntas(self):
+        for _ in range(16):
+            make_ejercicio(categoria=self.cat)
+        ejs, err = services.seleccionar_ejercicios("categoria", self.cat.id)
+        self.assertIsNone(err)
+        self.assertEqual(len(ejs), 15)
+
     def test_examen_final_solo_preguntas_del_curso(self):
         ejs, err = services.seleccionar_ejercicios_de_curso(self.curso)
         self.assertIsNone(err)

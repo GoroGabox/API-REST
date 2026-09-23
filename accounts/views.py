@@ -620,13 +620,15 @@ class GenerarPruebaView(APIView):
         es_examen_final = tipo_norm == 'completa' and modalidad == 'evaluacion' and curso is not None
 
         # Examen Final del curso: valida elegibilidad antes de generar (curso ya
-        # completado o plazo vencido). No hay espera entre intentos.
+        # completado, plazo vencido o lecciones pendientes). No hay espera
+        # entre intentos.
         if es_examen_final:
             elig = accounts_services.elegibilidad_examen_final(request.user, curso)
             if not elig['puede']:
                 mensajes = {
                     'curso_completado': 'Ya aprobaste y completaste este curso.',
                     'plazo_vencido': 'El plazo para rendir el examen de este curso ya venció.',
+                    'lecciones_pendientes': 'Completa todas las lecciones del curso para rendir el examen final.',
                 }
                 return Response({
                     'detail': mensajes.get(elig['razon'], 'No puedes rendir el examen ahora.'),
@@ -1108,8 +1110,9 @@ class ExamenFinalElegibilidadView(APIView):
     """GET /api/v1/accounts/me/courses/<curso_id>/final-exam/
 
     Estado del examen final del curso para el estudiante: si puede rendir,
-    la razón si no (curso completado / plazo vencido). Sin espera entre
-    intentos. Alimenta el estado del botón "Prueba Final".
+    la razón si no (curso completado / plazo vencido / lecciones pendientes),
+    progreso de lecciones y nº real de preguntas. Sin espera entre intentos.
+    Alimenta el estado del botón "Prueba Final".
     """
     permission_classes = [permissions.IsAuthenticated]
 

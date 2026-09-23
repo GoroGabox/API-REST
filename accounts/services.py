@@ -24,7 +24,7 @@ APROBACION_MIN_PCT = Decimal('70')
 APROBACION_EXAMEN_FINAL_PCT = Decimal('80')
 
 
-SIZES = {'completa': 35, 'rapida': 10, 'categoria': 20}
+SIZES = {'completa': 35, 'rapida': 10, 'categoria': 15}
 TIPOS_VALIDOS = tuple(SIZES.keys())
 
 
@@ -112,20 +112,30 @@ def seleccionar_ejercicios(tipo: str, categoria_id: Optional[int] = None):
     return ejercicios_final, None
 
 
-def seleccionar_ejercicios_de_curso(curso, total_needed: int = SIZES['completa']):
-    """Selecciona preguntas SOLO del curso, para el examen final.
-
-    Un ejercicio pertenece al curso si está asociado directamente (`curso`) o
-    a una de sus lecciones (`leccion__curso`). Si el curso tiene menos de
-    `total_needed`, usa todas las disponibles (el examen se ajusta al tamaño
-    real y el % se calcula sobre ese total). Devuelve (ejercicios, error).
-    """
-    qs = (
+def _ejercicios_de_curso_qs(curso):
+    """Ejercicios del curso: asociados directamente (`curso`) o a una de sus
+    lecciones (`leccion__curso`)."""
+    return (
         Ejercicio.objects
         .select_related('categoria', 'curso', 'leccion')
         .filter(Q(curso=curso) | Q(leccion__curso=curso))
         .distinct()
     )
+
+
+def total_preguntas_examen_final(curso) -> int:
+    """Nº real de preguntas que tendrá el examen final (tope SIZES['completa'])."""
+    return min(SIZES['completa'], _ejercicios_de_curso_qs(curso).count())
+
+
+def seleccionar_ejercicios_de_curso(curso, total_needed: int = SIZES['completa']):
+    """Selecciona preguntas SOLO del curso, para el examen final.
+
+    Si el curso tiene menos de `total_needed`, usa todas las disponibles (el
+    examen se ajusta al tamaño real y el % se calcula sobre ese total).
+    Devuelve (ejercicios, error).
+    """
+    qs = _ejercicios_de_curso_qs(curso)
     total_disp = qs.count()
     if total_disp == 0:
         return None, ServiceError(
@@ -429,20 +439,26 @@ def emitir_certificado_si_corresponde(prueba: Prueba) -> Optional[Certificado]:
 def elegibilidad_examen_final(user, curso) -> dict:
     """Determina si `user` puede rendir (o volver a rendir) el examen final de `curso`.
 
-    Reglas:
+    Reglas (en este orden):
     - Si ya tiene certificado del curso → curso finalizado, no hay más intentos.
     - Si el acceso al curso venció (AccessKey.valid_until pasado) → sin intentos.
+    - Si no completó TODAS las lecciones del curso → lecciones pendientes.
     - En cualquier otro caso → puede rendir (sin espera entre intentos).
 
     Devuelve dict:
         {
           'puede': bool,
-          'razon': 'ok'|'curso_completado'|'plazo_vencido',
+          'razon': 'ok'|'curso_completado'|'plazo_vencido'|'lecciones_pendientes',
           'expira_en': datetime|None,        # fin de plazo del curso (None = sin límite)
           'ultimo_intento': datetime|None,
+          'lecciones_total': int,
+          'lecciones_completadas': int,
+          'total_preguntas': int,            # nº real de preguntas del examen
         }
     """
     from sales.models import EstudianteCurso
+    from schools.models import Leccion
+    from .models import EstudianteLeccion
 
     now = timezone.now()
 
@@ -457,11 +473,21 @@ def elegibilidad_examen_final(user, curso) -> dict:
     if ec and ec.access_key_id:
         expira_en = ec.access_key_id.valid_until
 
+    lecciones_total = Leccion.objects.filter(curso=curso).count()
+    lecciones_completadas = (
+        EstudianteLeccion.objects
+        .filter(estudiante=user, leccion__curso=curso)
+        .values('leccion_id').distinct().count()
+    )
+
     base = {
         'puede': False,
         'razon': 'ok',
         'expira_en': expira_en,
         'ultimo_intento': None,
+        'lecciones_total': lecciones_total,
+        'lecciones_completadas': lecciones_completadas,
+        'total_preguntas': total_preguntas_examen_final(curso),
     }
 
     # Curso ya aprobado (certificado emitido) → finalizado.
@@ -471,6 +497,11 @@ def elegibilidad_examen_final(user, curso) -> dict:
     # Plazo del curso vencido → sin más intentos.
     if expira_en is not None and now > expira_en:
         return {**base, 'razon': 'plazo_vencido'}
+
+    # Requisito: todas las lecciones del curso completadas (un curso sin
+    # lecciones no tiene nada pendiente).
+    if lecciones_completadas < lecciones_total:
+        return {**base, 'razon': 'lecciones_pendientes'}
 
     # Última entrega del examen final (informativo, no restringe reintentos).
     ultima = (
