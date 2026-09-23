@@ -82,6 +82,13 @@ Two payment surfaces coexist:
 
 Manual activation (school-admin path): `POST /api/v1/sales/activar_curso/` → `ActivarCursoView`, also funnels through `asignar_llave_y_curso`.
 
+### Pruebas, examen final y gamificación (accounts)
+
+- `POST accounts/tests/generate/` crea una `Prueba` (`tipo` rapida/categoria/completa; `modalidad` practica/evaluacion). El **examen final** es `tipo='completa'` + `modalidad='evaluacion'` + `curso_id`: usa solo preguntas del curso, aprueba con 80% y al aprobar emite `Certificado` (signal → `services.emitir_certificado_si_corresponde`). `generate_free/` + `grade_free/` = práctica pública sin login (no persiste). Las preguntas nunca exponen la clave (`services.serializar_preguntas_publicas`).
+- `services.submit_prueba` corrige (set exacto de keys; acepta `'a'`, `['a','b']` o `'a,b'`) y devuelve `{aprobado, score, total_correctas, total, detalles, xp_ganado, streak_actual, logros_nuevos}` (+ `certificado` en la vista).
+- **Elegibilidad del examen final** (`services.elegibilidad_examen_final`, `GET me/courses/<id>/final-exam/`): `razon` ∈ `ok` | `curso_completado` | `plazo_vencido`; incluye `expira_en` y `ultimo_intento` (informativo). **Sin espera entre intentos** — se puede reintentar de inmediato; `generate/` responde 403 + `razon` solo en esos dos casos.
+- **Gamificación** (`accounts/gamification.py`): solo **XP, racha y logros**. **No existen vidas (hearts)**: se eliminaron el modelo (`hearts`/`next_heart_regen_at`, migración `0020_remove_hearts`), el consumo/gate/regeneración, `FINAL_EXAM_RETRY_HOURS` y los campos de API (`hearts`, `max_hearts`, `next_heart_regen_at`, `corazones_restantes`, `retry_after_seconds`, `proximo_intento`). La choice de notificación `hearts_refilled` se conserva solo para leer registros históricos. No reintroducir vidas ni cooldown sin pedirlo; clientes (webapp y app Expo) dependen de este contrato.
+
 ### Auth
 
 JWT via `rest_framework_simplejwt` — `MyTokenObtainPairView` extends the default to embed extra claims (see `accounts.serializers.MyTokenObtainPairSerializer`). Access token TTL is **5 minutes**; refresh 30 days with rotation + blacklist (`SIMPLE_JWT` in `settings.py`). Logout (`POST /api/v1/accounts/logout/`) blacklists the supplied refresh token. Password reset uses Django's `default_token_generator` + base64-encoded uid; confirmation hits `/api/v1/accounts/new_password/<uidb64>/<token>/`. Account activation has its own token flow under `send-activation-email/` and `activate/<token>/`.
