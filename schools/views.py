@@ -1271,6 +1271,7 @@ class CourseGenerateView(APIView):
                     idioma=idioma,
                     modo=modo,
                     source_name=source_name,
+                    orientacion=(request.data.get("orientacion") or None),
                 ):
                     yield json.dumps(event, ensure_ascii=False) + "\n"
             finally:

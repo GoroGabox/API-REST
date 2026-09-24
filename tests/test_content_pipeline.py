@@ -420,6 +420,156 @@ class LessonBodyTruncationTests(SimpleTestCase):
         self.assertEqual(client.budgets, [3_200, 4_096])
 
 
+class LicenseOrientationTests(SimpleTestCase):
+    def test_orientation_per_code_and_override(self):
+        from content_pipeline.licenses import orientation_for
+        self.assertIn("carga", orientation_for("A4"))
+        self.assertIn("pasajeros", orientation_for("A2"))
+        self.assertEqual(orientation_for("a4", "texto propio"), "texto propio")  # override gana
+        self.assertIsNone(orientation_for("ZZZ"))  # desconocida => None
+        self.assertIsNone(orientation_for(""))
+
+
+class ParagraphAnchorTests(SimpleTestCase):
+    def test_segment_pages_tags_blocks_with_pages(self):
+        pages = [
+            {"page": 40, "text": "Bloque en página cuarenta sobre velocidad. " * 8, "has_text": True},
+            {"page": 41, "text": "Otro bloque distinto en página cuarenta y uno. " * 8, "has_text": True},
+        ]
+        segs = segment_pages(pages, target_min_words=10, target_max_words=90)
+        all_blocks = [b for s in segs for b in s["blocks"]]
+        self.assertTrue(all_blocks)
+        self.assertTrue(all(isinstance(b["page"], int) and b["text"] for b in all_blocks))
+        self.assertEqual({b["page"] for b in all_blocks}, {40, 41})
+
+    def test_sources_anchor_to_paragraph_page(self):
+        from content_pipeline.processors.lesson_generator import _sources_for_segments
+        segments = [{
+            "segment_id": "s1", "page_start": 40, "page_end": 45,
+            "text": "irrelevante", "keywords": [],
+            "blocks": [
+                {"page": 40, "text": "Este párrafo habla de mantención general del vehículo y rutinas."},
+                {"page": 43, "text": "La distancia de frenado depende de la velocidad y el estado de los frenos y el pavimento del camino."},
+            ],
+        }]
+        fuentes = _sources_for_segments(segments, "distancia de frenado y velocidad")
+        # Ancla al párrafo relevante (pág. 43), no al rango 40-45.
+        self.assertTrue(fuentes)
+        top = fuentes[0]
+        self.assertEqual(top["pagina_inicio"], 43)
+        self.assertEqual(top["pagina_fin"], 43)
+        self.assertIn("distancia de frenado", top["fragmento_resumen"].lower())
+
+    def test_sources_fallback_without_blocks(self):
+        from content_pipeline.processors.lesson_generator import _sources_for_segments
+        segments = [{"segment_id": "s1", "page_start": 10, "page_end": 20, "text": "algo de contenido", "keywords": []}]
+        fuentes = _sources_for_segments(segments, "tema")
+        self.assertEqual(fuentes[0]["pagina_inicio"], 10)  # cae al rango del segmento
+        self.assertEqual(fuentes[0]["pagina_fin"], 20)
+
+
+class FaithfulnessTests(SimpleTestCase):
+    def test_unsupported_figures_flags_invented_numbers(self):
+        from content_pipeline.processors.faithfulness import unsupported_figures
+        source = "El límite es 50 km/h en zona urbana. El 80% de los siniestros. A los 18 años."
+        content = (
+            "Circular a 50 km/h es lo permitido. El 80% de los casos. "
+            "Una multa de $90.000 y esperar 30 días."  # 90000 y 30 NO están en la fuente
+        )
+        figs = unsupported_figures(content, source)
+        joined = " ".join(figs).lower()
+        self.assertIn("90.000", joined)
+        self.assertIn("30", joined)
+        self.assertNotIn("50 km", joined)   # 50 sí está
+        self.assertNotIn("80 %", joined.replace("%", " %"))  # 80 sí está
+
+    def test_number_separators_are_normalized(self):
+        from content_pipeline.processors.faithfulness import unsupported_figures
+        source = "Se registran 82.000 siniestros al año."
+        content = "Hay 82000 siniestros por año."  # mismo número, sin separador
+        self.assertEqual(unsupported_figures(content, source), [])
+
+    def test_anchoring_score_high_and_low(self):
+        from content_pipeline.processors.faithfulness import anchoring_score
+        source = "La distancia de frenado depende de la velocidad y el estado del pavimento y los frenos."
+        alto = anchoring_score("La velocidad y la distancia de frenado y los frenos.", source)
+        bajo = anchoring_score("Recetas de cocina italiana con tomate albahaca y queso parmesano.", source)
+        self.assertGreater(alto, bajo)
+        self.assertLess(bajo, 0.28)
+
+    def test_audit_lessons_reports_without_blocking(self):
+        from content_pipeline.processors.faithfulness import audit_lessons
+        segments = [{"segment_id": "s1", "text": "El límite es 50 km/h. El 80% de los casos.", "page_start": 10}]
+        mappings = [{"unidad_orden": 1, "tema": "Velocidad", "matched_segments": [{"segment_id": "s1"}]}]
+        lessons = [{
+            "tipo": "texto", "unidad_orden": 1, "tema_regulatorio": "Velocidad", "nombre": "Velocidad",
+            "contenido": "A 50 km/h. Pero una multa de $120.000.",  # 120000 inventado
+        }]
+        res = audit_lessons(lessons, segments, mappings)
+        self.assertEqual(res["auditadas"], 1)
+        self.assertEqual(len(res["figuras"]), 1)
+        self.assertIn("120.000", " ".join(res["figuras"][0]["cifras"]))
+
+    def test_audit_skips_lessons_without_source(self):
+        from content_pipeline.processors.faithfulness import audit_lessons
+        lessons = [{"tipo": "texto", "unidad_orden": 9, "tema_regulatorio": "X", "nombre": "X", "contenido": "algo 999 km/h"}]
+        res = audit_lessons(lessons, segments=[], mappings=[])
+        self.assertEqual(res["auditadas"], 0)  # sin fuente => no se audita
+        self.assertEqual(res["figuras"], [])
+
+    def test_judge_lessons_llm_reports_low_faithfulness(self):
+        import json as _json
+        from content_pipeline.processors.faithfulness import judge_lessons_llm
+
+        class _Judge:
+            def __init__(self, payload): self._raw = _json.dumps(payload, ensure_ascii=False)
+            def complete(self, **kw): return self._raw
+
+        pairs = [
+            ({"tipo": "texto", "unidad_orden": 1, "nombre": "Buena", "contenido": "c"}, "fuente"),
+            ({"tipo": "texto", "unidad_orden": 1, "nombre": "Mala", "contenido": "c"}, "fuente"),
+        ]
+        # Cliente que siempre reporta baja fidelidad con un reparo => críticas.
+        client = _Judge({"faithfulness": 0.4, "unsupported_claims": ["cifra inventada"]})
+        res = judge_lessons_llm(pairs, client=client, model="fake")
+        self.assertEqual(res["evaluadas"], 2)
+        self.assertEqual(len(res["criticas"]), 2)
+        self.assertEqual(len(res["con_reparos"]), 0)
+        self.assertIn("cifra inventada", res["criticas"][0]["claims"])
+        self.assertEqual(res["promedio"], 0.4)
+
+    def test_judge_separates_critical_from_minor(self):
+        import json as _json
+        from content_pipeline.processors.faithfulness import judge_lessons_llm
+
+        class _Judge:
+            def __init__(self, payload): self._raw = _json.dumps(payload, ensure_ascii=False)
+            def complete(self, **kw): return self._raw
+
+        # score 0.9 con un reparo => reparo menor, NO crítica (umbral 0.7).
+        client = _Judge({"faithfulness": 0.9, "unsupported_claims": ["detalle menor"]})
+        pairs = [({"tipo": "texto", "unidad_orden": 1, "nombre": "L", "contenido": "c"}, "fuente")]
+        res = judge_lessons_llm(pairs, client=client, model="fake")
+        self.assertEqual(len(res["criticas"]), 0)
+        self.assertEqual(len(res["con_reparos"]), 1)
+        # Subir el umbral a 0.95 convierte ese reparo en crítica.
+        res2 = judge_lessons_llm(pairs, client=client, model="fake", judge_min=0.95)
+        self.assertEqual(len(res2["criticas"]), 1)
+        self.assertEqual(len(res2["con_reparos"]), 0)
+
+    def test_build_lesson_sources_pairs_texto_with_source(self):
+        from content_pipeline.processors.faithfulness import build_lesson_sources
+        segments = [{"segment_id": "s1", "text": "texto fuente", "page_start": 1}]
+        mappings = [{"unidad_orden": 1, "tema": "T", "matched_segments": [{"segment_id": "s1"}]}]
+        lessons = [
+            {"tipo": "texto", "unidad_orden": 1, "tema_regulatorio": "T", "nombre": "L", "contenido": "c"},
+            {"tipo": "quiz", "unidad_orden": 1, "tema_regulatorio": "Eval", "nombre": "Q", "contenido": {}},
+        ]
+        pairs = build_lesson_sources(lessons, segments, mappings)
+        self.assertEqual(len(pairs), 1)  # solo la de texto con fuente
+        self.assertEqual(pairs[0][1], "texto fuente")
+
+
 class CoursePlanningTests(SimpleTestCase):
     def test_resolve_max_lecciones_auto_scales_to_book(self):
         from content_pipeline.services.course_planning import (
@@ -560,6 +710,78 @@ class CoverageAlertTests(SimpleTestCase):
         alert = coverage_alert(mappings)
         self.assertEqual(alert["weak"], [])
         self.assertEqual(alert["uncovered"], [])
+
+
+class ProvenanceMappingTests(SimpleTestCase):
+    def _segments(self):
+        return [
+            {"segment_id": f"seg_000{i}", "title": f"T{i}", "keywords": [f"k{i}"],
+             "text": f"texto {i}", "page_start": i * 10, "page_end": i * 10 + 2}
+            for i in range(1, 4)
+        ]
+
+    def test_provenance_used_over_lexical(self):
+        manifest = {"unidades": [{"orden": 1, "nombre": "U1", "temas": ["Tema X"]}]}
+        provenance = [{"unidad_orden": 1, "tema": "Tema X", "segment_ids": ["seg_0002"]}]
+        mappings = map_topics_to_segments(manifest, self._segments(), provenance=provenance)
+        ms = mappings[0]["matched_segments"]
+        self.assertEqual(len(ms), 1)
+        self.assertEqual(ms[0]["segment_id"], "seg_0002")
+        self.assertEqual(ms[0]["score"], 1.0)
+        self.assertTrue(ms[0]["reason"].startswith("Procedencia"))
+        self.assertEqual(ms[0]["page_start"], 20)
+
+    def test_invalid_provenance_ids_fall_back_to_lexical(self):
+        manifest = {"unidades": [{"orden": 1, "nombre": "U1", "temas": ["texto 1"]}]}
+        # IDs inexistentes => se ignoran => cae al mapeo lexical (que igual encuentra seg_0001).
+        provenance = [{"unidad_orden": 1, "tema": "texto 1", "segment_ids": ["seg_9999"]}]
+        mappings = map_topics_to_segments(manifest, self._segments(), provenance=provenance)
+        ms = mappings[0]["matched_segments"]
+        self.assertTrue(ms)  # hubo fallback lexical
+        self.assertFalse(str(ms[0].get("reason", "")).startswith("Procedencia"))
+
+    def test_no_provenance_is_pure_lexical(self):
+        manifest = {"unidades": [{"orden": 1, "nombre": "U1", "temas": ["texto 2"]}]}
+        mappings = map_topics_to_segments(manifest, self._segments())
+        self.assertTrue(mappings[0]["matched_segments"])
+
+
+class WeakMappingDegradeTests(SimpleTestCase):
+    def test_mapping_is_weak(self):
+        from content_pipeline.processors.llm_lesson_writer import _mapping_is_weak
+        self.assertTrue(_mapping_is_weak(None))
+        self.assertTrue(_mapping_is_weak({"matched_segments": []}))
+        self.assertTrue(_mapping_is_weak({"matched_segments": [{"segment_id": "s1", "below_min_score": True}]}))
+        self.assertFalse(_mapping_is_weak({"matched_segments": [{"segment_id": "s1"}]}))
+        self.assertFalse(_mapping_is_weak({"matched_segments": [
+            {"segment_id": "s1", "below_min_score": True}, {"segment_id": "s2"}]}))
+
+    def test_weak_mapping_degrades_without_calling_llm(self):
+        from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
+
+        class _BoomClient:
+            """Si el writer llama al LLM en una fuente débil, el test falla."""
+            meter = None
+            def complete_meta(self, **kw): raise AssertionError("no debe llamar al LLM con fuente débil")
+            def complete(self, **kw): raise AssertionError("no debe llamar al LLM con fuente débil")
+
+        manifest = {
+            "curso": {"nombre": "C", "codigo": "X"},
+            "unidades": [{"orden": 1, "nombre": "U1", "categoria": "General",
+                          "horas_elearning": 1, "temas": ["Tema sin fuente"]}],
+        }
+        segments = [{"segment_id": "s1", "title": "otro", "keywords": ["x"],
+                     "text": "texto irrelevante", "page_start": 5, "page_end": 5,
+                     "blocks": [{"page": 5, "text": "texto irrelevante"}]}]
+        # Match forzado bajo umbral => fuente débil.
+        mappings = [{"unidad_orden": 1, "tema": "Tema sin fuente",
+                     "matched_segments": [{"segment_id": "s1", "score": 0.05, "below_min_score": True}]}]
+
+        lessons = list(generate_lessons_llm(manifest, segments, mappings, client=_BoomClient(), model="fake"))
+        texto = [l for l in lessons if l["tipo"] == "texto"]
+        self.assertEqual(len(texto), 1)
+        self.assertTrue(texto[0]["fuente_debil"])           # marcada para revisión
+        self.assertIn("## Objetivo", texto[0]["contenido"])  # extractivo neutral, con estructura
 
 
 class TaxonomyResolveTests(SimpleTestCase):

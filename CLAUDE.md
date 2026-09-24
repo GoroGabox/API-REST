@@ -99,6 +99,50 @@ JWT via `rest_framework_simplejwt` — `MyTokenObtainPairView` extends the defau
 
 Spanish resource names in URLs (`pruebas`, `perfil-estudiante`, `ventas`, `cursos`) — keep that style when adding routes. Routers in each app's `urls.py`; the project URLconf only mounts apps under `/api/v1/{accounts,sales,schools}/`.
 
+## Content pipeline (`content_pipeline/`)
+
+Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y ejercicios a partir de PDFs con IA (Anthropic). La usa el endpoint de streaming `schools.views.CourseGenerateView` (`POST /api/v1/schools/cursos/generar/`) y los management commands de abajo (que viven en `schools/management/commands/`).
+
+Módulos clave:
+- `services/course_generator.py` — orquestador del stream (eventos NDJSON `step`/`warn`/`lesson`/`done`/`error`).
+- `services/course_planning.py` — dimensionar el curso al libro (`resolve_max_lecciones`, `truncation_notes`) + validar el temario como checklist (`extract_temario_topics`, `validate_topics_present`).
+- `processors/manifest_from_content.py` — infiere la estructura del **libro completo** (fuente única de estructura; el temario ya NO la dicta). `manifest_llm.py`/`manifest_builder.py` solo parsean el temario para el checklist.
+- `processors/llm_lesson_writer.py` — redacta las lecciones ancladas a la fuente (RAG) con detección de truncamiento.
+- `processors/faithfulness.py` — auditoría de fidelidad (guard de cifras `unsupported_figures`, anclaje lexical `anchoring_score`, juez LLM `judge_lessons_llm`). REPORTE, no bloquea.
+- `taxonomy.py` — **14 categorías canónicas** compartidas por lecciones y banco de exámenes; `resolve()` deduplica variantes → `General` si no encaja.
+- `licenses.py` — orientación del curso por licencia (A1–A5): mismo libro sirve a varias clases, el prompt enfoca la licencia objetivo (`orientation_for(codigo, override)`).
+- `processors/ejercicio_classifier.py` — clasifica preguntas del cuestionario en la misma taxonomía.
+
+**Modelo del generador (importante):** el curso se arma del **libro completo** y se **auto-dimensiona** (≈1 lección por segmento, techo 100) para no truncar; el **temario es un checklist** que se valida al final (avisa temas faltantes); la **categoría** sale de la taxonomía cerrada; el curso se **orienta a la licencia** del código; la **fidelidad** se audita (cifras/anclaje/juez) sin bloquear; el **ancla de fuente** es el párrafo real con su página exacta (`segment_book.blocks` + `lesson_generator._sources_for_segments`).
+
+### Commands (en `schools/management/commands/`)
+
+Flujo vivo — cursos (libro → JSON local → BD):
+```powershell
+# 1. Genera el curso desde el CONTENIDO (local, con ANTHROPIC_API_KEY). El temario es opcional
+#    (checklist). --orientacion se deriva del código si se omite. --judge = juez LLM (costo extra).
+python manage.py generate_course --contenido "Libro.pdf" --temario "Temario A4.pdf" `
+  --nombre "Curso Profesional Clase A4" --codigo A4 --costo 49990 --out out/a4.json --is-profesional --modo final
+# 2. Importa a la BD (upsert por código; --dry-run, --prune destructivo)
+python manage.py import_course --file out/a4.json
+# Auditar un JSON ya generado: cifras (triage) / --contenido <pdf> (anclaje real) / --llm (juez)
+python manage.py audit_course_json out/a4.json --contenido "Libro.pdf" --llm
+```
+
+Flujo vivo — banco de ejercicios (PDF → JSON → BD):
+```powershell
+python manage.py build_ejercicios_json --pdf "Cuestionario Clase B.pdf" --out out/ejercicios_b.json
+python manage.py import_ejercicios --file out/ejercicios_b.json   # idempotente por texto de pregunta
+```
+
+Media: `generate_media` — genera el audio (TTS) de un curso ya generado y setea `url_audio`.
+
+Legacy A2 (hardcodeados al Curso Profesional A2, **no** usan el flujo genérico ni taxonomía/orientación/auditoría; solo para ese curso): `extract_a2_book`, `build_a2_lessons`, `build_a2_pipeline`, `validate_a2_course`, `import_a2_course`.
+
+Demo/seed: `seed_catalogo` — datos de ejemplo (dev).
+
+`generate_course` se corre en local (caro/IA) y el JSON se sube con `import_course` en el entorno desplegado (sin IA ni PDFs). Ver la memoria de seed para poblar Railway con `DATABASE_URL` pública.
+
 ## Conventions
 
 - Models, fields, and serializers use Spanish identifiers (`Usuario`, `nombre`, `apellido`, `escuela`, `pregunta`, `respuesta`). Match that — don't introduce English names mid-domain.

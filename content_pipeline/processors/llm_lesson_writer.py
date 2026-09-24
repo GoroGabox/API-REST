@@ -61,10 +61,52 @@ def _missing_sections(body: str) -> list[str]:
     """Encabezados obligatorios ausentes en el cuerpo redactado."""
     return [heading for heading in _REQUIRED_SECTIONS if heading not in body]
 
+
+def _safe_stub_body(
+    title: str, tema: str, unidad_nombre: str,
+    sources: list[dict[str, Any]], source_name: str,
+) -> str:
+    """Cuerpo mínimo válido cuando la redacción falla, para no romper el curso.
+
+    Trae las 9 secciones obligatorias (neutras, sin inventar datos) + la cita de
+    fuente, de modo que pase la estructura y el importador. Señal de revisión.
+    """
+    t = (tema or title).strip()
+    u = (unidad_nombre or "").strip().lower()
+    return (
+        f"# {title}\n\n"
+        f"## Objetivo\nComprender los aspectos esenciales de {t.lower()}.\n\n"
+        f"## Introducción\n{t} es un tema de {u}. Esta lección requiere revisión "
+        "editorial: no se pudo redactar automáticamente desde la fuente.\n\n"
+        f"## Desarrollo\nRevisa el material fuente indicado para estudiar {t.lower()} "
+        "en profundidad.\n\n"
+        "## Aplicación práctica\nAplica estos conceptos al conducir con criterio preventivo.\n\n"
+        "## Puntos clave\n- Revisar la fuente citada.\n- Tema pendiente de redacción.\n\n"
+        "## Ejemplo aplicado\nConsulta un caso concreto en el material fuente.\n\n"
+        "## Errores frecuentes\n- Estudiar sin consultar la fuente oficial.\n\n"
+        "## Actividad breve\nLee las páginas indicadas y resume las ideas principales.\n\n"
+        "## Resumen\nLección pendiente de redacción; ver la fuente.\n\n"
+        f"## Fuente\n{_source_markdown(sources, source_name)}"
+    )
+
+
+def _mapping_is_weak(mapping: dict[str, Any] | None) -> bool:
+    """True si el tema no tiene fuente sólida: sin segmentos o solo matches
+    forzados bajo umbral (``below_min_score``).
+
+    Con fuente débil, redactar con el LLM produce alucinación (escribe desde un
+    segmento irrelevante o desde conocimiento general). En ese caso se degrada al
+    renderizador extractivo neutral, que NO inventa datos.
+    """
+    matched = (mapping or {}).get("matched_segments") or []
+    if not matched:
+        return True
+    return all(bool(seg.get("below_min_score")) for seg in matched)
+
 LESSON_SYSTEM = """\
 Eres un redactor pedagógico experto en cursos de conducción en Chile. Escribes
 lecciones e-learning claras, en español neutro, para estudiantes adultos.
-
+{orientacion}
 Recibes: el tema de una lección, su unidad, los objetivos de aprendizaje y
 extractos del material fuente oficial del curso.
 
@@ -203,6 +245,16 @@ def _complete_lesson_body(
     raise ValueError(last_error)
 
 
+def _orientacion_txt(orientacion: str | None) -> str:
+    if not orientacion:
+        return ""
+    return (
+        f"\nESTE CURSO ES PARA LA {orientacion} El material fuente sirve a varias "
+        "licencias; cuando un tema aplique a más de una, enfoca los ejemplos, el "
+        "énfasis y la aplicación práctica hacia esa licencia, sin inventar datos.\n"
+    )
+
+
 def _write_body(
     *,
     title: str,
@@ -215,6 +267,7 @@ def _write_body(
     client: LLMClient,
     model: str,
     context,
+    orientacion: str | None = None,
 ) -> str:
     """Redacta el cuerpo con LLM; ante fallo cae al renderizador extractivo."""
     fuente = _source_for_prompt(segments)
@@ -222,7 +275,9 @@ def _write_body(
         fuente = "(Sin extractos mapeados para este tema en el material fuente.)"
     try:
         body = _complete_lesson_body(
-            system=LESSON_SYSTEM.replace("{titulo}", title),
+            system=LESSON_SYSTEM.replace("{titulo}", title).replace(
+                "{orientacion}", _orientacion_txt(orientacion)
+            ),
             user=LESSON_USER.format(
                 tema=tema,
                 unidad=unidad_nombre,
@@ -278,6 +333,7 @@ def generate_lessons_llm(
     mappings: list[dict[str, Any]],
     *,
     source_name: str = SOURCE_NAME,
+    orientacion: str | None = None,
     client: LLMClient | None = None,
     model: str | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -318,21 +374,36 @@ def generate_lessons_llm(
             unit_sources.extend(sources)
             duration = _clamp(round(minutes_per_topic), 15, 60)
             title = _lesson_title(tema, 0, 1)
-            context = build_lesson_context(
-                title, tema, unidad_nombre, 0, 1, matched_segments, sources
-            )
-            body = _write_body(
-                title=title,
-                tema=tema,
-                unidad_nombre=unidad_nombre,
-                objetivos=objetivos,
-                segments=matched_segments,
-                sources=sources,
-                source_name=source_name,
-                client=client,
-                model=model,
-                context=context,
-            )
+            # Toda la construcción del cuerpo va en try/except: una lección jamás
+            # debe tumbar la generación completa del curso (antes un fallo aquí
+            # crasheaba el comando). Ante cualquier error, cuerpo mínimo seguro.
+            fuente_debil = _mapping_is_weak(mapping)
+            try:
+                context = build_lesson_context(
+                    title, tema, unidad_nombre, 0, 1, matched_segments, sources
+                )
+                # Fuente débil (sin segmentos o solo matches bajo umbral): NO
+                # redactar con el LLM —alucinaría desde una fuente irrelevante—;
+                # degradar al extractivo neutral y marcar para revisión.
+                if fuente_debil:
+                    body = render_generic_lesson(context, source_name)
+                else:
+                    body = _write_body(
+                        title=title,
+                        tema=tema,
+                        unidad_nombre=unidad_nombre,
+                        objetivos=objetivos,
+                        segments=matched_segments,
+                        sources=sources,
+                        source_name=source_name,
+                        client=client,
+                        model=model,
+                        context=context,
+                        orientacion=orientacion,
+                    )
+            except Exception:  # noqa: BLE001 — resiliencia: no tumbar el curso
+                body = _safe_stub_body(title, tema, unidad_nombre, sources, source_name)
+                fuente_debil = True
             yield {
                 "unidad_orden": orden,
                 "unidad_nombre": unidad_nombre,
@@ -349,6 +420,7 @@ def generate_lessons_llm(
                 "contenido": body,
                 "transcripcion": "",
                 "fuentes": sources,
+                "fuente_debil": fuente_debil,
             }
             position += 1
 

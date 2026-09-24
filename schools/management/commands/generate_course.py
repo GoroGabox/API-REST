@@ -16,15 +16,23 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from content_pipeline.exporters.json_exporter import write_json
+from content_pipeline.licenses import orientation_for
 from content_pipeline.extractors.pdf_text_extractor import extract_pdf_pages
 from content_pipeline.llm.client import LLMClient, default_model, draft_model
+from content_pipeline.processors.faithfulness import (
+    ANCHOR_MIN,
+    JUDGE_MIN,
+    audit_lessons,
+    build_lesson_sources,
+    judge_lessons_llm,
+)
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
 from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
 from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
 )
-from content_pipeline.processors.map_topics import map_topics_to_segments
+from content_pipeline.processors.map_topics import coverage_alert, map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 from content_pipeline.services.course_planning import (
     extract_temario_topics,
@@ -60,6 +68,17 @@ class Command(BaseCommand):
         parser.add_argument("--modo", choices=["draft", "final"], default="draft",
                             help="draft usa el modelo barato para las lecciones; final usa el modelo principal.")
         parser.add_argument("--source-name", default=None, help="Nombre de la fuente citada en las lecciones.")
+        parser.add_argument("--orientacion", default=None,
+                            help="Texto para orientar el curso a una licencia. Si se omite, se deriva del "
+                                 "código (A2/A4/A5…). Útil porque varias licencias salen del mismo libro.")
+        parser.add_argument("--judge", action="store_true",
+                            help="Juez LLM de fidelidad al final (opt-in, con costo extra).")
+        parser.add_argument("--judge-min", type=float, default=JUDGE_MIN,
+                            help=f"Umbral de fidelidad del juez: bajo esto la lección es CRÍTICA "
+                                 f"(def. {JUDGE_MIN}).")
+        parser.add_argument("--anchor-min", type=float, default=ANCHOR_MIN,
+                            help=f"Umbral de anclaje lexical: bajo esto se marca la lección "
+                                 f"(def. {ANCHOR_MIN}).")
 
     def handle(self, *args, **opts):
         contenido_path = Path(opts["contenido"])
@@ -81,6 +100,9 @@ class Command(BaseCommand):
         n_unidades = opts.get("unidades")
         modo = opts["modo"]
         source_name = opts["source_name"] or f"Contenido: {nombre}"
+        orientacion = orientation_for(codigo, opts.get("orientacion"))
+        if orientacion:
+            self.stdout.write(f"Orientación ({codigo}): {orientacion}")
 
         use_llm = LLMClient.is_available()
         client = LLMClient() if use_llm else None
@@ -115,6 +137,7 @@ class Command(BaseCommand):
             segments, nombre=nombre, codigo=codigo,
             is_profesional=opts["is_profesional"], max_lecciones=max_lec,
             n_unidades=n_unidades, use_llm=use_llm, client=client, final_model=final_model,
+            orientacion=orientacion,
         )
 
         # El costo lo fija el operador (obligatorio, > 0): sobrescribe el
@@ -125,7 +148,25 @@ class Command(BaseCommand):
         n_topics = sum(len(u["temas"]) for u in manifest["unidades"])
         self.stdout.write(f"Estructura del libro: {n_units} unidades · {n_topics} temas.")
 
-        mappings = map_topics_to_segments(manifest, segments)
+        provenance = manifest.pop("_provenance", None)
+        mappings = map_topics_to_segments(manifest, segments, provenance=provenance)
+        cobertura = coverage_alert(mappings)
+        n_prov = sum(
+            1 for m in mappings
+            if (m.get("matched_segments") or [{}])[0].get("reason", "").startswith("Procedencia")
+        )
+        self.stdout.write(
+            f"Mapeo: {len(cobertura['solid'])}/{cobertura['total']} temas con fuente sólida "
+            f"({n_prov} por procedencia del generador)."
+        )
+        debiles = list(cobertura["weak"]) + list(cobertura["uncovered"])
+        if debiles:
+            self.stderr.write(self.style.WARNING(
+                f"⚠ {len(debiles)} tema(s) sin fuente sólida (su lección se degrada al extractivo, "
+                f"sin inventar; revisar el mapeo):"
+            ))
+            for label in debiles:
+                self.stderr.write(self.style.WARNING(f"    - {label}"))
 
         # Temario como checklist: validar que sus temas estén en el curso.
         if temario_path is not None:
@@ -155,7 +196,8 @@ class Command(BaseCommand):
             for index, lesson in enumerate(
                 generate_lessons_llm(
                     manifest, segments, mappings,
-                    source_name=source_name, client=client, model=lesson_model,
+                    source_name=source_name, orientacion=orientacion,
+                    client=client, model=lesson_model,
                 ),
                 start=1,
             ):
@@ -165,7 +207,51 @@ class Command(BaseCommand):
             self.stdout.write("Redactando lecciones…")
             lessons = generate_lessons_generic(manifest, segments, mappings, source_name=source_name)
 
-        payload = {"manifest": manifest, "lessons": lessons}
+        # Auditoría de fidelidad (reporte, no bloquea): cifras sin respaldo +
+        # bajo anclaje al libro. Se imprime y se adjunta al JSON.
+        audit = audit_lessons(lessons, segments, mappings, anchor_min=opts["anchor_min"])
+        self.stdout.write(
+            f"Fidelidad: {audit['auditadas']} auditadas · "
+            f"{len(audit['figuras'])} con cifras sin respaldo · "
+            f"{len(audit['anclaje_bajo'])} con bajo anclaje."
+        )
+        if audit["figuras"]:
+            self.stderr.write(self.style.WARNING("⚠ Cifras que NO aparecen en la fuente (posible dato inventado):"))
+            for f in audit["figuras"]:
+                self.stderr.write(self.style.WARNING(f"    - {f['leccion']}: {', '.join(f['cifras'])}"))
+        if audit["anclaje_bajo"]:
+            self.stderr.write(self.style.WARNING(f"⚠ Bajo anclaje al libro (< {audit['anchor_min']}):"))
+            for a in audit["anclaje_bajo"]:
+                self.stderr.write(self.style.WARNING(f"    - {a['leccion']}: {a['anclaje']}"))
+
+        auditoria = dict(audit)
+        # Juez LLM de fidelidad (opt-in): pasada extra con costo.
+        if opts.get("judge") and use_llm and client is not None:
+            pairs = build_lesson_sources(lessons, segments, mappings)
+            self.stdout.write(f"Juez LLM de fidelidad · {len(pairs)} lecciones…")
+            juez = judge_lessons_llm(pairs, client=client, model=lesson_model, judge_min=opts["judge_min"])
+            self.stdout.write(
+                f"  Fidelidad promedio: {juez['promedio']} · "
+                f"críticas (< {juez['judge_min']}): {len(juez['criticas'])} · "
+                f"con reparos menores: {len(juez['con_reparos'])}"
+            )
+            if juez["criticas"]:
+                self.stderr.write(self.style.ERROR("  CRÍTICAS (fidelidad baja):"))
+                for item in juez["criticas"]:
+                    self.stderr.write(self.style.ERROR(f"    - {item['leccion']} · fidelidad {item['score']}"))
+                    for claim in item["claims"]:
+                        self.stderr.write(f"        · {claim}")
+            if juez["con_reparos"]:
+                self.stderr.write(self.style.WARNING("  Con reparos menores:"))
+                for item in juez["con_reparos"]:
+                    self.stderr.write(self.style.WARNING(f"    - {item['leccion']} · fidelidad {item['score']}"))
+                    for claim in item["claims"]:
+                        self.stderr.write(f"        · {claim}")
+            auditoria["juez"] = juez
+
+        payload = {"manifest": manifest, "lessons": lessons, "auditoria": auditoria}
+        if provenance:  # para que audit_course_json --contenido reuse el mismo mapeo
+            payload["provenance"] = provenance
         if use_llm and client is not None:
             payload["ia"] = client.meter.as_dict()
 
@@ -185,7 +271,8 @@ class Command(BaseCommand):
     # -- construcción del manifest ------------------------------------------
 
     def _manifest_desde_contenido(self, segments, *, nombre, codigo, is_profesional,
-                                  max_lecciones, n_unidades, use_llm, client, final_model):
+                                  max_lecciones, n_unidades, use_llm, client, final_model,
+                                  orientacion=None):
         """Estructura inferida del propio contenido (IA con fallback heurístico)."""
         self.stdout.write("Infiriendo la estructura desde el libro completo…")
         if use_llm:
@@ -193,7 +280,8 @@ class Command(BaseCommand):
                 return build_manifest_from_content_llm(
                     segments, nombre=nombre, codigo=codigo,
                     is_profesional=is_profesional, max_lecciones=max_lecciones,
-                    n_unidades=n_unidades, client=client, model=final_model,
+                    n_unidades=n_unidades, orientacion=orientacion,
+                    client=client, model=final_model,
                 )
             except Exception as exc:  # noqa: BLE001 — degradar a heurística
                 self.stderr.write(f"La IA no pudo inferir la estructura ({exc}); uso heurística.")

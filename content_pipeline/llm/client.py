@@ -254,5 +254,11 @@ def parse_json_object(raw: str) -> dict:
     snippet = text[start : end + 1]
     try:
         return json.loads(snippet)
+    except json.JSONDecodeError:
+        pass
+    # Reparo tolerante: quita comas colgantes antes de } o ] (error común del LLM).
+    repaired = re.sub(r",(\s*[}\]])", r"\1", snippet)
+    try:
+        return json.loads(repaired)
     except json.JSONDecodeError as exc:
         raise LLMError(f"JSON inválido del LLM: {exc}") from exc

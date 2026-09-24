@@ -35,7 +35,9 @@ from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
 )
-from content_pipeline.processors.map_topics import map_topics_to_segments
+from content_pipeline.licenses import orientation_for
+from content_pipeline.processors.faithfulness import audit_lessons
+from content_pipeline.processors.map_topics import coverage_alert, map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 from content_pipeline.services.course_planning import (
     extract_temario_topics,
@@ -58,6 +60,7 @@ def _lesson_preview(lesson: dict[str, Any]) -> dict[str, Any]:
         "nombre": lesson.get("nombre"),
         "duracion_min": lesson.get("duracion_min"),
         "categoria_nombre": lesson.get("categoria"),
+        "fuente_debil": bool(lesson.get("fuente_debil")),
     }
 
 
@@ -73,14 +76,19 @@ def generate_course_stream(
     idioma: str = "es",
     modo: str = "draft",
     source_name: str | None = None,
+    orientacion: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Genera un curso completo emitiendo eventos de progreso.
+
+    ``orientacion`` enfoca el curso hacia una licencia (útil cuando A2/A4/A5
+    salen del mismo libro): si no se pasa, se deriva del ``codigo``.
 
     Cualquier excepción se captura y se emite como evento ``error`` para que el
     cliente pueda mostrarla en el log en vez de recibir un stream truncado.
     """
     try:
         source_name = source_name or f"Contenido: {nombre}"
+        orientacion = orientation_for(codigo, orientacion)
 
         # Modo IA vs extractivo. Sin API key/SDK -> fallback determinista.
         use_llm = LLMClient.is_available()
@@ -99,6 +107,10 @@ def generate_course_stream(
                 step="modo",
                 message="IA no configurada (sin ANTHROPIC_API_KEY): generación heurística extractiva.",
             )
+
+        if orientacion:
+            yield _event("step", step="orientacion",
+                         message=f"Orientación del curso ({codigo}): {orientacion}")
 
         # 1. CONTENIDO primero: es la fuente de la estructura y de las lecciones.
         yield _event("step", step="contenido", message="Extrayendo el contenido fuente…")
@@ -134,7 +146,7 @@ def generate_course_stream(
                 manifest = build_manifest_from_content_llm(
                     segments, nombre=nombre, codigo=codigo,
                     is_profesional=is_profesional, max_lecciones=max_lec,
-                    client=llm_client, model=final_model,
+                    orientacion=orientacion, client=llm_client, model=final_model,
                 )
             except Exception as exc:  # noqa: BLE001 — degradar a heurística
                 yield _event(
@@ -161,9 +173,44 @@ def generate_course_stream(
             message=f"Estructura del libro: {n_units} unidades · {n_topics} temas.",
         )
 
-        # 4. Mapear cada tema generado con su fuente (para la redacción).
+        # 4. Mapear cada tema generado con su fuente (para la redacción). La
+        # procedencia (segmentos que el LLM ancló a cada tema) se usa primero;
+        # el resto cae al mapeo lexical. Se saca del manifest para no persistirla.
+        provenance = manifest.pop("_provenance", None)
         yield _event("step", step="mapear", message="Asociando cada tema con su fuente…")
-        mappings = map_topics_to_segments(manifest, segments)
+        mappings = map_topics_to_segments(manifest, segments, provenance=provenance)
+        cobertura = coverage_alert(mappings)
+        n_prov = sum(
+            1 for m in mappings
+            if (m.get("matched_segments") or [{}])[0].get("reason", "").startswith("Procedencia")
+        )
+        yield _event(
+            "step",
+            step="mapear_ok",
+            message=(
+                f"{len(cobertura['solid'])}/{cobertura['total']} temas con fuente sólida "
+                f"({n_prov} por procedencia del generador)."
+            ),
+        )
+        # Alerta: temas mal anclados (solo match débil o sin fuente). Sus lecciones
+        # se degradan al extractivo neutral (no alucinan) y deben revisarse: suele
+        # ser un tema real del libro mapeado a la sección equivocada.
+        debiles = list(cobertura["weak"]) + list(cobertura["uncovered"])
+        if debiles:
+            detalle = "; ".join(debiles[:12])
+            if len(debiles) > 12:
+                detalle += f"; … (+{len(debiles) - 12} más)"
+            yield _event(
+                "warn",
+                step="mapeo_debil",
+                message=(
+                    f"⚠ {len(debiles)} tema(s) sin fuente sólida en el libro "
+                    f"({len(cobertura['weak'])} match débil · {len(cobertura['uncovered'])} sin fuente). "
+                    f"Su lección se degrada (sin inventar) — revisar el mapeo: {detalle}"
+                ),
+                temas_debiles=list(cobertura["weak"]),
+                temas_sin_fuente=list(cobertura["uncovered"]),
+            )
 
         # 5. TEMARIO como checklist: validar que sus temas estén en el curso.
         if temario_path is not None:
@@ -206,6 +253,7 @@ def generate_course_stream(
                     segments,
                     mappings,
                     source_name=source_name,
+                    orientacion=orientacion,
                     client=llm_client,
                     model=lesson_model,
                 ),
@@ -223,6 +271,45 @@ def generate_course_stream(
             lessons = generate_lessons_generic(manifest, segments, mappings, source_name=source_name)
             for lesson in lessons:
                 yield _event("lesson", lesson=_lesson_preview(lesson))
+
+        # Auditoría de fidelidad (reporte, no bloquea): cifras sin respaldo en la
+        # fuente + lecciones con bajo anclaje al libro.
+        audit = audit_lessons(lessons, segments, mappings)
+        yield _event(
+            "step",
+            step="fidelidad_ok",
+            message=(
+                f"Fidelidad: {audit['auditadas']} lecciones auditadas · "
+                f"{len(audit['figuras'])} con cifras sin respaldo · "
+                f"{len(audit['anclaje_bajo'])} con bajo anclaje."
+            ),
+        )
+        if audit["figuras"]:
+            det = "; ".join(f"{f['leccion']} [{', '.join(f['cifras'])}]" for f in audit["figuras"][:10])
+            if len(audit["figuras"]) > 10:
+                det += f"; … (+{len(audit['figuras']) - 10} más)"
+            yield _event(
+                "warn",
+                step="fidelidad_cifras",
+                message=(
+                    f"⚠ {len(audit['figuras'])} lección(es) con cifras que NO aparecen en la "
+                    f"fuente (posible dato inventado): {det}"
+                ),
+                lecciones=audit["figuras"],
+            )
+        if audit["anclaje_bajo"]:
+            det = "; ".join(f"{a['leccion']} ({a['anclaje']})" for a in audit["anclaje_bajo"][:10])
+            if len(audit["anclaje_bajo"]) > 10:
+                det += f"; … (+{len(audit['anclaje_bajo']) - 10} más)"
+            yield _event(
+                "warn",
+                step="fidelidad_anclaje",
+                message=(
+                    f"⚠ {len(audit['anclaje_bajo'])} lección(es) con bajo anclaje al libro "
+                    f"(< {audit['anchor_min']}): {det}"
+                ),
+                lecciones=audit["anclaje_bajo"],
+            )
 
         if use_llm and llm_client is not None:
             meter = llm_client.meter

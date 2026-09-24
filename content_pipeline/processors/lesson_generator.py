@@ -8,6 +8,7 @@ from typing import Any
 from content_pipeline.processors.clean_text import (
     extract_keywords,
     hash_text_fragment,
+    is_probable_heading,
     shorten_text,
     unique_preserve_order,
 )
@@ -215,11 +216,64 @@ def _source_ideas(
     return unique_preserve_order([idea for _score, idea in scored])[:max_items]
 
 
+def _anchor_blocks(
+    tema: str, segments: list[dict[str, object]], max_items: int = 3
+) -> list[tuple[int, str]]:
+    """Selecciona los párrafos (bloques) más relevantes al tema, con su página.
+
+    Usa el campo ``blocks`` de los segmentos (texto + página exacta). Puntúa cada
+    bloque por solapamiento de keywords del tema, descartando encabezados y
+    bloques muy cortos. Devuelve hasta ``max_items`` pares (página, texto). Si el
+    segmento no trae ``blocks`` (datos antiguos), devuelve [] y el llamador cae al
+    ancla por rango de segmento.
+    """
+    blocks: list[tuple[int, str]] = []
+    for segment in segments:
+        for block in segment.get("blocks") or []:
+            text = str(block.get("text", "")).strip()
+            page = int(block.get("page") or 0)
+            if text and page:
+                blocks.append((page, text))
+    if not blocks:
+        return []
+    terms = {term for term in extract_keywords(tema, max_keywords=12) if len(term) >= 4}
+    scored: list[tuple[int, int, str]] = []  # (score, page, text)
+    for page, text in blocks:
+        if is_probable_heading(text) or len(text) < 80:
+            score = -1
+        else:
+            lowered = text.lower()
+            score = sum(1 for term in terms if term in lowered)
+        scored.append((score, page, text))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    top = [(page, text) for score, page, text in scored if score > 0][:max_items]
+    if not top:  # ningún bloque matchea el tema: usa los primeros sustantivos
+        top = [(page, text) for score, page, text in scored if score >= 0][:max_items]
+    if not top:
+        top = [(page, text) for _score, page, text in scored[:max_items]]
+    return top
+
+
 def _sources_for_segments(
     segments: list[dict[str, object]], tema: str, source_name: str = SOURCE_NAME
 ) -> list[dict[str, object]]:
     if not segments:
         return []
+    # Ancla precisa: un párrafo real por fuente, con su página exacta.
+    anchors = _anchor_blocks(tema, segments)
+    if anchors:
+        return [
+            {
+                "fuente_nombre": source_name,
+                "pagina_inicio": page,
+                "pagina_fin": page,
+                "tema_regulatorio": tema,
+                "fragmento_resumen": shorten_text(text, 600),
+                "hash_fragmento": hash_text_fragment(text),
+            }
+            for page, text in anchors
+        ]
+    # Fallback (segmentos sin bloques por página): ancla por rango de segmento.
     page_start = min(int(segment.get("page_start", 0)) for segment in segments)
     page_end = max(int(segment.get("page_end", 0)) for segment in segments)
     text = _combined_text(segments)

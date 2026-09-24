@@ -132,13 +132,59 @@ def _match_payload(
     return payload
 
 
+def _provenance_lookup(
+    provenance: list[dict[str, object]] | None,
+) -> dict[tuple[int, str], list[str]]:
+    lookup: dict[tuple[int, str], list[str]] = {}
+    for entry in provenance or []:
+        ids = [str(s) for s in (entry.get("segment_ids") or [])]
+        if ids:
+            lookup[(int(entry.get("unidad_orden", 0)), str(entry.get("tema", "")))] = ids
+    return lookup
+
+
+def _provenance_matches(
+    seg_ids: list[str],
+    segment_by_id: dict[str, dict[str, object]],
+    top_k: int,
+) -> list[dict[str, object]]:
+    """Payloads de matched_segments a partir de los IDs declarados por el LLM.
+
+    Solo usa IDs que existen realmente entre los segmentos (descarta alucinados).
+    Score 1.0: es la fuente que el propio generador ancló al tema.
+    """
+    out: list[dict[str, object]] = []
+    for sid in seg_ids[:top_k]:
+        segment = segment_by_id.get(sid)
+        if segment is None:
+            continue
+        out.append({
+            "segment_id": sid,
+            "score": 1.0,
+            "page_start": segment.get("page_start", 0),
+            "page_end": segment.get("page_end", 0),
+            "reason": "Procedencia declarada por el generador al inferir la estructura",
+        })
+    return out
+
+
 def map_topics_to_segments(
     manifest: dict[str, object],
     segments: list[dict[str, object]],
     min_score: float = 0.20,
     top_k: int = 5,
+    provenance: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
+    """Asocia cada tema con sus segmentos fuente.
+
+    Si ``provenance`` trae los IDs de segmentos que el generador ancló a un tema
+    (ver ``manifest_from_content``), se usan DIRECTAMENTE para ese tema (evita el
+    re-mapeo lexical que mandaba temas a la sección equivocada). Los temas sin
+    procedencia válida caen al mapeo lexical/tfidf de siempre.
+    """
     candidate_segments = [segment for segment in segments if not _is_low_value_segment(segment)]
+    segment_by_id = {str(s.get("segment_id")): s for s in segments}
+    prov_lookup = _provenance_lookup(provenance)
     topic_rows: list[tuple[dict[str, object], str]] = []
     for unidad in manifest.get("unidades", []):
         if not isinstance(unidad, dict):
@@ -152,6 +198,18 @@ def map_topics_to_segments(
 
     mappings: list[dict[str, object]] = []
     for topic_index, (unidad, tema) in enumerate(topic_rows):
+        # Procedencia primero: si el generador declaró segmentos válidos, se usan.
+        prov_ids = prov_lookup.get((int(unidad.get("orden", 0)), tema))
+        if prov_ids:
+            prov_scored = _provenance_matches(prov_ids, segment_by_id, top_k)
+            if prov_scored:
+                mappings.append({
+                    "unidad_orden": unidad.get("orden"),
+                    "unidad_nombre": unidad.get("nombre"),
+                    "tema": tema,
+                    "matched_segments": prov_scored,
+                })
+                continue  # no re-mapear lexical: la procedencia manda
         scored: list[dict[str, object]] = []
         below_threshold: list[dict[str, object]] = []
         for segment_index, segment in enumerate(candidate_segments):
