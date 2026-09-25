@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from schools.models import Categoria, Ejercicio
+from schools.models import Categoria, Ejercicio, PREGUNTAS_SESION_TEMATICA
 from .models import Certificado, Prueba, PruebaEjercicio
 
 
@@ -24,7 +24,7 @@ APROBACION_MIN_PCT = Decimal('70')
 APROBACION_EXAMEN_FINAL_PCT = Decimal('80')
 
 
-SIZES = {'completa': 35, 'rapida': 10, 'categoria': 15}
+SIZES = {'completa': 35, 'rapida': 10, 'categoria': PREGUNTAS_SESION_TEMATICA}
 TIPOS_VALIDOS = tuple(SIZES.keys())
 
 

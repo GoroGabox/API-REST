@@ -1113,7 +1113,8 @@ class GlosarioViewSet(viewsets.ModelViewSet):
 
 
 class CategoriaViewSet(viewsets.ModelViewSet):
-    queryset = Categoria.objects.all()
+    # `n_ejercicios` alimenta `disponible_tematica` sin una query por categoría.
+    queryset = Categoria.objects.annotate(n_ejercicios=Count('ejercicio'))
     serializer_class = CategoriaSerializer
     permission_classes = [PublicReadOrAdmin]
 

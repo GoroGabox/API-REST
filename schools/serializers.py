@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso
+from .models import (
+    Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
+    PREGUNTAS_SESION_TEMATICA,
+)
 
 class EscuelaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -136,6 +139,17 @@ class GlosarioSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class CategoriaSerializer(serializers.ModelSerializer):
+    # ¿Tiene preguntas suficientes para una Sesión Temática? Solo se expone el
+    # booleano (los clientes filtran con él; no muestran conteos).
+    disponible_tematica = serializers.SerializerMethodField()
+
     class Meta:
         model = Categoria
         fields = '__all__'
+
+    def get_disponible_tematica(self, obj):
+        # `n_ejercicios` viene anotado por CategoriaViewSet; si no, se cuenta.
+        n = getattr(obj, 'n_ejercicios', None)
+        if n is None:
+            n = obj.ejercicio_set.count()
+        return n >= PREGUNTAS_SESION_TEMATICA

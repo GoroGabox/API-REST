@@ -101,6 +101,12 @@ class PlanCurso(models.Model):
         return f"{self.curso.nombre} · {self.dias}d · ${self.precio}"
 
 
+# Preguntas que usa una Sesión Temática del Gimnasio. Una categoría solo se
+# ofrece para esa sesión si tiene al menos esta cantidad de ejercicios.
+# Fuente única: `accounts.services.SIZES['categoria']` la reutiliza.
+PREGUNTAS_SESION_TEMATICA = 15
+
+
 class Categoria(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)

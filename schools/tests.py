@@ -695,3 +695,38 @@ class EditarEstudianteTests(APITestCase):
         self.client.force_authenticate(self.director)
         r = self.client.patch(self._url(self.est.id), {}, format="json")
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class CategoriaDisponibleTematicaTests(APITestCase):
+    """`disponible_tematica` = la categoría tiene preguntas suficientes para una
+    Sesión Temática (PREGUNTAS_SESION_TEMATICA). Endpoint público de lectura."""
+
+    def _ejercicios(self, cat, n):
+        for i in range(n):
+            Ejercicio.objects.create(
+                categoria=cat, pregunta=f"{cat.nombre}-{i}",
+                opcion_a="A", opcion_b="B", respuesta="a",
+            )
+
+    def test_flag_segun_minimo(self):
+        from schools.models import PREGUNTAS_SESION_TEMATICA as MIN
+        llena = Categoria.objects.create(nombre="Llena")
+        justa = Categoria.objects.create(nombre="Justa")
+        corta = Categoria.objects.create(nombre="Corta")
+        vacia = Categoria.objects.create(nombre="Vacía")
+        self._ejercicios(llena, MIN + 5)
+        self._ejercicios(justa, MIN)
+        self._ejercicios(corta, MIN - 1)
+
+        r = self.client.get("/api/v1/schools/categories/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        data = r.data["results"] if isinstance(r.data, dict) else r.data
+        flags = {c["nombre"]: c["disponible_tematica"] for c in data}
+        self.assertEqual(flags, {"Llena": True, "Justa": True, "Corta": False, "Vacía": False})
+        # Solo se expone el booleano, no el conteo.
+        self.assertNotIn("n_ejercicios", data[0])
+
+    def test_minimo_coincide_con_la_sesion_tematica(self):
+        from accounts.services import SIZES
+        from schools.models import PREGUNTAS_SESION_TEMATICA
+        self.assertEqual(SIZES["categoria"], PREGUNTAS_SESION_TEMATICA)
