@@ -37,10 +37,12 @@ from content_pipeline.processors.manifest_from_content import (
 )
 from content_pipeline.licenses import orientation_for
 from content_pipeline.processors.faithfulness import audit_lessons
+from content_pipeline.processors.llm_mapper import map_topics_llm
 from content_pipeline.processors.map_topics import coverage_alert, map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 from content_pipeline.services.course_planning import (
     extract_temario_topics,
+    mapped_source_text,
     resolve_max_lecciones,
     truncation_notes,
     validate_topics_present,
@@ -173,10 +175,18 @@ def generate_course_stream(
             message=f"Estructura del libro: {n_units} unidades · {n_topics} temas.",
         )
 
-        # 4. Mapear cada tema generado con su fuente (para la redacción). La
-        # procedencia (segmentos que el LLM ancló a cada tema) se usa primero;
-        # el resto cae al mapeo lexical. Se saca del manifest para no persistirla.
-        provenance = manifest.pop("_provenance", None)
+        # 4. Mapear cada tema con su fuente. Primero se pide al LLM la PROCEDENCIA
+        # (qué segmentos ancla cada tema) en una llamada aparte robusta; se usa
+        # como fuente primaria y el resto cae al mapeo lexical.
+        provenance = None
+        if use_llm:
+            yield _event("step", step="procedencia", message="Anclando cada tema a sus segmentos (IA)…")
+            try:
+                provenance = map_topics_llm(manifest, segments, client=llm_client, model=final_model)
+            except Exception as exc:  # noqa: BLE001 — degradar a mapeo lexical
+                yield _event("step", step="procedencia_warn",
+                             message=f"No se pudo anclar por IA ({exc}); uso mapeo lexical.")
+                provenance = None
         yield _event("step", step="mapear", message="Asociando cada tema con su fuente…")
         mappings = map_topics_to_segments(manifest, segments, provenance=provenance)
         cobertura = coverage_alert(mappings)
@@ -221,7 +231,8 @@ def generate_course_stream(
                 is_profesional=is_profesional, use_llm=use_llm,
                 client=llm_client, model=final_model,
             )
-            validacion = validate_topics_present(expected, manifest)
+            corpus = mapped_source_text(mappings, segments)
+            validacion = validate_topics_present(expected, manifest, corpus_text=corpus)
             presentes = len(validacion["present"])
             yield _event(
                 "step",

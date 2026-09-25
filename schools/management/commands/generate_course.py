@@ -32,10 +32,12 @@ from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
 )
+from content_pipeline.processors.llm_mapper import map_topics_llm
 from content_pipeline.processors.map_topics import coverage_alert, map_topics_to_segments
 from content_pipeline.processors.segment_book import segment_pages
 from content_pipeline.services.course_planning import (
     extract_temario_topics,
+    mapped_source_text,
     resolve_max_lecciones,
     truncation_notes,
     validate_topics_present,
@@ -148,7 +150,15 @@ class Command(BaseCommand):
         n_topics = sum(len(u["temas"]) for u in manifest["unidades"])
         self.stdout.write(f"Estructura del libro: {n_units} unidades · {n_topics} temas.")
 
-        provenance = manifest.pop("_provenance", None)
+        # Procedencia por IA (llamada aparte, robusta); si falla → mapeo lexical.
+        provenance = None
+        if use_llm:
+            self.stdout.write("Anclando cada tema a sus segmentos (IA)…")
+            try:
+                provenance = map_topics_llm(manifest, segments, client=client, model=final_model)
+            except Exception as exc:  # noqa: BLE001
+                self.stderr.write(self.style.WARNING(f"No se pudo anclar por IA ({exc}); uso mapeo lexical."))
+                provenance = None
         mappings = map_topics_to_segments(manifest, segments, provenance=provenance)
         cobertura = coverage_alert(mappings)
         n_prov = sum(
@@ -177,7 +187,8 @@ class Command(BaseCommand):
                 is_profesional=opts["is_profesional"], use_llm=use_llm,
                 client=client, model=final_model,
             )
-            validacion = validate_topics_present(expected, manifest)
+            corpus = mapped_source_text(mappings, segments)
+            validacion = validate_topics_present(expected, manifest, corpus_text=corpus)
             self.stdout.write(
                 f"Temario: {len(validacion['present'])}/{validacion['expected']} "
                 f"temas presentes en el curso."

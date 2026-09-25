@@ -49,7 +49,7 @@ Reglas:
 - Cada "tema" debe ser un tema enseñable y concreto derivado del material
   (p. ej. "Distancia de frenado"), NO una palabra clave suelta, un encabezado de
   página, una línea de índice ni un título ruidoso.
-{provenance_regla}- Produce aproximadamente {max_lecciones} temas en total (cuenta: 1 lección por
+- Produce aproximadamente {max_lecciones} temas en total (cuenta: 1 lección por
   tema + 1 quiz por unidad).
 - {unidades_instr}
 - No inventes temas ajenos al material.
@@ -70,25 +70,11 @@ Formato JSON exacto:
       "categoria": "una etiqueta EXACTA de la lista",
       "horas_elearning": 0,
       "objetivos": ["objetivo de aprendizaje", "..."],
-      "temas": {temas_ejemplo}
+      "temas": ["tema 1", "tema 2", "..."]
     }}
   ]
 }}
 """
-
-_PROVENANCE_REGLA = (
-    "- Cada tema DEBE declarar en \"segmentos\" los IDs (los [segxxxx] entre corchetes\n"
-    "  de la lista) de los segmentos en que se basa: 1 a 4 IDs, copiados EXACTOS. NO\n"
-    "  inventes IDs ni uses IDs que no estén en la lista. Esa procedencia es la fuente\n"
-    "  real del tema (se redacta desde ahí), así que elígela con cuidado.\n"
-)
-_TEMAS_EJEMPLO_PROV = (
-    '[\n'
-    '        {{"nombre": "tema 1", "segmentos": ["seg_0012", "seg_0013"]}},\n'
-    '        {{"nombre": "tema 2", "segmentos": ["seg_0020"]}}\n'
-    '      ]'
-)
-_TEMAS_EJEMPLO_PLANO = '["tema 1", "tema 2", "..."]'
 
 CONTENT_USER = """\
 Curso: {nombre} (código {codigo}).
@@ -128,35 +114,6 @@ def _clean_str_list(value: Any, limit: int) -> list[str]:
             seen.add(key)
             out.append(s)
     return out
-
-
-def _temas_con_procedencia(value: Any) -> tuple[list[str], dict[str, list[str]]]:
-    """Parsea ``temas`` que pueden ser strings u objetos {nombre, segmentos}.
-
-    Devuelve (nombres_dedup, {nombre_lower: [segment_ids]}). Tolera el formato
-    viejo (lista de strings): entonces la procedencia queda vacía y el mapeo cae
-    a lo lexical.
-    """
-    if not isinstance(value, list):
-        return [], {}
-    nombres: list[str] = []
-    seen: set[str] = set()
-    prov: dict[str, list[str]] = {}
-    for item in value:
-        if isinstance(item, dict):
-            nombre = shorten_text(str(item.get("nombre") or "").strip(), 200)
-            seg_ids = [str(s).strip() for s in (item.get("segmentos") or []) if str(s).strip()]
-        else:
-            nombre = shorten_text(str(item).strip(), 200)
-            seg_ids = []
-        key = nombre.lower()
-        if not nombre or key in seen:
-            continue
-        seen.add(key)
-        nombres.append(nombre)
-        if seg_ids:
-            prov[key] = seg_ids
-    return nombres, prov
 
 
 def _finalize(
@@ -225,47 +182,40 @@ def build_manifest_from_content_llm(
     )
     client = client or LLMClient()
     user = CONTENT_USER.format(nombre=nombre, codigo=codigo, digest=digest)
-
-    def _system(with_provenance: bool) -> str:
-        return CONTENT_SYSTEM.format(
-            max_lecciones=max_lecciones,
-            unidades_instr=unidades_instr,
-            categorias=_CATEGORIAS_BLOQUE,
-            fallback=FALLBACK,
-            orientacion=orientacion_txt,
-            provenance_regla=_PROVENANCE_REGLA if with_provenance else "",
-            temas_ejemplo=_TEMAS_EJEMPLO_PROV if with_provenance else _TEMAS_EJEMPLO_PLANO,
-        )
+    # Temas como strings (JSON simple y robusto). La procedencia tema→segmentos NO
+    # va aquí (embeberla anidada rompía el JSON); se resuelve en una llamada aparte
+    # (`llm_mapper.map_topics_llm`) con JSON plano.
+    system = CONTENT_SYSTEM.format(
+        max_lecciones=max_lecciones,
+        unidades_instr=unidades_instr,
+        categorias=_CATEGORIAS_BLOQUE,
+        fallback=FALLBACK,
+        orientacion=orientacion_txt,
+    )
 
     last_err: Exception | None = None
-    # Dos tiers: primero con procedencia (temas como objetos, mejor mapeo). Si el
-    # JSON con esa estructura anidada falla repetido, se reintenta SIN procedencia
-    # (temas como strings, JSON más simple) para NO caer a la heurística ruidosa.
-    for with_provenance in (True, False):
-        system = _system(with_provenance)
-        for _attempt in range(retries + 1):
-            raw = client.complete(
-                system=system,
-                user=user,
-                # Presupuesto amplio: un curso de libro completo puede tener muchas
-                # unidades/temas y el JSON no debe cortarse.
-                max_tokens=12000,
-                model=model or default_model(),
-                temperature=0.2,
+    for _attempt in range(retries + 1):
+        raw = client.complete(
+            system=system,
+            user=user,
+            # Presupuesto amplio: un curso de libro completo puede tener muchas
+            # unidades/temas y el JSON no debe cortarse.
+            max_tokens=12000,
+            model=model or default_model(),
+            temperature=0.2,
+        )
+        try:
+            return _parse_content_manifest(
+                raw,
+                nombre=nombre,
+                codigo=codigo,
+                is_profesional=is_profesional,
+                max_lecciones=max_lecciones,
             )
-            try:
-                return _parse_content_manifest(
-                    raw,
-                    nombre=nombre,
-                    codigo=codigo,
-                    is_profesional=is_profesional,
-                    max_lecciones=max_lecciones,
-                )
-            except (LLMError, ValueError) as exc:
-                last_err = exc  # JSON malformado / sin unidades: reintenta
+        except (LLMError, ValueError) as exc:
+            last_err = exc  # JSON malformado / sin unidades: reintenta
     raise LLMError(
-        f"El LLM no devolvió una estructura válida tras varios intentos "
-        f"(con y sin procedencia): {last_err}"
+        f"El LLM no devolvió una estructura válida tras {retries + 1} intentos: {last_err}"
     )
 
 
@@ -284,14 +234,12 @@ def _parse_content_manifest(
         raise ValueError("El LLM no devolvió unidades desde el contenido.")
 
     unidades: list[dict[str, Any]] = []
-    prov_by_name: dict[str, list[str]] = {}  # nombre_tema_lower -> [segment_ids]
     for raw_unit in raw_units:
         if not isinstance(raw_unit, dict):
             continue
-        temas, prov = _temas_con_procedencia(raw_unit.get("temas"))
+        temas = _clean_str_list(raw_unit.get("temas"), 200)
         if not temas:
             continue
-        prov_by_name.update(prov)
         nombre_unidad = shorten_text(str(raw_unit.get("nombre") or f"Unidad {len(unidades) + 1}"), 100)
         try:
             horas = int(raw_unit.get("horas_elearning") or 0)
@@ -314,7 +262,7 @@ def _parse_content_manifest(
     descripcion = str((curso_obj or {}).get("descripcion") or "").strip() or (
         f"Curso generado a partir del contenido de {nombre}."
     )
-    manifest = _finalize(
+    return _finalize(
         unidades,
         nombre=nombre,
         codigo=codigo,
@@ -322,21 +270,6 @@ def _parse_content_manifest(
         max_lecciones=max_lecciones,
         descripcion=descripcion,
     )
-    # Procedencia (tema -> segmentos que el LLM declaró): se arma con el orden
-    # FINAL del manifest (tras _finalize/cap). El orquestador la usa para mapear
-    # directo, sin re-adivinar con map_topics.
-    provenance: list[dict[str, Any]] = []
-    for unidad in manifest["unidades"]:
-        for tema in unidad.get("temas", []):
-            seg_ids = prov_by_name.get(str(tema).lower())
-            if seg_ids:
-                provenance.append({
-                    "unidad_orden": unidad["orden"],
-                    "tema": tema,
-                    "segment_ids": seg_ids,
-                })
-    manifest["_provenance"] = provenance
-    return manifest
 
 
 # Ruido típico de títulos de segmento: encabezados/pies de página del libro,

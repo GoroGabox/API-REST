@@ -115,6 +115,27 @@ def extract_temario_topics(
     return topics
 
 
+def mapped_source_text(
+    mappings: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+) -> str:
+    """Texto de los segmentos que el curso realmente usa (union de matched).
+
+    Sirve como corpus para validar la presencia de temas del anexo contra el
+    contenido efectivo del curso, no solo contra los nombres de los temas.
+    """
+    by_id = {str(s.get("segment_id")): s for s in segments}
+    ids: list[str] = []
+    seen: set[str] = set()
+    for mapping in mappings:
+        for ms in mapping.get("matched_segments") or []:
+            sid = str(ms.get("segment_id"))
+            if sid in by_id and sid not in seen:
+                seen.add(sid)
+                ids.append(sid)
+    return "\n".join(str(by_id[sid].get("text", "")) for sid in ids)
+
+
 def _generated_topics(manifest: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for unidad in manifest.get("unidades", []):
@@ -130,17 +151,28 @@ def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / union if union else 0.0
 
 
+# Cobertura mínima de keywords del tema en el corpus de contenido para darlo por
+# presente (arregla umbrellas del anexo tipo "Primeros auxilios" que el curso sí
+# cubre pero con temas específicos: RCP, hemorragias, etc.).
+CONTENT_COVERAGE_MIN = 0.6
+
+
 def validate_topics_present(
     expected: list[str],
     manifest: dict[str, Any],
     *,
     min_score: float = PRESENCE_MIN_SCORE,
+    corpus_text: str | None = None,
+    coverage_min: float = CONTENT_COVERAGE_MIN,
 ) -> dict[str, Any]:
     """Valida qué temas del temario están representados en el curso generado.
 
-    Matchea cada tema esperado contra los temas GENERADOS (derivados del libro)
-    con la misma métrica lexical/tfidf que ``map_topics`` (0.65 tfidf + 0.35
-    solapamiento de keywords). Devuelve ``{expected, present, missing}``.
+    Un tema del anexo se da por PRESENTE si:
+      (a) matchea un tema GENERADO por lexical/tfidf (0.65 tfidf + 0.35 overlap), o
+      (b) sus keywords están mayormente cubiertas por ``corpus_text`` (el contenido
+          fuente del curso) — esto captura umbrellas del anexo ("Primeros auxilios")
+          que el curso cubre con temas específicos ("RCP", "Hemorragias", …).
+    Devuelve ``{expected, present, missing}``.
     """
     generated = _generated_topics(manifest)
     if not expected:
@@ -150,6 +182,7 @@ def validate_topics_present(
 
     tfidf = _tfidf_scores(expected, generated)
     gen_tokens = [set(extract_keywords(g, max_keywords=40)) for g in generated]
+    corpus_kw = set(extract_keywords(corpus_text, max_keywords=3000)) if corpus_text else set()
     present: list[str] = []
     missing: list[str] = []
     for i, topic in enumerate(expected):
@@ -160,5 +193,9 @@ def validate_topics_present(
             score = 0.65 * lexical + 0.35 * _overlap(topic_tokens, gen_tokens[j])
             if score > best:
                 best = score
-        (present if best >= min_score else missing).append(topic)
+        es_presente = best >= min_score
+        if not es_presente and corpus_kw and topic_tokens:
+            cobertura = len(topic_tokens & corpus_kw) / len(topic_tokens)
+            es_presente = cobertura >= coverage_min
+        (present if es_presente else missing).append(topic)
     return {"expected": len(expected), "present": present, "missing": missing}

@@ -746,6 +746,38 @@ class ProvenanceMappingTests(SimpleTestCase):
         self.assertTrue(mappings[0]["matched_segments"])
 
 
+class LLMMapperTests(SimpleTestCase):
+    def test_map_topics_llm_builds_provenance_and_drops_invalid(self):
+        import json as _json
+        from content_pipeline.processors.llm_mapper import map_topics_llm
+
+        class _Stub:
+            def complete(self, **kw):
+                # tema1 -> id válido; tema2 -> id inexistente; tema3 -> vacío
+                return _json.dumps({"1": ["seg_0002"], "2": ["seg_9999"], "3": []})
+
+        manifest = {"unidades": [{"orden": 1, "nombre": "U1",
+                                  "temas": ["Frenos", "Motor", "Suelto"]}]}
+        segments = [{"segment_id": f"seg_000{i}", "title": f"T{i}", "keywords": [],
+                     "text": "x", "page_start": i, "page_end": i} for i in range(1, 4)]
+        prov = map_topics_llm(manifest, segments, client=_Stub(), model="fake")
+        self.assertEqual(len(prov), 1)
+        self.assertEqual(prov[0]["tema"], "Frenos")
+        self.assertEqual(prov[0]["segment_ids"], ["seg_0002"])
+
+
+class TemarioContentCoverageTests(SimpleTestCase):
+    def test_umbrella_topic_present_via_content_corpus(self):
+        from content_pipeline.services.course_planning import validate_topics_present
+        # El curso no tiene un tema llamado "Primeros auxilios", pero su contenido sí.
+        manifest = {"unidades": [{"temas": ["Reanimación cardiopulmonar", "Manejo de hemorragias"]}]}
+        expected = ["Primeros auxilios", "Transporte de explosivos"]
+        corpus = "primeros auxilios reanimación hemorragias shock víctima accidente atención herido"
+        res = validate_topics_present(expected, manifest, corpus_text=corpus)
+        self.assertIn("Primeros auxilios", res["present"])       # cubierto por el corpus
+        self.assertIn("Transporte de explosivos", res["missing"])  # no está
+
+
 class WeakMappingDegradeTests(SimpleTestCase):
     def test_mapping_is_weak(self):
         from content_pipeline.processors.llm_lesson_writer import _mapping_is_weak
