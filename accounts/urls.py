@@ -32,6 +32,7 @@ from .views import (
     VerifyCertificadoView,
     MeView,
     MeStatsView,
+    MisTemasView,
     MeAchievementsView,
     TwoFASetupView,
     TwoFAVerifyView,
@@ -91,6 +92,7 @@ urlpatterns = [
     # Perfil + gamificación
     path("me/", MeView.as_view(), name="me_profile"),
     path("me/stats/", MeStatsView.as_view(), name="me_stats"),
+    path("me/temas/", MisTemasView.as_view(), name="me_temas"),
     path("me/achievements/", MeAchievementsView.as_view(), name="me_achievements"),
 
     # 2FA (TOTP)

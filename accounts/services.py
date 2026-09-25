@@ -521,6 +521,89 @@ def elegibilidad_examen_final(user, curso) -> dict:
 
 
 # ============================================================
+# Nivel del estudiante por tema (Sesión Temática — "Te recomendamos")
+# ============================================================
+
+# Ventana de respuestas recientes por tema y umbrales de nivel (en %).
+NIVEL_VENTANA = 20
+NIVEL_MIN_RESPUESTAS = 5
+NIVEL_REFORZAR_PCT = 60   # < 60% → "reforzar"
+NIVEL_DOMINADO_PCT = 80   # ≥ 80% → "dominado"; entre medio → "progreso"
+
+
+def niveles_por_tema(user) -> dict:
+    """Nivel del estudiante en cada tema disponible para la Sesión Temática y
+    el tema recomendado. Nunca expone porcentajes ni conteos al cliente.
+
+    - Considera sus últimas `NIVEL_VENTANA` respuestas corregidas por tema
+      (pruebas entregadas: Gimnasio y examen final).
+    - Con menos de `NIVEL_MIN_RESPUESTAS` respuestas el nivel es `None`.
+    - Recomendado: el tema con menos aciertos bajo `NIVEL_DOMINADO_PCT`; si no
+      hay ninguno, el primer tema sin practicar; si domina todo, `None`.
+
+    Devuelve:
+        {
+          'temas': [{'categoria_id': int, 'nivel': 'reforzar'|'progreso'|'dominado'|None}],
+          'recomendada': {'categoria_id': int, 'motivo': 'mas_dificil'|'sin_practicar'} | None,
+        }
+    """
+    from django.db.models import Count
+    from schools.models import PREGUNTAS_SESION_TEMATICA
+
+    disponibles = list(
+        Categoria.objects
+        .annotate(n_ejercicios=Count('ejercicio'))
+        .filter(n_ejercicios__gte=PREGUNTAS_SESION_TEMATICA)
+        .order_by('id')
+        .values_list('id', flat=True)
+    )
+    ids = set(disponibles)
+
+    # Respuestas más recientes primero; se corta en NIVEL_VENTANA por tema.
+    recientes = defaultdict(list)
+    respuestas = (
+        PruebaEjercicio.objects
+        .filter(
+            prueba__estudiante=user,
+            prueba__completada_en__isnull=False,
+            correcta__isnull=False,
+            ejercicio__categoria_id__in=ids,
+        )
+        .order_by('-prueba__completada_en', '-id')
+        .values_list('ejercicio__categoria_id', 'correcta')
+    )
+    for cat_id, correcta in respuestas.iterator():
+        if len(recientes[cat_id]) < NIVEL_VENTANA:
+            recientes[cat_id].append(bool(correcta))
+
+    temas, candidatos = [], []
+    for cat_id in disponibles:
+        r = recientes.get(cat_id, [])
+        nivel = None
+        if len(r) >= NIVEL_MIN_RESPUESTAS:
+            pct = sum(r) * 100 / len(r)
+            if pct < NIVEL_REFORZAR_PCT:
+                nivel = 'reforzar'
+            elif pct < NIVEL_DOMINADO_PCT:
+                nivel = 'progreso'
+            else:
+                nivel = 'dominado'
+            if nivel != 'dominado':
+                candidatos.append((pct, cat_id))
+        temas.append({'categoria_id': cat_id, 'nivel': nivel})
+
+    recomendada = None
+    if candidatos:
+        recomendada = {'categoria_id': min(candidatos)[1], 'motivo': 'mas_dificil'}
+    else:
+        sin_practicar = next((c for c in disponibles if not recientes.get(c)), None)
+        if sin_practicar is not None:
+            recomendada = {'categoria_id': sin_practicar, 'motivo': 'sin_practicar'}
+
+    return {'temas': temas, 'recomendada': recomendada}
+
+
+# ============================================================
 # Invitación "configura tu contraseña"
 # ============================================================
 

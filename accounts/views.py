@@ -1125,6 +1125,19 @@ class ExamenFinalElegibilidadView(APIView):
         return Response(accounts_services.elegibilidad_examen_final(request.user, curso))
 
 
+class MisTemasView(APIView):
+    """GET /api/v1/accounts/me/temas/
+
+    Nivel del estudiante por tema de la Sesión Temática ('reforzar' /
+    'progreso' / 'dominado' / null) y el tema recomendado. Sin porcentajes ni
+    conteos. Alimenta el selector de temas del Gimnasio y la app.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(accounts_services.niveles_por_tema(request.user))
+
+
 class VerifyCertificadoView(APIView):
     """GET /api/v1/accounts/certificates/<codigo>/verify/ — público (QR scan)."""
     permission_classes = [permissions.AllowAny]

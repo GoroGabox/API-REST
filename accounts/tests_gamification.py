@@ -284,3 +284,75 @@ class CalificarPruebaGratisTest(TestCase):
         from django.urls import reverse
         r = self.client.post(reverse("grade_free_test"), {"respuestas": "x"}, format="json")
         self.assertEqual(r.status_code, 400)
+
+
+class NivelesPorTemaTest(TestCase):
+    """Nivel por tema ('reforzar'/'progreso'/'dominado'/None) + recomendación.
+    Solo temas disponibles (≥ PREGUNTAS_SESION_TEMATICA ejercicios)."""
+
+    def setUp(self):
+        from schools.models import PREGUNTAS_SESION_TEMATICA as MIN
+        self.u = make_student()
+        self.cats = {}
+        for nombre in ("A", "B", "C", "D", "E"):
+            cat = Categoria.objects.create(nombre=nombre)
+            self.cats[nombre] = (cat, [make_ejercicio(categoria=cat) for _ in range(MIN)])
+        # Tema sin preguntas suficientes: nunca se lista.
+        self.corta = Categoria.objects.create(nombre="Corta")
+        self.corta_ejs = [make_ejercicio(categoria=self.corta) for _ in range(3)]
+
+    def _responder(self, ejercicios, correctas, hace_min=0):
+        from accounts.models import PruebaEjercicio
+        p = Prueba.objects.create(estudiante=self.u, tipo="categoria", modalidad="practica")
+        p.completada_en = timezone.now() - timedelta(minutes=hace_min)
+        p.save(update_fields=["completada_en"])
+        for i, e in enumerate(ejercicios):
+            PruebaEjercicio.objects.create(prueba=p, ejercicio=e, correcta=i < correctas)
+
+    def _niveles(self):
+        res = services.niveles_por_tema(self.u)
+        return {t["categoria_id"]: t["nivel"] for t in res["temas"]}, res["recomendada"]
+
+    def test_umbrales_y_recomendacion_mas_dificil(self):
+        A, B, C, D, _ = (self.cats[k] for k in "ABCDE")
+        self._responder(A[1][:5], 2)   # 40% → reforzar
+        self._responder(B[1][:5], 3)   # 60% → progreso
+        self._responder(C[1][:5], 4)   # 80% → dominado
+        self._responder(D[1][:4], 0)   # 4 respuestas → sin nivel
+        self._responder(self.corta_ejs, 0)
+        niveles, reco = self._niveles()
+        self.assertEqual(niveles[A[0].id], "reforzar")
+        self.assertEqual(niveles[B[0].id], "progreso")
+        self.assertEqual(niveles[C[0].id], "dominado")
+        self.assertIsNone(niveles[D[0].id])
+        self.assertNotIn(self.corta.id, niveles)
+        self.assertEqual(reco, {"categoria_id": A[0].id, "motivo": "mas_dificil"})
+
+    def test_ventana_de_respuestas_recientes(self):
+        cat, ejs = self.cats["A"]
+        extra = [make_ejercicio(categoria=cat) for _ in range(10)]
+        self._responder(ejs[:5], 0, hace_min=60)            # 5 antiguas, todas mal
+        self._responder(ejs[5:] + extra[:10], 20, hace_min=1)  # 20 recientes, todas bien
+        niveles, _ = self._niveles()
+        self.assertEqual(niveles[cat.id], "dominado")
+
+    def test_recomienda_sin_practicar_o_ninguna(self):
+        for k in "ABCD":
+            self._responder(self.cats[k][1][:5], 5)
+        _, reco = self._niveles()
+        self.assertEqual(reco, {"categoria_id": self.cats["E"][0].id, "motivo": "sin_practicar"})
+        self._responder(self.cats["E"][1][:5], 5)
+        _, reco2 = self._niveles()
+        self.assertIsNone(reco2)
+
+    def test_endpoint_requiere_sesion_y_no_expone_porcentajes(self):
+        self._responder(self.cats["A"][1][:5], 1)
+        anon = APIClient()
+        self.assertEqual(anon.get("/api/v1/accounts/me/temas/").status_code, 401)
+        client = APIClient()
+        client.force_authenticate(self.u)
+        r = client.get("/api/v1/accounts/me/temas/")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(set(body), {"temas", "recomendada"})
+        self.assertEqual(set(body["temas"][0]), {"categoria_id", "nivel"})
