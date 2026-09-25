@@ -765,6 +765,21 @@ class LLMMapperTests(SimpleTestCase):
         self.assertEqual(prov[0]["tema"], "Frenos")
         self.assertEqual(prov[0]["segment_ids"], ["seg_0002"])
 
+    def test_map_topics_llm_tolerates_broken_json(self):
+        from content_pipeline.processors.llm_mapper import map_topics_llm
+
+        class _BrokenJSON:
+            # Coma faltante entre IDs del array (el fallo real que rompía json.loads).
+            def complete(self, **kw):
+                return '{"1": ["seg_0002" "seg_0003"], "2": []}'
+
+        manifest = {"unidades": [{"orden": 1, "nombre": "U1", "temas": ["Frenos", "Motor"]}]}
+        segments = [{"segment_id": f"seg_000{i}", "title": "T", "keywords": [],
+                     "text": "x", "page_start": i, "page_end": i} for i in range(1, 4)]
+        prov = map_topics_llm(manifest, segments, client=_BrokenJSON(), model="fake")
+        self.assertEqual(len(prov), 1)
+        self.assertEqual(prov[0]["segment_ids"], ["seg_0002", "seg_0003"])  # regex rescató ambos
+
 
 class TemarioContentCoverageTests(SimpleTestCase):
     def test_umbrella_topic_present_via_content_corpus(self):

@@ -12,12 +12,35 @@ llamador cae al mapeo lexical de siempre.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
+from content_pipeline.llm.client import LLMClient, LLMError, default_model, parse_json_object
 from content_pipeline.processors.manifest_from_content import _segments_digest
 
 _MAX_IDS_POR_TEMA = 4
+# Extrae "N": [ ... ] tolerando comas faltantes/rotas entre IDs (el LLM a veces
+# emite JSON casi-válido). Se leen los seg_ids con otra regex dentro del cuerpo.
+_ENTRY_RE = re.compile(r'"?(\d+)"?\s*:\s*\[([^\]]*)\]', re.DOTALL)
+_SEGID_RE = re.compile(r"seg_\w+")
+
+
+def _parse_mapping(raw: str) -> dict[str, list[str]]:
+    """Parsea {numero: [seg_ids]} de forma robusta.
+
+    Primero intenta JSON normal; si falla (coma faltante, etc.), extrae por regex
+    cada ``"N": [...]`` y de ahí los ``seg_xxxx`` — inmune a comas rotas.
+    """
+    try:
+        data = parse_json_object(raw)
+        if isinstance(data, dict) and data:
+            return {str(k): [str(x) for x in v] for k, v in data.items() if isinstance(v, list)}
+    except LLMError:
+        pass
+    out: dict[str, list[str]] = {}
+    for num, body in _ENTRY_RE.findall(raw or ""):
+        out[num] = _SEGID_RE.findall(body)
+    return out
 
 MAP_SYSTEM = """\
 Eres un documentalista experto. Recibes (1) una lista numerada de TEMAS de un
@@ -64,40 +87,40 @@ def map_topics_llm(
     client: LLMClient | None = None,
     model: str | None = None,
     max_tokens: int = 4000,
+    retries: int = 2,
 ) -> list[dict[str, Any]]:
     """Devuelve provenance [{unidad_orden, tema, segment_ids}] vía LLM.
 
-    Valida que los IDs existan entre los segmentos (descarta alucinados) y acota a
-    ``_MAX_IDS_POR_TEMA``. Lanza excepción si el LLM/JSON falla (el llamador
-    degrada a mapeo lexical).
+    Reintenta si el parseo no arroja anclajes (JSON roto puntual). Valida que los
+    IDs existan entre los segmentos (descarta alucinados) y acota a
+    ``_MAX_IDS_POR_TEMA``. Devuelve [] si tras los reintentos no logra nada (el
+    llamador cae a mapeo lexical).
     """
     rows = _topic_rows(manifest)
     if not rows:
         return []
     client = client or LLMClient()
     temas_block = "\n".join(f"{i}. [U{orden}] {tema}" for i, (orden, tema) in enumerate(rows, 1))
-    raw = client.complete(
-        system=MAP_SYSTEM,
-        user=MAP_USER.format(temas=temas_block, digest=_segments_digest(segments)),
-        max_tokens=max_tokens,
-        model=model or default_model(),
-        temperature=0.0,
-    )
-    data = parse_json_object(raw)
+    user = MAP_USER.format(temas=temas_block, digest=_segments_digest(segments))
     valid_ids = {str(s.get("segment_id")) for s in segments}
 
-    provenance: list[dict[str, Any]] = []
-    for i, (orden, tema) in enumerate(rows, 1):
-        raw_ids = data.get(str(i)) or data.get(i) or []
-        if not isinstance(raw_ids, list):
-            continue
-        seg_ids: list[str] = []
-        for x in raw_ids:
-            sid = str(x).strip()
-            if sid in valid_ids and sid not in seg_ids:
-                seg_ids.append(sid)
-            if len(seg_ids) >= _MAX_IDS_POR_TEMA:
-                break
-        if seg_ids:
-            provenance.append({"unidad_orden": orden, "tema": tema, "segment_ids": seg_ids})
-    return provenance
+    for _attempt in range(retries + 1):
+        raw = client.complete(
+            system=MAP_SYSTEM, user=user, max_tokens=max_tokens,
+            model=model or default_model(), temperature=0.0,
+        )
+        data = _parse_mapping(raw)
+        provenance: list[dict[str, Any]] = []
+        for i, (orden, tema) in enumerate(rows, 1):
+            seg_ids: list[str] = []
+            for sid in data.get(str(i), []):
+                sid = sid.strip()
+                if sid in valid_ids and sid not in seg_ids:
+                    seg_ids.append(sid)
+                if len(seg_ids) >= _MAX_IDS_POR_TEMA:
+                    break
+            if seg_ids:
+                provenance.append({"unidad_orden": orden, "tema": tema, "segment_ids": seg_ids})
+        if provenance:
+            return provenance
+    return []
