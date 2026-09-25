@@ -43,6 +43,7 @@ data/output/*/*
 /curso_*.json
 /prueba*.json
 /ejercicios_*.json
+/out/*.json
 
 # IDE
 .vscode/
