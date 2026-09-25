@@ -99,6 +99,65 @@ JWT via `rest_framework_simplejwt` — `MyTokenObtainPairView` extends the defau
 
 Spanish resource names in URLs (`pruebas`, `perfil-estudiante`, `ventas`, `cursos`) — keep that style when adding routes. Routers in each app's `urls.py`; the project URLconf only mounts apps under `/api/v1/{accounts,sales,schools}/`.
 
+## Content pipeline (`content_pipeline/`)
+
+Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y ejercicios a partir de PDFs con IA (Anthropic). La usa el endpoint de streaming `schools.views.CourseGenerateView` (`POST /api/v1/schools/cursos/generar/`) y los management commands de abajo (que viven en `schools/management/commands/`).
+
+### Modelo del generador (el flujo actual, en orden)
+
+1. **Estructura desde el LIBRO COMPLETO** (`manifest_from_content.build_manifest_from_content_llm`): el temario **ya NO dicta la estructura**. La estructura se infiere del contenido; los temas se piden como **strings** (JSON simple/robusto). `manifest_llm`/`manifest_builder` solo se usan para parsear el temario como checklist. Se filtran temas "meta" que el LLM cuela (`Quiz Unidad N`, `Evaluación del módulo N` → `_is_meta_tema`).
+2. **Auto-dimensionado** (`course_planning.resolve_max_lecciones`): ≈1 lección por segmento, piso 8 / techo 100. Sin `--max-lecciones` se auto-dimensiona; con él, es techo. Avisa si el libro excede el tope (`truncation_notes`).
+3. **Orientación por licencia** (`licenses.orientation_for(codigo, override)`): el mismo libro sirve a A1–A5; el prompt de estructura y de redacción **enfoca la licencia objetivo** (deriva del `codigo`, override con `--orientacion`).
+4. **Procedencia (mapeo tema→segmentos) en llamada aparte** (`llm_mapper.map_topics_llm`): el LLM devuelve, por índice, los `segment_id` fuente de cada tema — JSON plano, con **reintentos + parser tolerante por regex** (embeber esto en el JSON de estructura lo rompía). `map_topics.map_topics_to_segments(provenance=…)` usa esos segmentos como fuente primaria; **fallback lexical/tfidf** por-tema cuando no hay procedencia válida. `coverage_alert` marca temas con fuente débil.
+5. **Redacción anclada a la fuente** (`llm_lesson_writer`, RAG) con detección de truncamiento. Si un tema tiene **fuente débil** (sin segmentos o solo matches bajo umbral) la lección **se degrada al extractivo neutral** (no alucina) y se marca `fuente_debil`. Toda la construcción va en try/except: una lección nunca tumba el curso.
+6. **Ancla de fuente a nivel de párrafo**: `segment_book` guarda `blocks` (texto + **página exacta**) por segmento; `lesson_generator._sources_for_segments` elige los párrafos más relevantes → `fuentes` con página precisa + extracto real.
+7. **Categoría canónica** (`taxonomy`): 14 categorías compartidas por lecciones y banco de exámenes; `resolve()` deduplica variantes → `General`.
+8. **Temario como checklist** (`course_planning.validate_topics_present`): valida que los temas del anexo estén representados, matcheando contra los **nombres generados Y el contenido fuente** del curso (corpus), para no dar falsos negativos con umbrellas ("Primeros auxilios" cubierto por RCP/Hemorragias).
+9. **Auditoría de fidelidad** (`faithfulness`, **REPORTE, no bloquea**):
+   - **Guard de cifras** (`_flag_figures`): marca números del contenido que **no aparecen en TODO el libro** (posible dato inventado).
+   - **Anclaje lexical** (`anchoring_score`): por-lección, marca lecciones poco conectadas con su fuente (`< anchor_min`, def. 0.28).
+   - **Juez LLM opcional** (`judge_lessons_llm`, con `--judge`): puntúa fidelidad 0–1 por lección y separa **críticas** (`score < judge_min`, def. 0.7) de **reparos menores** (fiel pero con matices no respaldados).
+
+Módulos clave: `services/course_generator.py` (orquestador del stream, eventos NDJSON `step`/`warn`/`lesson`/`done`/`error`), `services/course_planning.py`, `processors/{manifest_from_content,llm_mapper,map_topics,llm_lesson_writer,segment_book,faithfulness,ejercicio_classifier}.py`, `taxonomy.py`, `licenses.py`.
+
+### Modelos LLM
+
+Configurables por `.env`: `COURSE_LLM_MODEL` (principal, def. `claude-sonnet-5`) y `COURSE_LLM_MODEL_DRAFT` (def. `claude-haiku-4-5-*`). **La estructura y el mapeo usan SIEMPRE el modelo principal** (Sonnet); `--modo` solo cambia el modelo de **redacción de lecciones**: `draft`=Haiku (barato), `final`=Sonnet. El juez sigue al modelo de lecciones. Para verificar estructura/mapeo/temario, `draft` basta (misma calidad ahí); reservar `final` para el pase de redacción final.
+
+### Commands (en `schools/management/commands/`)
+
+Flujo vivo — cursos (libro → JSON local → BD):
+```powershell
+# 1. Genera el curso desde el CONTENIDO (local, con ANTHROPIC_API_KEY). El temario es opcional
+#    (checklist). Flags: --orientacion (deriva del código si se omite), --max-lecciones (auto si se omite),
+#    --judge (juez LLM, costo extra), --judge-min 0.7, --anchor-min 0.28, --modo draft|final.
+python manage.py generate_course --contenido "Libro.pdf" --temario "Temario A4.pdf" `
+  --nombre "Curso Profesional Clase A4" --codigo A4 --costo 49990 --out out/a4.json --is-profesional --modo final --judge
+# 2. Importa a la BD (upsert por código; --dry-run, --prune destructivo)
+python manage.py import_course --file out/a4.json
+# Auditar un JSON ya generado: triage de cifras / --contenido <pdf> (anclaje real) / --llm (juez) / --judge-min / --anchor-min / --limit
+python manage.py audit_course_json out/a4.json --contenido "Libro.pdf" --llm
+```
+
+Flujo vivo — banco de ejercicios (PDF → JSON → BD):
+```powershell
+python manage.py build_ejercicios_json --pdf "Cuestionario Clase B.pdf" --out out/ejercicios_b.json
+python manage.py import_ejercicios --file out/ejercicios_b.json   # idempotente por texto de pregunta
+```
+
+Media: `generate_media` — genera el audio (TTS) de un curso ya generado y setea `url_audio`.
+
+Legacy A2 (hardcodeados al Curso Profesional A2, **no** usan el flujo genérico ni taxonomía/orientación/auditoría; solo para ese curso): `extract_a2_book`, `build_a2_lessons`, `build_a2_pipeline`, `validate_a2_course`, `import_a2_course`.
+
+Demo/seed: `seed_catalogo` — datos de ejemplo (dev).
+
+### Notas operativas
+
+- `generate_course` se corre en local (caro/IA) y el JSON se sube con `import_course` en el entorno desplegado (sin IA ni PDFs). Ver la memoria de seed para poblar Railway con `DATABASE_URL` pública.
+- **Paralelismo**: `generate_course` NO toca la BD → se puede correr en paralelo (varios terminales, cada uno su `--out`; el límite es el rate-limit de Anthropic). `import_course` NO en paralelo (SQLite bloquea la BD; y comparten categorías canónicas) — importar en serie.
+- **Iterar barato**: para bajar reparos, preferir ajuste de prompt/pipeline cuando el hallazgo es **sistémico** (se amortiza en todos los cursos) o parche manual del JSON cuando es **puntual**; NO regenerar el curso completo solo para perseguir reparos (caro y no determinista). Diagnosticar en `draft`, correr `final` una sola vez al cierre.
+- El JSON generado incluye `auditoria` (cifras/anclaje/juez) cuando se corre con `--judge`. La herramienta de revisión humana ("Brújula del Libro", artifact fuera del repo) lee ese JSON y muestra por lección el ancla, el contenido y los hallazgos del juez.
+
 ## Conventions
 
 - Models, fields, and serializers use Spanish identifiers (`Usuario`, `nombre`, `apellido`, `escuela`, `pregunta`, `respuesta`). Match that — don't introduce English names mid-domain.
