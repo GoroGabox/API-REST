@@ -510,6 +510,23 @@ class FaithfulnessTests(SimpleTestCase):
         self.assertEqual(len(res["figuras"]), 1)
         self.assertIn("120.000", " ".join(res["figuras"][0]["cifras"]))
 
+    def test_figures_checked_against_whole_book_not_just_anchored(self):
+        from content_pipeline.processors.faithfulness import audit_lessons
+        segments = [
+            {"segment_id": "s1", "text": "El límite urbano es 50 km/h.", "page_start": 10},
+            {"segment_id": "s2", "text": "En carretera el máximo es 120 km/h.", "page_start": 90},
+        ]
+        # El tema se ancla SOLO a s1, pero la lección menciona 120 km/h (que está en s2).
+        mappings = [{"unidad_orden": 1, "tema": "Velocidad",
+                     "matched_segments": [{"segment_id": "s1"}]}]
+        lessons = [{"tipo": "texto", "unidad_orden": 1, "tema_regulatorio": "Velocidad",
+                    "nombre": "Velocidad", "contenido": "Urbano 50 km/h y carretera 120 km/h. Multa $999.000."}]
+        res = audit_lessons(lessons, segments, mappings)
+        cifras = " ".join(res["figuras"][0]["cifras"]) if res["figuras"] else ""
+        self.assertNotIn("120", cifras)   # está en el libro (s2) → no se marca
+        self.assertNotIn("50", cifras)    # está en el libro (s1)
+        self.assertIn("999.000", cifras)  # no está en ninguna parte → sí se marca
+
     def test_audit_skips_lessons_without_source(self):
         from content_pipeline.processors.faithfulness import audit_lessons
         lessons = [{"tipo": "texto", "unidad_orden": 9, "tema_regulatorio": "X", "nombre": "X", "contenido": "algo 999 km/h"}]

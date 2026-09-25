@@ -52,16 +52,8 @@ def _source_number_cores(source: str) -> set[str]:
     return {_num_core(m) for m in _ANY_NUM_RE.findall(source)}
 
 
-def unsupported_figures(content: str, source: str) -> list[str]:
-    """Cifras del contenido cuyo número NO aparece en la fuente.
-
-    Solo considera cifras *cualificadas* (con unidad o símbolo de dinero): son
-    las afirmaciones verificables y de riesgo. Devuelve etiquetas legibles,
-    deduplicadas y en orden de aparición.
-    """
-    if not content or not source:
-        return []
-    src_cores = _source_number_cores(source)
+def _flag_figures(content: str, src_cores: set[str]) -> list[str]:
+    """Cifras cualificadas del contenido cuyo número no está en ``src_cores``."""
     flagged: list[str] = []
     seen: set[str] = set()
 
@@ -78,6 +70,18 @@ def unsupported_figures(content: str, source: str) -> list[str]:
     for numero in _MONEY_RE.findall(content):
         _consider(numero, f"${numero}")
     return flagged
+
+
+def unsupported_figures(content: str, source: str) -> list[str]:
+    """Cifras del contenido cuyo número NO aparece en la fuente.
+
+    Solo considera cifras *cualificadas* (con unidad o símbolo de dinero): son
+    las afirmaciones verificables y de riesgo. Devuelve etiquetas legibles,
+    deduplicadas y en orden de aparición.
+    """
+    if not content or not source:
+        return []
+    return _flag_figures(content, _source_number_cores(source))
 
 
 def anchoring_score(content: str, source: str) -> float:
@@ -106,15 +110,27 @@ def audit_lessons(
     *,
     anchor_min: float = ANCHOR_MIN,
 ) -> dict[str, Any]:
-    """Audita las lecciones de texto contra su fuente (segmentos mapeados).
+    """Audita las lecciones de texto contra su fuente. Dos chequeos con alcance
+    distinto:
 
-    Reconstruye el texto fuente de cada lección por su ``(unidad_orden, tema)``
-    —la misma clave que usó el redactor— y aplica los dos chequeos. Las lecciones
-    sin fuente mapeada se omiten (no hay contra qué validar; eso lo cubre la
-    alerta de cobertura). Devuelve listas de hallazgos para reportar.
+    - **Cifras**: se comparan contra TODO el libro (no solo los segmentos
+      anclados). Con la procedencia, la fuente por-lección es estrecha y marcaba
+      como "inventada" cualquier cifra real que estuviera en otra sección del
+      libro (falsos positivos). Preguntar "¿este número existe en el libro?" caza
+      las alucinaciones reales sin ese ruido.
+    - **Anclaje lexical**: se mide contra la fuente por-lección (su punto es medir
+      cuán conectada está la lección con SU fuente, no con el libro entero).
+
+    Reconstruye la fuente por-lección por su ``(unidad_orden, tema)`` —la misma
+    clave que usó el redactor—. Las lecciones sin fuente mapeada se omiten (lo
+    cubre la alerta de cobertura). Devuelve listas de hallazgos para reportar.
     """
     seg_by_id = {str(s.get("segment_id")): s for s in segments}
     mapping_by_topic = _mapping_lookup(mappings)
+    # Números presentes en TODO el libro (una vez): base del guard de cifras.
+    book_number_cores = _source_number_cores(
+        "\n".join(str(s.get("text", "")) for s in segments)
+    )
 
     figuras: list[dict[str, Any]] = []
     anclaje_bajo: list[dict[str, Any]] = []
@@ -131,7 +147,7 @@ def audit_lessons(
         auditadas += 1
         content = str(lesson.get("contenido") or "")
 
-        figs = unsupported_figures(content, source)
+        figs = _flag_figures(content, book_number_cores)  # cifras vs TODO el libro
         if figs:
             figuras.append({"leccion": _label(lesson), "cifras": figs})
 
