@@ -145,7 +145,20 @@ python manage.py build_ejercicios_json --pdf "Cuestionario Clase B.pdf" --out ou
 python manage.py import_ejercicios --file out/ejercicios_b.json   # idempotente por texto de pregunta
 ```
 
-Media: `generate_media` — genera el audio (TTS) de un curso ya generado y setea `url_audio`.
+Flujo vivo — audio de lecciones (JSON del curso → guion → TTS → storage). `generate_media` no toca la BD; guarda el JSON **tras cada lección** (re-correr retoma donde quedó; no rehace guiones ni audios existentes salvo `--rehacer-guion` / `--overwrite`):
+```powershell
+# Fase 1 — guiones (Haiku, barato, sin TTS): `transcripcion` + `audio_meta` por lección
+#   (auditoría REPORTE: cifras_nuevas vs la lección, truncado con reintento a 8k tokens, ratio_largo/corto)
+#   + resumen top-level `auditoria_audio`. Revisar/editar `transcripcion` a mano antes de pagar TTS.
+python manage.py generate_media --file out/a4.json --out out/a4_audio.json --solo-guion
+# Fase 2 — TTS solo sobre guiones existentes (--estricto salta los que tienen hallazgos)
+python manage.py generate_media --file out/a4_audio.json --solo-audio --provider openai --storage s3
+python manage.py import_course --file out/a4_audio.json
+```
+- Módulos: `content_pipeline/media/{narration,tts,storage}.py`. Sin `--solo-*` hace ambas fases en una pasada.
+- **Providers TTS** (`--provider` / `TTS_PROVIDER`): `elevenlabs` (mejor voz; `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`) y `openai` (barato, para iterar; `OPENAI_API_KEY`, `OPENAI_TTS_MODEL`=gpt-4o-mini-tts, `OPENAI_TTS_VOICE`=coral). Reintentos con backoff ante 429/5xx.
+- **Storage** (`--storage` / `AUDIO_STORAGE`): `local` (MEDIA_ROOT + `--media-dir`/`--base-url`, dev) o `s3` (S3/Cloudflare R2 vía boto3: `AUDIO_S3_BUCKET`, `AUDIO_S3_ENDPOINT_URL`, `AUDIO_S3_REGION`, `AUDIO_S3_ACCESS_KEY_ID`, `AUDIO_S3_SECRET_ACCESS_KEY`, `AUDIO_S3_PUBLIC_BASE_URL`, `AUDIO_S3_PREFIX`). Producción = `s3` (Railway tiene FS efímero).
+- Volumen: un curso A4 ≈ 76 lecciones × ~7k chars ≈ **520k caracteres de TTS** — el comando imprime la estimación antes de sintetizar. Probar voz con `--limit 1`.
 
 Legacy A2 (hardcodeados al Curso Profesional A2, **no** usan el flujo genérico ni taxonomía/orientación/auditoría; solo para ese curso): `extract_a2_book`, `build_a2_lessons`, `build_a2_pipeline`, `validate_a2_course`, `import_a2_course`.
 

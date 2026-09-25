@@ -26,3 +26,4 @@ PyJWT==2.9.0  # simplejwt 5.5.0 exige pyjwt<2.10.0
 cryptography==44.0.0
 
 
+boto3==1.43.102  # generate_media: sube audios a bucket S3/R2 (solo local)

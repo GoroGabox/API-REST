@@ -23,7 +23,7 @@ __pycache__/
 htmlcov/
 
 # Media / static (uploads)
-media/
+/media/
 staticfiles/
 
 # Content pipeline — no versionar datos de entrada/salida (PDFs, JSON, reportes).
