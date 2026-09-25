@@ -49,8 +49,11 @@ Reglas:
 - Cada "tema" debe ser un tema enseñable y concreto derivado del material
   (p. ej. "Distancia de frenado"), NO una palabra clave suelta, un encabezado de
   página, una línea de índice ni un título ruidoso.
-- Produce aproximadamente {max_lecciones} temas en total (cuenta: 1 lección por
-  tema + 1 quiz por unidad).
+- Los "temas" son SOLO contenidos de enseñanza. NUNCA incluyas "Quiz",
+  "Evaluación", "Prueba" ni "Examen" como tema: el quiz de cierre de cada unidad
+  se agrega automáticamente después, no lo pongas tú.
+- Produce aproximadamente {max_lecciones} temas en total (el sistema agrega 1 quiz
+  por unidad aparte; no lo cuentes ni lo listes como tema).
 - {unidades_instr}
 - No inventes temas ajenos al material.
 - "categoria" DEBE ser EXACTAMENTE una de estas etiquetas (copia el texto tal
@@ -100,6 +103,18 @@ def _segments_digest(segments: list[dict[str, Any]], *, limit: int = _MAX_SEGMEN
         snippet = shorten_text(" ".join(str(s.get("text") or "").split()), 200)
         lines.append(f"- [{sid}] (p{pg}) {title} :: {kws}\n    {snippet}")
     return "\n".join(lines)
+
+
+# Temas meta que el LLM a veces inventa pese al prompt ("Quiz Unidad 2",
+# "Evaluación del módulo 1"): no son contenido, el quiz se agrega aparte.
+_META_TEMA_RE = re.compile(
+    r"^\s*(quiz|autoevaluaci[oó]n|evaluaci[oó]n|examen|test|prueba)\b.*(unidad|m[oó]dulo|modulo|\d)",
+    re.IGNORECASE,
+)
+
+
+def _is_meta_tema(nombre: str) -> bool:
+    return bool(_META_TEMA_RE.search(nombre or ""))
 
 
 def _clean_str_list(value: Any, limit: int) -> list[str]:
@@ -237,7 +252,7 @@ def _parse_content_manifest(
     for raw_unit in raw_units:
         if not isinstance(raw_unit, dict):
             continue
-        temas = _clean_str_list(raw_unit.get("temas"), 200)
+        temas = [t for t in _clean_str_list(raw_unit.get("temas"), 200) if not _is_meta_tema(t)]
         if not temas:
             continue
         nombre_unidad = shorten_text(str(raw_unit.get("nombre") or f"Unidad {len(unidades) + 1}"), 100)
@@ -347,7 +362,7 @@ def build_manifest_from_content(
         for s in chunk:
             tema = _tema_from_segment(s)
             key = tema.lower()
-            if tema and key not in seen:
+            if tema and key not in seen and not _is_meta_tema(tema):
                 seen.add(key)
                 temas.append(tema)
         if not temas:

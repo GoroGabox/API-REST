@@ -127,6 +127,25 @@ class LLMContentManifestTests(TestCase):
         self.assertEqual(cats[0], "Mecánica y Mantención del Vehículo")
         self.assertEqual(cats[1], "General")
 
+    def test_descarta_temas_meta_quiz_evaluacion(self):
+        # El LLM a veces mete "Quiz Unidad N"/"Evaluación del módulo N" como tema;
+        # deben descartarse (el quiz se agrega aparte), sin tocar temas legítimos.
+        payload = {"curso": {"descripcion": "d"}, "unidades": [{
+            "orden": 1, "nombre": "U1", "temas": [
+                "Distancia de frenado", "Quiz Unidad 1",
+                "Evaluación del módulo 1", "Prueba de alcoholemia",
+            ],
+        }]}
+        manifest = build_manifest_from_content_llm(
+            _segments(5), nombre="Y", codigo="CY", is_profesional=True,
+            max_lecciones=20, client=_StubClient(payload),
+        )
+        temas = manifest["unidades"][0]["temas"]
+        self.assertIn("Distancia de frenado", temas)
+        self.assertIn("Prueba de alcoholemia", temas)  # "prueba de..." NO es meta
+        self.assertNotIn("Quiz Unidad 1", temas)
+        self.assertNotIn("Evaluación del módulo 1", temas)
+
     def test_llm_sin_unidades_falla(self):
         # Tras agotar los reintentos, se propaga como LLMError.
         with self.assertRaises(LLMError):
