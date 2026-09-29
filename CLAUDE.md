@@ -104,7 +104,26 @@ Spanish resource names in URLs (`pruebas`, `perfil-estudiante`, `ventas`, `curso
 
 Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y ejercicios a partir de PDFs con IA (Anthropic). La usa el endpoint de streaming `schools.views.CourseGenerateView` (`POST /api/v1/schools/cursos/generar/`) y los management commands de abajo (que viven en `schools/management/commands/`).
 
-### Modelo del generador (el flujo actual, en orden)
+### Flujo RECOMENDADO: PLAN → GENERAR (dirigido por el índice del libro)
+
+La estructura y la densidad son **deterministas** desde el libro/índice (ya NO se infieren de un "digest"); la IA solo **redacta y rotula**; y hay un **plan editable** que el operador aprueba antes de pagar la redacción.
+
+**Fase 1 — `plan_course` (sin redacción; escribe `plan.json` editable):**
+1. **Extracción estructurada** (`extractors/structured_extractor.py`): conserva tamaño de fuente/negrita/estilos (PDF vía `get_text("dict")`, DOCX vía estilos Word) y limpia ruido (headers/pies por posición, nº de página, líneas de índice).
+2. **Outline dirigido por índice** (`processors/outline.py`): capítulo → unidad, en el orden del libro. Fuentes por prioridad: (a) **carpeta de capítulos** (`--dir`, un archivo = capítulo); (b) **tier de fuente** de los divisores de capítulo (`_outline_by_font_tier`, robusto ante índices de 2 columnas); (c) **parseo del índice/TOC** (fallback); (d) headings `level 1`.
+3. **Densidad → lecciones** (`services/course_planner.py`): reparte cada capítulo según su volumen real y la **banda de palabras** (`--largo corta|media|larga` = 400-700 / 700-1200 / 1200-1800), cortando en límites de párrafo y **sub-partiendo por oración** los párrafos que exceden el máximo. Cada lección lleva su **texto fuente exacto + páginas**.
+4. **Enriquecimiento IA opcional** (`--ia`, `services/plan_enrich.py`, Haiku por defecto): clasifica la **categoría** de cada unidad en la taxonomía cerrada y **nombra** las lecciones. Best-effort (ante fallo quedan los valores deterministas).
+5. Escribe `plan.json` (unidades → lecciones con `texto`/`paginas`/`palabras_objetivo`). **El operador lo revisa/edita.**
+
+**Fase 2 — `generate_course --from-plan plan.json` (redacción):**
+- Cada lección se redacta **desde su texto fuente exacto** (`llm_lesson_writer.generate_lessons_from_plan`) → **procedencia 1:1 por construcción** (sin `map_topics`/`llm_mapper`), respetando el tope de palabras; degradación segura ante fallo.
+- Auditoría de fidelidad idéntica (cifras vs todo el material del plan + anclaje + juez con `--judge`).
+
+Módulos nuevos: `extractors/structured_extractor.py`, `processors/outline.py`, `services/course_planner.py`, `services/plan_enrich.py`, comando `plan_course`.
+
+### Flujo LEGACY: estructura inferida del contenido (fallback)
+
+`generate_course --contenido` **sin** `--from-plan` usa el flujo viejo (la IA infiere estructura/densidad desde un digest). Se conserva como fallback; para cursos nuevos preferí PLAN → GENERAR. Pasos:
 
 1. **Estructura desde el LIBRO COMPLETO** (`manifest_from_content.build_manifest_from_content_llm`): el temario **ya NO dicta la estructura**. La estructura se infiere del contenido; los temas se piden como **strings** (JSON simple/robusto). `manifest_llm`/`manifest_builder` solo se usan para parsear el temario como checklist. Se filtran temas "meta" que el LLM cuela (`Quiz Unidad N`, `Evaluación del módulo N` → `_is_meta_tema`).
 2. **Auto-dimensionado** (`course_planning.resolve_max_lecciones`): ≈1 lección por segmento, piso 8 / techo 100. Sin `--max-lecciones` se auto-dimensiona; con él, es techo. Avisa si el libro excede el tope (`truncation_notes`).
@@ -123,18 +142,28 @@ Módulos clave: `services/course_generator.py` (orquestador del stream, eventos 
 
 ### Modelos LLM
 
-Configurables por `.env`: `COURSE_LLM_MODEL` (principal, def. `claude-sonnet-5`) y `COURSE_LLM_MODEL_DRAFT` (def. `claude-haiku-4-5-*`). **La estructura y el mapeo usan SIEMPRE el modelo principal** (Sonnet); `--modo` solo cambia el modelo de **redacción de lecciones**: `draft`=Haiku (barato), `final`=Sonnet. El juez sigue al modelo de lecciones. Para verificar estructura/mapeo/temario, `draft` basta (misma calidad ahí); reservar `final` para el pase de redacción final.
+Defaults por `.env`: `COURSE_LLM_MODEL` (principal, def. `claude-sonnet-5`) y `COURSE_LLM_MODEL_DRAFT` (def. `claude-haiku-4-5-*`). **Ruteo por rol** (flags que sobrescriben por corrida): `--plan-model` (enriquecimiento del plan, def. Haiku), `--lesson-model` (redacción; def. Haiku en draft / Sonnet en final), `--judge-model` (**desacoplado** del modelo de lecciones, def. Sonnet). Regla óptima: **Sonnet piensa/juzga · Haiku escribe** — la estructura ahora es determinista, así que la redacción (desde fuente fija) no necesita razonar. En el flujo legacy, la estructura/mapeo usan siempre el modelo principal; `--modo draft|final` es un atajo de `--lesson-model`.
 
 ### Commands (en `schools/management/commands/`)
 
-Flujo vivo — cursos (libro → JSON local → BD):
+Flujo RECOMENDADO — PLAN → GENERAR:
 ```powershell
-# 1. Genera el curso desde el CONTENIDO (local, con ANTHROPIC_API_KEY). El temario es opcional
-#    (checklist). Flags: --orientacion (deriva del código si se omite), --max-lecciones (auto si se omite),
-#    --judge (juez LLM, costo extra), --judge-min 0.7, --anchor-min 0.28, --modo draft|final.
+# 1. Plan editable desde el libro (sin redacción). --contenido libro único  o  --dir carpeta de capítulos.
+#    --largo corta|media|larga · --ia enriquece categorías+nombres (Haiku).
+python manage.py plan_course --contenido "libro_b.pdf" --nombre "Curso Clase B" --codigo B --largo media --ia --out out/plan_b.json
+# 2. (revisá/editá out/plan_b.json a mano)
+# 3. Redacción DESDE el plan (procedencia 1:1; Haiku escribe, Sonnet juzga).
+python manage.py generate_course --from-plan out/plan_b.json --nombre "Curso Clase B" --codigo B --costo 19990 --out out/b.json --judge
+# 4. Importar (upsert por código; --dry-run, --prune destructivo)
+python manage.py import_course --file out/b.json
+```
+
+Flujo LEGACY — estructura inferida (fallback):
+```powershell
+# Estructura/densidad inferidas por IA desde el contenido. --temario opcional (checklist).
+# Flags: --orientacion, --max-lecciones (auto), --judge, --judge-min 0.7, --anchor-min 0.28, --modo draft|final.
 python manage.py generate_course --contenido "Libro.pdf" --temario "Temario A4.pdf" `
   --nombre "Curso Profesional Clase A4" --codigo A4 --costo 49990 --out out/a4.json --is-profesional --modo final --judge
-# 2. Importa a la BD (upsert por código; --dry-run, --prune destructivo)
 python manage.py import_course --file out/a4.json
 # Auditar un JSON ya generado: triage de cifras / --contenido <pdf> (anclaje real) / --llm (juez) / --judge-min / --anchor-min / --limit
 python manage.py audit_course_json out/a4.json --contenido "Libro.pdf" --llm

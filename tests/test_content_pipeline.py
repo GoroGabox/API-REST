@@ -468,6 +468,182 @@ class ParagraphAnchorTests(SimpleTestCase):
         self.assertEqual(fuentes[0]["pagina_fin"], 20)
 
 
+class OutlineTests(SimpleTestCase):
+    def _L(self, page, text, size=12.0, level=0, noise=False):
+        from content_pipeline.extractors.structured_extractor import Line
+        return Line(page=page, text=text, size=size, bold=False, y0=100.0, page_h=800.0,
+                    level=level, is_noise=noise)
+
+    def test_parse_toc_entries_joins_wrapped_titles(self):
+        from content_pipeline.processors.outline import _parse_toc_entries
+        lines = [
+            self._L(3, "Índice"),
+            self._L(3, "CAPÍTULO"),               # junk de layout
+            self._L(3, "1"),                       # junk
+            self._L(3, "Los siniestros de tránsito      6"),
+            self._L(3, "Medicamentos que pueden"),  # título envuelto…
+            self._L(3, "afectar a la conducción     60"),  # …se cierra con el nº
+        ]
+        entries = _parse_toc_entries(lines)
+        self.assertIn(("Los siniestros de tránsito", 6), entries)
+        self.assertIn(("Medicamentos que pueden afectar a la conducción", 60), entries)
+
+    def test_font_tier_builds_chapters(self):
+        from content_pipeline.processors.outline import _outline_by_font_tier
+        lines = []
+        # 4 capítulos a 30pt en páginas 5/10/15/20, cuerpo 12pt entre medio.
+        for pg, title in [(5, "Capitulo Uno"), (10, "Capitulo Dos"),
+                          (15, "Capitulo Tres"), (20, "Capitulo Cuatro")]:
+            lines.append(self._L(pg, title, size=30.0, level=1))
+            for p in range(pg, pg + 4):
+                lines.append(self._L(p, "cuerpo de la leccion con palabras suficientes " * 6))
+        chapters = _outline_by_font_tier(None, lines)
+        self.assertIsNotNone(chapters)
+        self.assertEqual([c.titulo for c in chapters],
+                         ["Capitulo Uno", "Capitulo Dos", "Capitulo Tres", "Capitulo Cuatro"])
+        self.assertEqual(chapters[0].page_start, 5)
+
+
+class PlanEnrichTests(SimpleTestCase):
+    class _EnrichLLM:
+        """Devuelve JSON de categorías o de nombres según el prompt system."""
+        def complete(self, **kw):
+            sys_ = kw.get("system", "")
+            if "TÍTULO" in sys_ or "titulo" in sys_:
+                return '{"1": "Uso correcto del cinturón", "2": "Sillas de retención infantil"}'
+            return '{"1": "Señales de tránsito", "2": "Alcohol, drogas y estado del conductor"}'
+
+    def _plan(self):
+        return {"unidades": [
+            {"orden": 1, "nombre": "Señales", "categoria": "General",
+             "lecciones": [{"nombre": "Señales — parte 1", "texto": "t", "seccion": None},
+                           {"nombre": "Señales — parte 2", "texto": "t", "seccion": None}]},
+            {"orden": 2, "nombre": "La persona", "categoria": "General",
+             "lecciones": [{"nombre": "La persona — parte 1", "texto": "t", "seccion": None}]},
+        ]}
+
+    def test_enrich_sets_canonical_categories_and_names(self):
+        from content_pipeline.services.plan_enrich import enrich_plan
+        plan = enrich_plan(self._plan(), client=self._EnrichLLM(), model="fake")
+        cats = [u["categoria"] for u in plan["unidades"]]
+        self.assertEqual(cats[0], "Señales de Tránsito")                    # canónica
+        self.assertEqual(cats[1], "Alcohol, Drogas y Fatiga")              # variante → canónica
+        # Nombres de lección reemplazados por el título de la IA.
+        self.assertEqual(plan["unidades"][0]["lecciones"][0]["nombre"], "Uso correcto del cinturón")
+        self.assertEqual(plan["unidades"][0]["lecciones"][1]["nombre"], "Sillas de retención infantil")
+
+    def test_enrich_keeps_deterministic_on_llm_failure(self):
+        from content_pipeline.services.plan_enrich import enrich_plan
+        class _Boom:
+            def complete(self, **kw):
+                raise RuntimeError("api down")
+        plan = enrich_plan(self._plan(), client=_Boom(), model="fake")
+        self.assertEqual(plan["unidades"][0]["categoria"], "General")       # sin cambios
+        self.assertEqual(plan["unidades"][0]["lecciones"][0]["nombre"], "Señales — parte 1")
+
+
+class PlannerFromBookTests(SimpleTestCase):
+    def test_split_paras_respects_word_band(self):
+        from content_pipeline.processors.outline import Para
+        from content_pipeline.services.course_planner import _split_paras
+        # Párrafos realistas (~100 palabras) × 18 ≈ 1800 palabras → ~2 lecciones.
+        paras = [Para(text=("palabra " * 100).strip(), page=i) for i in range(1, 19)]
+        groups = _split_paras(paras, low=700, target=950, high=1200)
+        self.assertGreaterEqual(len(groups), 2)
+        for g in groups:
+            w = sum(len(p.text.split()) for p in g)
+            self.assertLessEqual(w, 1200 + 100)  # nunca parte a mitad de párrafo
+
+    def test_split_big_single_paragraph(self):
+        from content_pipeline.processors.outline import Para
+        from content_pipeline.services.course_planner import _split_paras
+        # Un ÚNICO párrafo gigante (30 oraciones × ~60 palabras ≈ 1800) debe partirse.
+        sents = " ".join(("palabra " * 60).strip() + "." for _ in range(30))
+        groups = _split_paras([Para(text=sents, page=5)], low=700, target=950, high=1200)
+        self.assertGreaterEqual(len(groups), 2)               # se partió por oración
+        for g in groups:
+            self.assertLessEqual(sum(len(p.text.split()) for p in g), 1200 + 60)
+
+    def test_short_tail_not_merged_when_over_max(self):
+        from content_pipeline.processors.outline import Para
+        from content_pipeline.services.course_planner import _split_paras
+        # 950 + 600: la cola de 600 NO debe fusionarse (daría 1550 > 1200).
+        paras = [Para(text=("x " * 950).strip(), page=1), Para(text=("y " * 600).strip(), page=2)]
+        groups = _split_paras(paras, low=700, target=950, high=1200)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(sum(len(p.text.split()) for p in g) <= 1200 for g in groups))
+
+    def test_build_plan_from_outline(self):
+        from unittest.mock import patch
+        from content_pipeline.processors.outline import Chapter, Para
+        import content_pipeline.services.course_planner as cp
+        ch = Chapter(titulo="Los Siniestros", page_start=1, page_end=3,
+                     paras=[Para(text=("x " * 800).strip(), page=1),
+                            Para(text=("y " * 800).strip(), page=2)])
+        with patch.object(cp, "build_outline", return_value=[ch]):
+            plan = cp.build_plan("dummy", nombre="Curso B", codigo="B", largo="media")
+        self.assertEqual(plan["resumen"]["unidades"], 1)
+        u = plan["unidades"][0]
+        self.assertEqual(u["nombre"], "Los Siniestros")
+        self.assertTrue(u["lecciones"])
+        lec = u["lecciones"][0]
+        self.assertIn("texto", lec)              # fuente exacta embebida
+        self.assertEqual(lec["paginas"][0], 1)   # procedencia por página
+
+
+class _FullBodyLLM:
+    """Cliente falso: devuelve un cuerpo completo (9 secciones) siempre."""
+    def __init__(self):
+        self.meter = None
+    def complete_meta(self, **kw):
+        return LLMResponse(_full_body("plan"), stop_reason="end_turn")
+    def complete(self, **kw):
+        return _full_body("plan")
+
+
+class GenerateFromPlanTests(SimpleTestCase):
+    def _plan(self, invented_figure=False):
+        texto = "El límite urbano es 50 km/h. Mantén distancia."
+        if invented_figure:
+            texto = "El límite urbano es 50 km/h."  # la lección dirá 999 km/h (no está)
+        return {
+            "curso": {"nombre": "Curso B", "codigo": "B", "descripcion": "d"},
+            "unidades": [{
+                "orden": 1, "nombre": "Normas", "categoria": "General", "paginas": [10, 12],
+                "lecciones": [{"nombre": "Velocidad urbana", "paginas": [10, 11],
+                               "palabras_objetivo": 900, "texto": texto}],
+            }],
+        }
+
+    def test_generate_from_plan_shape(self):
+        from content_pipeline.processors.llm_lesson_writer import generate_lessons_from_plan
+        out = list(generate_lessons_from_plan(self._plan(), source_name="Libro B",
+                                              client=_FullBodyLLM(), model="fake"))
+        texto = [l for l in out if l["tipo"] == "texto"]
+        quiz = [l for l in out if l["tipo"] == "quiz"]
+        self.assertEqual(len(texto), 1)
+        self.assertEqual(len(quiz), 1)                 # 1 quiz por unidad
+        l = texto[0]
+        self.assertEqual(l["nombre"], "Velocidad urbana")
+        self.assertIn("## Objetivo", l["contenido"])   # cuerpo redactado
+        self.assertIn("## Fuente", l["contenido"])      # cita de páginas
+        self.assertEqual(l["fuentes"][0]["pagina_inicio"], 10)
+        self.assertIn("_source_text", l)                # para la auditoría
+
+    def test_audit_from_plan_flags_invented_figure(self):
+        from content_pipeline.processors.llm_lesson_writer import generate_lessons_from_plan
+        from content_pipeline.processors.faithfulness import audit_lessons_from_plan
+        lessons = list(generate_lessons_from_plan(self._plan(invented_figure=True),
+                                                  source_name="Libro B", client=_FullBodyLLM(), model="fake"))
+        # Inyectar una cifra inventada en el contenido para probar el guard.
+        for l in lessons:
+            if l["tipo"] == "texto":
+                l["contenido"] += "\n\nRecuerda el tope de 999 km/h."
+        res = audit_lessons_from_plan(lessons)
+        self.assertEqual(res["auditadas"], 1)
+        self.assertTrue(any("999" in " ".join(f["cifras"]) for f in res["figuras"]))
+
+
 class FaithfulnessTests(SimpleTestCase):
     def test_unsupported_figures_flags_invented_numbers(self):
         from content_pipeline.processors.faithfulness import unsupported_figures

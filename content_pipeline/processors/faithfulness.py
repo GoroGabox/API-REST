@@ -163,6 +163,45 @@ def audit_lessons(
     }
 
 
+def audit_lessons_from_plan(
+    lessons: list[dict[str, Any]], *, anchor_min: float = ANCHOR_MIN,
+) -> dict[str, Any]:
+    """Audita lecciones redactadas DESDE un plan (traen ``_source_text``).
+
+    Cifras contra el corpus de TODO el material del plan; anclaje por-lección
+    contra su propio texto fuente. Misma forma que ``audit_lessons``.
+    """
+    texts = [str(l.get("_source_text", "")) for l in lessons if l.get("tipo") == "texto"]
+    book_cores = _source_number_cores("\n".join(texts))
+    figuras: list[dict[str, Any]] = []
+    anclaje_bajo: list[dict[str, Any]] = []
+    auditadas = 0
+    for lesson in lessons:
+        if lesson.get("tipo") != "texto":
+            continue
+        src = str(lesson.get("_source_text", ""))
+        if not src:
+            continue
+        auditadas += 1
+        content = str(lesson.get("contenido") or "")
+        figs = _flag_figures(content, book_cores)
+        if figs:
+            figuras.append({"leccion": _label(lesson), "cifras": figs})
+        score = anchoring_score(content, src)
+        if score < anchor_min:
+            anclaje_bajo.append({"leccion": _label(lesson), "anclaje": round(score, 2)})
+    return {"auditadas": auditadas, "anchor_min": anchor_min,
+            "figuras": figuras, "anclaje_bajo": anclaje_bajo}
+
+
+def build_lesson_sources_from_plan(
+    lessons: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], str]]:
+    """Pares (lección, texto fuente) para el juez, desde lecciones con ``_source_text``."""
+    return [(l, str(l.get("_source_text", "")))
+            for l in lessons if l.get("tipo") == "texto" and str(l.get("_source_text", "")).strip()]
+
+
 def audit_generated_json(lessons: list[dict[str, Any]]) -> dict[str, Any]:
     """Triage de cifras de un JSON YA generado, SIN el libro fuente.
 

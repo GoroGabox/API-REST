@@ -302,8 +302,12 @@ def _write_quiz(
     segments: list[dict[str, Any]],
     client: LLMClient,
     model: str,
+    fuente_text: str | None = None,
 ) -> dict[str, Any]:
-    fuente = _source_for_prompt(segments) or "(Sin extractos; evalúa lo general de la unidad.)"
+    if fuente_text is not None:
+        fuente = shorten_text(fuente_text, _MAX_SOURCE_CHARS) or "(Sin extractos; evalúa lo general de la unidad.)"
+    else:
+        fuente = _source_for_prompt(segments) or "(Sin extractos; evalúa lo general de la unidad.)"
     try:
         resp = client.complete_meta(
             system=QUIZ_SYSTEM,
@@ -443,4 +447,148 @@ def generate_lessons_llm(
             ),
             "transcripcion": "",
             "fuentes": _quiz_sources(unit_sources, unidad_nombre, orden, source_name),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Redacción DESDE UN PLAN (fuente exacta por lección; procedencia 1:1)
+# ---------------------------------------------------------------------------
+LESSON_FROM_SOURCE_USER = """\
+Tema: {tema}
+Unidad: {unidad}
+Extensión objetivo: alrededor de {palabras} palabras (no te excedas del objetivo).
+
+Material fuente (redacta la lección ÚNICAMENTE a partir de esto, sin inventar):
+---
+{fuente}
+---
+Redacta la lección "{titulo}".
+"""
+
+
+def _stub_from_plan(title: str, tema: str, unidad_nombre: str, fuente_md: str) -> str:
+    body = _safe_stub_body(title, tema, unidad_nombre, [], "")
+    # Reemplaza la fuente del stub por la cita del plan.
+    return re.sub(r"## Fuente\n.*$", f"## Fuente\n{fuente_md}", body, flags=re.DOTALL)
+
+
+def write_lesson_from_source(
+    *,
+    title: str,
+    tema: str,
+    unidad_nombre: str,
+    source_text: str,
+    palabras: int,
+    fuente_md: str,
+    client: LLMClient,
+    model: str,
+    orientacion: str | None = None,
+) -> str:
+    """Redacta una lección a partir de un texto fuente EXACTO (del plan)."""
+    fuente = shorten_text(source_text, _MAX_SOURCE_CHARS) or "(Sin material fuente para este tema.)"
+    try:
+        body = _complete_lesson_body(
+            system=LESSON_SYSTEM.replace("{titulo}", title).replace(
+                "{orientacion}", _orientacion_txt(orientacion)
+            ),
+            user=LESSON_FROM_SOURCE_USER.format(
+                tema=tema, unidad=unidad_nombre, palabras=palabras, fuente=fuente, titulo=title,
+            ),
+            client=client,
+            model=model,
+        )
+        return f"{body.rstrip()}\n\n## Fuente\n{fuente_md}"
+    except Exception:  # noqa: BLE001 — una lección nunca tumba el curso
+        return _stub_from_plan(title, tema, unidad_nombre, fuente_md)
+
+
+def generate_lessons_from_plan(
+    plan: dict[str, Any],
+    *,
+    source_name: str,
+    orientacion: str | None = None,
+    client: LLMClient | None = None,
+    model: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Redacta el curso DESDE el plan editable (fuente exacta por lección).
+
+    Salida compatible con `import_generated_course`: 1 lección de texto por
+    lección del plan + 1 quiz por unidad.
+    """
+    client = client or LLMClient()
+    model = model or default_model()
+    import hashlib
+
+    for unidad in plan.get("unidades", []):
+        orden = int(unidad.get("orden", 0))
+        unidad_nombre = str(unidad.get("nombre", ""))
+        categoria = str(unidad.get("categoria", "") or "General")
+        lecciones = unidad.get("lecciones", [])
+        if not lecciones:
+            continue
+        position = 1
+        unit_texts: list[str] = []
+        for lec in lecciones:
+            title = str(lec.get("nombre", "")).strip() or f"Lección {position}"
+            texto = str(lec.get("texto", ""))
+            unit_texts.append(texto)
+            pgs = lec.get("paginas") or [0, 0]
+            palabras = int(lec.get("palabras_objetivo") or 900)
+            fuente_md = f"{source_name}, páginas {pgs[0]}-{pgs[1]}."
+            body = write_lesson_from_source(
+                title=title, tema=title, unidad_nombre=unidad_nombre,
+                source_text=texto, palabras=palabras, fuente_md=fuente_md,
+                client=client, model=model, orientacion=orientacion,
+            )
+            yield {
+                "unidad_orden": orden,
+                "unidad_nombre": unidad_nombre,
+                "categoria": categoria,
+                "tema_regulatorio": title,
+                "nombre": title,
+                "posicion": position,
+                "tipo": "texto",
+                "descripcion": shorten_text(
+                    f"{title} — dentro de {unidad_nombre}.", 240),
+                "duracion_min": _clamp(round(palabras / 130) * 1, 15, 60),  # ~130 wpm lectura
+                "contenido": body,
+                "transcripcion": "",
+                "fuentes": [{
+                    "fuente_nombre": source_name,
+                    "pagina_inicio": int(pgs[0] or 0),
+                    "pagina_fin": int(pgs[1] or 0),
+                    "tema_regulatorio": title,
+                    "fragmento_resumen": shorten_text(texto, 600),
+                    "hash_fragmento": hashlib.sha256(texto.encode("utf-8")).hexdigest(),
+                }],
+                "fuente_debil": False,
+                "_source_text": texto,  # para la auditoría de fidelidad (no se persiste)
+            }
+            position += 1
+
+        yield {
+            "unidad_orden": orden,
+            "unidad_nombre": unidad_nombre,
+            "categoria": categoria,
+            "tema_regulatorio": f"Evaluación módulo {orden}",
+            "nombre": f"Evaluación del módulo {orden}",
+            "posicion": position,
+            "tipo": "quiz",
+            "descripcion": f"Evaluación de cierre de la unidad {unidad_nombre}.",
+            "duracion_min": 25,
+            "contenido": _write_quiz(
+                unidad_nombre=unidad_nombre,
+                temas=[str(l.get("nombre", "")) for l in lecciones],
+                segments=[], client=client, model=model,
+                fuente_text="\n\n".join(unit_texts),
+            ),
+            "transcripcion": "",
+            "fuentes": [{
+                "fuente_nombre": source_name,
+                "pagina_inicio": int((unidad.get("paginas") or [0, 0])[0] or 0),
+                "pagina_fin": int((unidad.get("paginas") or [0, 0])[1] or 0),
+                "tema_regulatorio": f"Evaluación módulo {orden}",
+                "fragmento_resumen": f"Evaluación de la unidad {unidad_nombre}.",
+                "hash_fragmento": "",
+            }],
         }

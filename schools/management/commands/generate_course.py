@@ -11,6 +11,8 @@ escribe el resultado a disco. Sin API key cae al mismo fallback extractivo.
 """
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -23,11 +25,16 @@ from content_pipeline.processors.faithfulness import (
     ANCHOR_MIN,
     JUDGE_MIN,
     audit_lessons,
+    audit_lessons_from_plan,
     build_lesson_sources,
+    build_lesson_sources_from_plan,
     judge_lessons_llm,
 )
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
-from content_pipeline.processors.llm_lesson_writer import generate_lessons_llm
+from content_pipeline.processors.llm_lesson_writer import (
+    generate_lessons_from_plan,
+    generate_lessons_llm,
+)
 from content_pipeline.processors.manifest_from_content import (
     build_manifest_from_content,
     build_manifest_from_content_llm,
@@ -56,7 +63,14 @@ class Command(BaseCommand):
         parser.add_argument("--temario", default=None,
                             help="PDF del temario (opcional). Ya NO define la estructura: se usa como "
                                  "checklist para validar que sus temas aparezcan en el curso generado.")
-        parser.add_argument("--contenido", required=True, help="PDF del contenido fuente (material).")
+        parser.add_argument("--contenido", default=None, help="PDF del contenido fuente (material). Requerido salvo --from-plan.")
+        parser.add_argument("--from-plan", default=None,
+                            help="Redacta DESDE un plan editable (salida de `plan_course`), con "
+                                 "procedencia 1:1. Ignora --contenido/--temario/--max-lecciones.")
+        parser.add_argument("--lesson-model", default=None,
+                            help="Modelo de REDACCIÓN de lecciones (def. Haiku en draft, Sonnet en final).")
+        parser.add_argument("--judge-model", default=None,
+                            help="Modelo del JUEZ (def. Sonnet). Desacoplado del modelo de lecciones.")
         parser.add_argument("--nombre", required=True, help="Nombre del curso.")
         parser.add_argument("--codigo", required=True, help="Código del curso (<=10 chars).")
         parser.add_argument("--costo", type=int, required=True, help="Costo del curso (> 0).")
@@ -83,6 +97,17 @@ class Command(BaseCommand):
                                  f"(def. {ANCHOR_MIN}).")
 
     def handle(self, *args, **opts):
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+
+        if opts.get("from_plan"):
+            return self._handle_from_plan(opts)
+
+        if not opts.get("contenido"):
+            raise CommandError("Falta --contenido (o usá --from-plan).")
         contenido_path = Path(opts["contenido"])
         if not contenido_path.exists():
             raise CommandError(f"No existe el PDF: {contenido_path}")
@@ -109,7 +134,7 @@ class Command(BaseCommand):
         use_llm = LLMClient.is_available()
         client = LLMClient() if use_llm else None
         final_model = default_model()
-        lesson_model = final_model if modo == "final" else draft_model()
+        lesson_model = opts.get("lesson_model") or (final_model if modo == "final" else draft_model())
 
         if use_llm:
             self.stdout.write(f"Modo IA · estructura: {final_model} · lecciones: {lesson_model}")
@@ -240,7 +265,8 @@ class Command(BaseCommand):
         if opts.get("judge") and use_llm and client is not None:
             pairs = build_lesson_sources(lessons, segments, mappings)
             self.stdout.write(f"Juez LLM de fidelidad · {len(pairs)} lecciones…")
-            juez = judge_lessons_llm(pairs, client=client, model=lesson_model, judge_min=opts["judge_min"])
+            juez_model = opts.get("judge_model") or default_model()
+            juez = judge_lessons_llm(pairs, client=client, model=juez_model, judge_min=opts["judge_min"])
             self.stdout.write(
                 f"  Fidelidad promedio: {juez['promedio']} · "
                 f"críticas (< {juez['judge_min']}): {len(juez['criticas'])} · "
@@ -300,3 +326,97 @@ class Command(BaseCommand):
             segments, nombre=nombre, codigo=codigo,
             is_profesional=is_profesional, max_lecciones=max_lecciones, n_unidades=n_unidades,
         )
+
+    # -- redacción DESDE un plan editable -----------------------------------
+
+    def _handle_from_plan(self, opts):
+        plan_path = Path(opts["from_plan"])
+        if not plan_path.exists():
+            raise CommandError(f"No existe el plan: {plan_path}")
+        costo = int(opts["costo"])
+        if costo <= 0:
+            raise CommandError("El costo es obligatorio y debe ser mayor a 0.")
+        codigo = opts["codigo"].strip().upper()
+        nombre = opts["nombre"].strip()
+        source_name = opts["source_name"] or f"Libro: {nombre}"
+        orientacion = orientation_for(codigo, opts.get("orientacion"))
+
+        plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
+        use_llm = LLMClient.is_available()
+        client = LLMClient() if use_llm else None
+        lesson_model = opts.get("lesson_model") or draft_model()  # redacción = Haiku por defecto
+        if use_llm:
+            self.stdout.write(f"Redactando DESDE plan · lecciones: {lesson_model}")
+        else:
+            self.stdout.write("IA no configurada: lecciones con stub (revisar).")
+        if orientacion:
+            self.stdout.write(f"Orientación ({codigo}): {orientacion}")
+
+        n_u = len(plan.get("unidades", []))
+        n_l = sum(len(u.get("lecciones", [])) for u in plan.get("unidades", []))
+        self.stdout.write(f"Plan: {n_u} unidades · {n_l} lecciones.")
+
+        lessons = []
+        for lesson in generate_lessons_from_plan(
+            plan, source_name=source_name, orientacion=orientacion,
+            client=client, model=lesson_model,
+        ):
+            lessons.append(lesson)
+            if lesson.get("tipo") == "texto":
+                self.stdout.write(f"  [{lesson['unidad_orden']}.{lesson['posicion']}] {lesson.get('nombre','')}")
+
+        # Auditoría (usa _source_text de cada lección).
+        audit = audit_lessons_from_plan(lessons, anchor_min=opts["anchor_min"])
+        self.stdout.write(
+            f"Fidelidad: {audit['auditadas']} auditadas · {len(audit['figuras'])} con cifras sin respaldo · "
+            f"{len(audit['anclaje_bajo'])} con bajo anclaje."
+        )
+        for f in audit["figuras"]:
+            self.stderr.write(self.style.WARNING(f"  cifras: {f['leccion']}: {', '.join(f['cifras'])}"))
+
+        auditoria = dict(audit)
+        if opts.get("judge") and use_llm and client is not None:
+            pairs = build_lesson_sources_from_plan(lessons)
+            juez_model = opts.get("judge_model") or default_model()  # juez = Sonnet por defecto
+            self.stdout.write(f"Juez LLM de fidelidad ({juez_model}) · {len(pairs)} lecciones…")
+            juez = judge_lessons_llm(pairs, client=client, model=juez_model, judge_min=opts["judge_min"])
+            self.stdout.write(
+                f"  Fidelidad promedio: {juez['promedio']} · críticas (< {juez['judge_min']}): "
+                f"{len(juez['criticas'])} · con reparos menores: {len(juez['con_reparos'])}"
+            )
+            for item in juez["criticas"]:
+                self.stderr.write(self.style.ERROR(f"  CRÍTICA {item['leccion']} · {item['score']}"))
+                for c in item["claims"]:
+                    self.stderr.write(f"      · {c}")
+            auditoria["juez"] = juez
+
+        # Construir manifest desde el plan y limpiar _source_text antes de escribir.
+        curso = plan.get("curso", {})
+        manifest = {
+            "curso": {
+                "nombre": nombre, "codigo": codigo,
+                "descripcion": curso.get("descripcion", f"Curso generado de {nombre}."),
+                "is_profesional": bool(opts["is_profesional"]) or bool(curso.get("is_profesional")),
+                "costo": costo,
+            },
+            "unidades": [
+                {"orden": u["orden"], "nombre": u["nombre"], "categoria": u.get("categoria", "General"),
+                 "horas_elearning": 0, "temas": [l["nombre"] for l in u.get("lecciones", [])]}
+                for u in plan.get("unidades", [])
+            ],
+        }
+        for l in lessons:
+            l.pop("_source_text", None)
+
+        payload = {"manifest": manifest, "lessons": lessons, "auditoria": auditoria}
+        if use_llm and client is not None:
+            payload["ia"] = client.meter.as_dict()
+        out_path = Path(opts["out"])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(out_path, payload)
+        self.stdout.write("")
+        self.stdout.write(self.style.SUCCESS(f"Curso generado desde plan: {len(lessons)} lecciones → {out_path}"))
+        if use_llm and client is not None:
+            self.stdout.write(f"IA: {client.meter.calls} llamadas · ~US${client.meter.cost_usd:.3f}")
+        self.stdout.write(f"  python manage.py import_course --file {out_path} --dry-run")
+        self.stdout.write(f"  python manage.py import_course --file {out_path}")
