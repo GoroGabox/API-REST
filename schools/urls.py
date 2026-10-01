@@ -17,6 +17,8 @@ from .views import (
     ProgresoEstudianteDetalleView,
     CertificadosPorEscuelaView,
     CourseGenerateView,
+    CoursePlanView,
+    CourseImportView,
 )
 # Vistas de suscripción viven en `sales/views.py` porque manipulan
 # EstudianteCurso/AccessKey, pero se exponen bajo el árbol de schools para
@@ -42,6 +44,8 @@ urlpatterns = [
         CourseGenerateView.as_view(),
         name="course_generate",
     ),
+    path("courses/plan/", CoursePlanView.as_view(), name="course_plan"),
+    path("courses/import/", CourseImportView.as_view(), name="course_import"),
     path(
         "vincular-estudiante/",
         VincularEstudianteView.as_view(),

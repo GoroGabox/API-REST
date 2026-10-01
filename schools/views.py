@@ -3,10 +3,11 @@ import json
 import os
 import re
 import tempfile
+from pathlib import Path
 
 from rest_framework import viewsets, status, permissions as drf_permissions
 from rest_framework.decorators import action
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
@@ -1165,6 +1166,37 @@ TEMARIO_MAX_BYTES = 30 * 1024 * 1024       # 30 MB
 CONTENIDO_MAX_BYTES = 300 * 1024 * 1024    # 300 MB
 
 
+BOOK_EXTENSIONS = (".pdf", ".docx")
+
+
+def _course_meta(data) -> tuple[dict | None, Response | None]:
+    """Valida nombre/código/precio/PRO comunes a planificar, generar e importar."""
+    nombre = (data.get("nombre") or "").strip()
+    codigo = (data.get("codigo") or "").strip().upper()
+    if not nombre or not codigo:
+        return None, Response({"detail": "Se requieren 'nombre' y 'codigo'."}, status=status.HTTP_400_BAD_REQUEST)
+    if len(codigo) > 10:
+        return None, Response({"detail": "El código no puede superar 10 caracteres."},
+                              status=status.HTTP_400_BAD_REQUEST)
+    try:
+        precio_unitario = int(data.get("precio_unitario"))
+    except (TypeError, ValueError):
+        precio_unitario = None
+    is_profesional = str(data.get("is_profesional", "")).lower() in ("true", "1", "on", "yes")
+    return {"nombre": nombre, "codigo": codigo, "precio_unitario": precio_unitario,
+            "is_profesional": is_profesional}, None
+
+
+def _save_temp_upload(uploaded, suffix: str) -> str:
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        for chunk in uploaded.chunks():
+            handle.write(chunk)
+    finally:
+        handle.close()
+    return handle.name
+
+
 def _save_temp_pdf(uploaded) -> str:
     """Vuelca un archivo subido a un PDF temporal en disco y devuelve su ruta.
 
@@ -1183,18 +1215,27 @@ def _save_temp_pdf(uploaded) -> str:
 class CourseGenerateView(APIView):
     """POST /api/v1/schools/courses/generate/
 
-    Genera un curso completo (curso + unidades + lecciones) a partir de dos
-    PDFs —TEMARIO (estructura) y CONTENIDO (fuente)— usando la app
-    `content_pipeline`. Responde un stream NDJSON (`application/x-ndjson`) con
-    eventos step/lesson/done/error consumido por `CourseGenerator.js`.
+    Dos modos, según el cuerpo:
 
-    Solo admin: crear cursos es una operación de back-office.
+    - **Desde plan (recomendado)** — JSON ``{plan, nombre, codigo, precio_unitario,
+      is_profesional?, juez?, modo?, orientacion?, fuente_nombre?}`` con el plan que
+      el operador revisó y aprobó (``POST courses/plan/``). Redacta cada lección
+      desde su fuente exacta, audita (cifras, juez de fidelidad/cobertura, juez de
+      quiz) y valida. Si hay bloqueos NO importa: el evento ``bloqueado`` entrega
+      el curso para revisarlo o importarlo con ``POST courses/import/``.
+    - **Legacy** — multipart con PDFs ``temario`` + ``contenido``: la IA infiere la
+      estructura (flujo antiguo, se conserva por compatibilidad).
+
+    Responde un stream NDJSON (`application/x-ndjson`) consumido por
+    `CourseGenerator.js`. Solo admin: crear cursos es una operación de back-office.
     """
 
     permission_classes = [IsAdmin]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def post(self, request):
+        if "plan" in request.data and not request.FILES:
+            return self._post_from_plan(request)
         temario = request.FILES.get("temario")
         contenido = request.FILES.get("contenido")
         nombre = (request.data.get("nombre") or "").strip()
@@ -1282,8 +1323,142 @@ class CourseGenerateView(APIView):
                     except OSError:
                         pass
 
-        response = StreamingHttpResponse(stream(), content_type="application/x-ndjson")
-        response["Cache-Control"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"  # evita buffering en nginx
-        return response
+        return _ndjson_response(stream())
+
+    def _post_from_plan(self, request):
+        from content_pipeline.services.plan_generation import generate_course_from_plan_stream, is_plan
+        from content_pipeline.llm.client import default_model, draft_model
+
+        meta, err = _course_meta(request.data)
+        if err:
+            return err
+        if not meta["precio_unitario"] or meta["precio_unitario"] <= 0:
+            return Response({"detail": "El precio unitario es obligatorio y debe ser mayor a 0."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        plan = request.data.get("plan")
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except ValueError:
+                plan = None
+        if not is_plan(plan):
+            return Response({"detail": "'plan' debe ser un plan.json con unidades y lecciones."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        juez = str(request.data.get("juez", "true")).lower() not in ("false", "0", "off", "no")
+        modo = (request.data.get("modo") or "draft").strip()
+        stream = generate_course_from_plan_stream(
+            plan,
+            nombre=meta["nombre"],
+            codigo=meta["codigo"],
+            costo=meta["precio_unitario"],
+            is_profesional=meta["is_profesional"],
+            source_name=(request.data.get("fuente_nombre") or None),
+            orientacion=(request.data.get("orientacion") or None),
+            judge=juez,
+            lesson_model=default_model() if modo == "final" else draft_model(),
+        )
+        return _ndjson_response(json.dumps(evt, ensure_ascii=False) + "\n" for evt in stream)
+
+
+def _ndjson_response(chunks):
+    response = StreamingHttpResponse(chunks, content_type="application/x-ndjson")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"  # evita buffering en nginx
+    return response
+
+
+class CoursePlanView(APIView):
+    """POST /api/v1/schools/courses/plan/ — Fase 1 del flujo recomendado (web).
+
+    Multipart: ``contenido`` (libro PDF o DOCX), ``nombre``, ``codigo``,
+    ``largo`` (corta|media|larga), ``ia`` (true = nombra lecciones y clasifica
+    categorías con Haiku). Devuelve ``{plan, resumen, ia}`` SIN redactar nada: el
+    operador revisa/edita el plan antes de pagar la redacción (``courses/generate/``).
+    """
+
+    permission_classes = [IsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from content_pipeline.services.course_planner import BANDAS, build_plan
+
+        libro = request.FILES.get("contenido")
+        if not libro:
+            return Response({"detail": "Se requiere el libro ('contenido', PDF o DOCX)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        suffix = os.path.splitext(getattr(libro, "name", "") or "")[1].lower()
+        if suffix not in BOOK_EXTENSIONS:
+            return Response({"detail": "El libro debe ser PDF o DOCX."}, status=status.HTTP_400_BAD_REQUEST)
+        if libro.size > CONTENIDO_MAX_BYTES:
+            return Response({"detail": f"El libro supera el máximo de {CONTENIDO_MAX_BYTES // (1024 * 1024)} MB."},
+                            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        meta, err = _course_meta(request.data)
+        if err:
+            return err
+        largo = (request.data.get("largo") or "media").strip()
+        if largo not in BANDAS:
+            return Response({"detail": f"'largo' debe ser uno de: {', '.join(BANDAS)}."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        usar_ia = str(request.data.get("ia", "")).lower() in ("true", "1", "on", "yes")
+
+        path = _save_temp_upload(libro, suffix)
+        try:
+            plan = build_plan(Path(path), nombre=meta["nombre"], codigo=meta["codigo"], largo=largo,
+                              is_profesional=meta["is_profesional"])
+        except ValueError as exc:
+            return Response({"detail": f"No se pudo planificar el libro: {exc}"},
+                            status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        ia = None
+        if usar_ia:
+            from content_pipeline.llm.client import LLMClient, draft_model
+            if LLMClient.is_available():
+                from content_pipeline.services.plan_enrich import enrich_plan
+                client = LLMClient(model=draft_model())
+                enrich_plan(plan, client=client, model=draft_model())
+                ia = client.meter.as_dict()
+        plan.setdefault("curso", {})["fuente_nombre"] = getattr(libro, "name", "") or ""
+        return Response({"plan": plan, "resumen": plan.get("resumen"), "ia": ia})
+
+
+class CourseImportView(APIView):
+    """POST /api/v1/schools/courses/import/ — importa un curso generado.
+
+    JSON ``{curso: {manifest, lessons, auditoria?}, forzar?: bool}``: el curso que
+    ``courses/generate/`` entregó como ``bloqueado`` (o revisado en la Brújula).
+    Sin ``forzar`` aplica el mismo bloqueo que ``import_course`` (lecciones sin
+    redactar, críticas del juez, claves de quiz dudosas) y responde 409 con los
+    motivos. Con ``forzar`` importa igual (tras revisión humana).
+    """
+
+    permission_classes = [IsAdmin]
+    parser_classes = [JSONParser]
+
+    def post(self, request):
+        from content_pipeline.exporters.django_importer import import_generated_course
+        from content_pipeline.processors.validators import import_blockers
+
+        data = request.data.get("curso")
+        if not isinstance(data, dict) or not isinstance(data.get("manifest"), dict) \
+                or not isinstance(data.get("lessons"), list):
+            return Response({"detail": "'curso' debe ser un JSON de generate_course ({manifest, lessons})."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        forzar = str(request.data.get("forzar", "")).lower() in ("true", "1", "on", "yes")
+        bloqueos, _ = import_blockers(data)
+        if bloqueos and not forzar:
+            return Response({"detail": "El curso tiene bloqueos de fidelidad.", "bloqueos": bloqueos},
+                            status=status.HTTP_409_CONFLICT)
+        lessons = [{k: v for k, v in l.items() if k != "_source_text"} for l in data["lessons"]]
+        try:
+            summary, curso = import_generated_course(data["manifest"], lessons)
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": f"No se pudo importar: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"curso": {"id": curso.id, "nombre": curso.nombre, "codigo": curso.codigo},
+                         "forzado": bool(bloqueos), "bloqueos": bloqueos, "resumen": summary.as_lines()},
+                        status=status.HTTP_201_CREATED)
 

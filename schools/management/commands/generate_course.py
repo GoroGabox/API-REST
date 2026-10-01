@@ -17,6 +17,8 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
+from content_pipeline.processors.validators import validate_generated_course
+from content_pipeline.services.plan_generation import manifest_from_plan
 from content_pipeline.exporters.json_exporter import write_json
 from content_pipeline.licenses import orientation_for
 from content_pipeline.extractors.pdf_text_extractor import extract_pdf_pages
@@ -29,6 +31,7 @@ from content_pipeline.processors.faithfulness import (
     build_lesson_sources,
     build_lesson_sources_from_plan,
     judge_lessons_llm,
+    judge_quiz_llm,
 )
 from content_pipeline.processors.generic_lesson_generator import generate_lessons_generic
 from content_pipeline.processors.llm_lesson_writer import (
@@ -285,8 +288,10 @@ class Command(BaseCommand):
                     for claim in item["claims"]:
                         self.stderr.write(f"        · {claim}")
             auditoria["juez"] = juez
+            self._report_coverage(juez)
 
         payload = {"manifest": manifest, "lessons": lessons, "auditoria": auditoria}
+        payload["validacion"] = self._report_validation(manifest, lessons)
         if provenance:  # para que audit_course_json --contenido reuse el mismo mapeo
             payload["provenance"] = provenance
         if use_llm and client is not None:
@@ -326,6 +331,67 @@ class Command(BaseCommand):
             segments, nombre=nombre, codigo=codigo,
             is_profesional=is_profesional, max_lecciones=max_lecciones, n_unidades=n_unidades,
         )
+
+    def _report_coverage(self, juez):
+        """Cobertura: datos importantes del extracto que la lección omite (no bloquea)."""
+        if juez.get("promedio_cobertura") is None:
+            return
+        baja = juez.get("cobertura_baja") or []
+        self.stdout.write(
+            f"  Cobertura promedio: {juez['promedio_cobertura']} · con omisiones importantes "
+            f"(< {juez['coverage_min']}): {len(baja)}"
+        )
+        for item in baja:
+            self.stderr.write(self.style.WARNING(f"  OMITE {item['leccion']} · cobertura {item['coverage']}"))
+            for o in item.get("omissions", [])[:5]:
+                self.stderr.write(f"      · {o}")
+
+    def _judge_quizzes(self, lessons, client, model):
+        """Juez de claves de quiz (preguntas con evidencia). Los problemas bloquean el import."""
+        quizzes = [l for l in lessons if l.get("tipo") == "quiz"]
+        jq = judge_quiz_llm(quizzes, client=client, model=model)
+        self.stdout.write(
+            f"Juez de quiz ({model}) · {jq['evaluadas']} preguntas · {len(jq['problemas'])} con problemas"
+            + (f" · {jq['sin_evidencia']} sin evidencia (no auditadas)" if jq["sin_evidencia"] else "")
+        )
+        for pr in jq["problemas"]:
+            self.stderr.write(self.style.ERROR(f"  QUIZ {pr['leccion']} · {pr['pregunta'][:80]}"))
+            self.stderr.write(f"      · {pr['problema']}")
+        return jq
+
+    def _report_quiz(self, lessons):
+        """Cobertura de los quizzes generados desde el plan (preguntas por lección)."""
+        resumen = []
+        for l in lessons:
+            meta = l.get("quiz_meta") if l.get("tipo") == "quiz" else None
+            if not meta:
+                continue
+            resumen.append({"unidad": l.get("unidad_orden"), **{k: v for k, v in meta.items() if k != "descartes"},
+                            "descartes": meta.get("descartes", [])[:20]})
+            sin = meta.get("lecciones_sin_preguntas") or []
+            linea = (f"  Quiz U{l.get('unidad_orden')}: {meta['preguntas']} preguntas de {meta['lecciones']} lecciones"
+                     f" · {meta['descartadas']} descartadas")
+            (self.stderr.write(self.style.WARNING(linea + f" · sin preguntas: {', '.join(sin)}")) if sin
+             else self.stdout.write(linea))
+        return resumen
+
+    def _report_validation(self, manifest, lessons):
+        """Valida el curso generado y lo informa; ``import_course`` bloquea con esto."""
+        v = validate_generated_course(manifest, lessons)
+        self.stdout.write(
+            f"Validación: {len(v['errores'])} errores · {len(v['stubs'])} sin redactar/fuente débil · "
+            f"{len(v['advertencias'])} advertencias."
+        )
+        for e in v["errores"]:
+            self.stderr.write(self.style.ERROR(f"  ERROR {e}"))
+        for st in v["stubs"]:
+            self.stderr.write(self.style.WARNING(f"  REVISAR {st}"))
+        for vis in v.get("revision_visual", []):
+            self.stderr.write(self.style.WARNING(f"  VISUAL {vis}: revisar contra el libro (figuras)"))
+        if v["errores"] or v["stubs"]:
+            self.stderr.write(self.style.WARNING(
+                "  import_course bloqueará este JSON hasta corregirlo (o usar --forzar)."))
+        return v
 
     # -- redacción DESDE un plan editable -----------------------------------
 
@@ -375,6 +441,7 @@ class Command(BaseCommand):
             self.stderr.write(self.style.WARNING(f"  cifras: {f['leccion']}: {', '.join(f['cifras'])}"))
 
         auditoria = dict(audit)
+        auditoria["quiz"] = self._report_quiz(lessons)
         if opts.get("judge") and use_llm and client is not None:
             pairs = build_lesson_sources_from_plan(lessons)
             juez_model = opts.get("judge_model") or default_model()  # juez = Sonnet por defecto
@@ -389,26 +456,17 @@ class Command(BaseCommand):
                 for c in item["claims"]:
                     self.stderr.write(f"      · {c}")
             auditoria["juez"] = juez
+            self._report_coverage(juez)
+            auditoria["juez_quiz"] = self._judge_quizzes(lessons, client, juez_model)
 
         # Construir manifest desde el plan y limpiar _source_text antes de escribir.
-        curso = plan.get("curso", {})
-        manifest = {
-            "curso": {
-                "nombre": nombre, "codigo": codigo,
-                "descripcion": curso.get("descripcion", f"Curso generado de {nombre}."),
-                "is_profesional": bool(opts["is_profesional"]) or bool(curso.get("is_profesional")),
-                "costo": costo,
-            },
-            "unidades": [
-                {"orden": u["orden"], "nombre": u["nombre"], "categoria": u.get("categoria", "General"),
-                 "horas_elearning": 0, "temas": [l["nombre"] for l in u.get("lecciones", [])]}
-                for u in plan.get("unidades", [])
-            ],
-        }
+        manifest = manifest_from_plan(plan, nombre=nombre, codigo=codigo, costo=costo,
+                                      is_profesional=bool(opts["is_profesional"]))
         for l in lessons:
             l.pop("_source_text", None)
 
         payload = {"manifest": manifest, "lessons": lessons, "auditoria": auditoria}
+        payload["validacion"] = self._report_validation(manifest, lessons)
         if use_llm and client is not None:
             payload["ia"] = client.meter.as_dict()
         out_path = Path(opts["out"])
