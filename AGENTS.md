@@ -102,24 +102,32 @@ Spanish resource names in URLs (`pruebas`, `perfil-estudiante`, `ventas`, `curso
 
 ## Content pipeline (`content_pipeline/`)
 
-Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y ejercicios a partir de PDFs con IA (Anthropic). La usa el endpoint de streaming `schools.views.CourseGenerateView` (`POST /api/v1/schools/cursos/generar/`) y los management commands de abajo (que viven en `schools/management/commands/`).
+Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y ejercicios a partir de PDFs con IA (Anthropic). La usan los endpoints web (solo admin) y los management commands de abajo (que viven en `schools/management/commands/`).
+
+**Endpoints web (flujo PLAN → GENERAR, consumidos por `CourseGenerator.js` del webapp):**
+- `POST /api/v1/schools/courses/plan/` (`CoursePlanView`, multipart: `contenido` PDF/DOCX, `nombre`, `codigo`, `largo`, `ia`) → `{plan, resumen, ia}`. No redacta ni persiste.
+- `POST /api/v1/schools/courses/generate/` (`CourseGenerateView`): con JSON `{plan, nombre, codigo, precio_unitario, is_profesional?, juez?=true, modo?=draft|final}` redacta desde el plan aprobado (`services/plan_generation.generate_course_from_plan_stream`: lecciones, quiz con evidencia, cifras, juez por lección con progreso, juez de quiz, validación) y transmite NDJSON (`step/warn/lesson/done/error` + **`bloqueado`**). Si `import_blockers` encuentra bloqueos **no importa**: `bloqueado` trae `bloqueos` y `curso_json` para descargarlo (Brújula) o importarlo explícitamente. Multipart con `temario`+`contenido` sigue disparando el **flujo legacy** (compatibilidad).
+- `POST /api/v1/schools/courses/import/` (`CourseImportView`, JSON `{curso, forzar?}`): mismo bloqueo que `import_course`; 409 con `bloqueos` sin `forzar`, 201 con `forzar`.
 
 ### Flujo RECOMENDADO: PLAN → GENERAR (dirigido por el índice del libro)
 
 La estructura y la densidad son **deterministas** desde el libro/índice (ya NO se infieren de un "digest"); la IA solo **redacta y rotula**; y hay un **plan editable** que el operador aprueba antes de pagar la redacción.
 
 **Fase 1 — `plan_course` (sin redacción; escribe `plan.json` editable):**
-1. **Extracción estructurada** (`extractors/structured_extractor.py`): conserva tamaño de fuente/negrita/estilos (PDF vía `get_text("dict")`, DOCX vía estilos Word) y limpia ruido (headers/pies por posición, nº de página, líneas de índice).
+1. **Extracción estructurada** (`extractors/structured_extractor.py`): conserva tamaño de fuente/negrita/estilos (PDF vía `get_text("dict")`, DOCX vía estilos Word) y limpia ruido (headers/pies por posición, nº de página, líneas de índice). **Reconstrucción de párrafos** (`outline.lines_to_paras`): el PDF entrega líneas físicas; se unen por continuidad de oración + interlineado (también entre páginas), se quitan guiones blandos (conservando guiones reales), el rótulo de apertura y el título del capítulo repetido como encabezado de página, y los rótulos de figura que cortan una palabra se mueven tras la oración. Así las lecciones no empiezan ni terminan a mitad de oración (plan B: 32→0 lecciones cortadas al inicio).
 2. **Outline dirigido por índice** (`processors/outline.py`): capítulo → unidad, en el orden del libro. Fuentes por prioridad: (a) **carpeta de capítulos** (`--dir`, un archivo = capítulo); (b) **tier de fuente** de los divisores de capítulo (`_outline_by_font_tier`, robusto ante índices de 2 columnas); (c) **parseo del índice/TOC** (fallback); (d) headings `level 1`.
 3. **Densidad → lecciones** (`services/course_planner.py`): reparte cada capítulo según su volumen real y la **banda de palabras** (`--largo corta|media|larga` = 400-700 / 700-1200 / 1200-1800), cortando en límites de párrafo y **sub-partiendo por oración** los párrafos que exceden el máximo. Cada lección lleva su **texto fuente exacto + páginas**.
 4. **Enriquecimiento IA opcional** (`--ia`, `services/plan_enrich.py`, Haiku por defecto): clasifica la **categoría** de cada unidad en la taxonomía cerrada y **nombra** las lecciones. Best-effort (ante fallo quedan los valores deterministas).
-5. Escribe `plan.json` (unidades → lecciones con `texto`/`paginas`/`palabras_objetivo`). **El operador lo revisa/edita.**
+5. **Revisión visual** (`processors/visual_pages.py`): con un PDF único mide por página imágenes relevantes (≥0,4% del área) y caracteres; una página es `visual` si tiene ≥4 imágenes y <60% del texto mediano, ≥25% de área de imagen, o ≥2 imágenes y <45% del texto (las divisorias sin cuerpo se ignoran). Cada lección recibe `visual {nivel, paginas_visuales, paginas_con_figuras, imagenes, referencias, motivo}`: **alta** si ≥30% de sus páginas son visuales (p. ej. el capítulo de señales), **media** si tiene figuras + referencias tipo "ver imagen superior" (con carpetas/DOCX solo cuentan las referencias). `resumen.revision_visual` = conteos. La marca viaja a la lección generada (`revision_visual`), avisa al redactor que no describa imágenes, aparece en la validación (advertencia, **no bloquea**), en el stream web y en la Brújula (alerta del plan + nota "Revisión visual" en el contenido).
+6. Escribe `plan.json` (unidades → lecciones con `texto`/`paginas`/`palabras_objetivo`/`visual`). **El operador lo revisa/edita.**
 
 **Fase 2 — `generate_course --from-plan plan.json` (redacción):**
-- Cada lección se redacta **desde su texto fuente exacto** (`llm_lesson_writer.generate_lessons_from_plan`) → **procedencia 1:1 por construcción** (sin `map_topics`/`llm_mapper`), respetando el tope de palabras; degradación segura ante fallo.
-- Auditoría de fidelidad idéntica (cifras vs todo el material del plan + anclaje + juez con `--judge`).
+- Cada lección se redacta **desde su texto fuente exacto y COMPLETO** (`llm_lesson_writer.generate_lessons_from_plan`, sin truncar) → **procedencia 1:1 por construcción** (sin `map_topics`/`llm_mapper`); degradación segura ante fallo (stub marcado).
+- **Prompt fiel a la fuente** (`FAITHFUL_LESSON_SYSTEM`): todo dato/regla/cifra/recomendación debe estar en el extracto (nada de "sentido común" ni conocimiento general); definiciones, normas, cifras, plazos y sanciones con la redacción del libro; sin describir imágenes. Secciones **núcleo obligatorias** (`CORE_SECTIONS`: Objetivo, Desarrollo, Puntos clave, Resumen) y **opcionales** (Introducción, Aplicación práctica, Ejemplo aplicado, Errores frecuentes, Actividad breve) que se omiten si el extracto no las respalda. **Largo proporcional** a la fuente (`lesson_length`: máx ≈1,1× palabras de la fuente, piso 250, techo = `palabras_objetivo`). temperatura 0.3. (El flujo legacy conserva su prompt de 9 secciones.)
+- **Quiz por lección con evidencia** (`write_quiz_from_plan`): cada lección aporta `ceil(5/n_lecciones)` preguntas (≥1) desde SU fuente completa; cada pregunta trae `evidencia` (cita literal) que **debe aparecer en la fuente** o se descarta (`validate_quiz_question`: 4 opciones distintas, `correct_index` válido, sin "todas/ninguna de las anteriores"); opciones barajadas de forma determinista; un reintento por lección. Sin preguntas válidas → quiz extractivo marcado `fuente_debil` (bloquea el import). Cobertura en `quiz_meta` por quiz y `auditoria.quiz`. El juez ve fuente y lección completas (`_JUDGE_SOURCE_CHARS` = 30.000).
+- Auditoría: cifras contra la **fuente propia de cada lección**, anclaje lexical y, con `--judge`, juez de fidelidad + cobertura por lección y juez de claves de quiz (ver «Auditoría de fidelidad» del flujo legacy, compartida). Resultado en `auditoria` (`figuras`, `anclaje_bajo`, `quiz`, `juez`, `juez_quiz`) y `validacion` en el JSON.
 
-Módulos nuevos: `extractors/structured_extractor.py`, `processors/outline.py`, `services/course_planner.py`, `services/plan_enrich.py`, comando `plan_course`.
+Módulos del flujo: `extractors/structured_extractor.py`, `processors/outline.py` (+ reconstrucción de párrafos), `processors/visual_pages.py`, `services/course_planner.py`, `services/plan_enrich.py`, `processors/llm_lesson_writer.py` (prompt fiel + quiz por lección), `processors/faithfulness.py`, `processors/validators.py` (`validate_generated_course`, `import_blockers`), `services/plan_generation.py` (stream web + `manifest_from_plan`, compartido con el comando), comandos `plan_course` / `generate_course --from-plan`.
 
 ### Flujo LEGACY: estructura inferida del contenido (fallback)
 
@@ -134,11 +142,11 @@ Módulos nuevos: `extractors/structured_extractor.py`, `processors/outline.py`, 
 7. **Categoría canónica** (`taxonomy`): 14 categorías compartidas por lecciones y banco de exámenes; `resolve()` deduplica variantes → `General`.
 8. **Temario como checklist** (`course_planning.validate_topics_present`): valida que los temas del anexo estén representados, matcheando contra los **nombres generados Y el contenido fuente** del curso (corpus), para no dar falsos negativos con umbrellas ("Primeros auxilios" cubierto por RCP/Hemorragias).
 9. **Auditoría de fidelidad** (`faithfulness`, **REPORTE, no bloquea**):
-   - **Guard de cifras** (`_flag_figures`): marca números del contenido que **no aparecen en TODO el libro** (posible dato inventado).
+   - **Guard de cifras** (`_flag_figures`): compara cada cifra como (valor canónico, unidad): reconoce %, km/h, **g/l y mg/l (alcoholemia)**, **metros/cm/mm/km**, **segundos**, min/horas/días/meses/años, kg/t, litros/cc, °, PSI/bar, UTM/UF/$ y números **escritos con palabras** ("tres segundos"); decimales canónicos ("0,3" ≠ "3"). Marca la cifra si su valor no está en la fuente o si la fuente solo la trae con **otra unidad**. En el flujo legacy compara contra TODO el libro; desde plan, contra la **fuente propia de la lección**.
    - **Anclaje lexical** (`anchoring_score`): por-lección, marca lecciones poco conectadas con su fuente (`< anchor_min`, def. 0.28).
-   - **Juez LLM opcional** (`judge_lessons_llm`, con `--judge`): puntúa fidelidad 0–1 por lección y separa **críticas** (`score < judge_min`, def. 0.7) de **reparos menores** (fiel pero con matices no respaldados).
+   - **Juez LLM opcional** (`judge_lessons_llm`, con `--judge`): puntúa **fidelidad** 0–1 revisando TODAS las afirmaciones (también ejemplos, consejos, errores frecuentes e introducción: un consejo "de sentido común" que el extracto no trae cuenta como no respaldado) y **cobertura** 0–1 con la lista de `omissions` (datos importantes del extracto que la lección no incluye). Separa **críticas** (`score < judge_min`, def. 0.7; bloquean el import), **reparos menores** y **cobertura_baja** (`coverage < 0.6`; se reporta, no bloquea). Desde plan, además `judge_quiz_llm` revisa que la clave de cada pregunta se desprenda de su evidencia y ningún distractor también sea correcto; pide el análisis antes del veredicto, ignora `ok:false` sin motivo concreto y **reconfirma** cada pregunta marcada con una segunda consulta (solo los confirmados van a `auditoria.juez_quiz.problemas`, que bloquean el import; el resto a `descartados`).
 
-Módulos clave: `services/course_generator.py` (orquestador del stream, eventos NDJSON `step`/`warn`/`lesson`/`done`/`error`), `services/course_planning.py`, `processors/{manifest_from_content,llm_mapper,map_topics,llm_lesson_writer,segment_book,faithfulness,ejercicio_classifier}.py`, `taxonomy.py`, `licenses.py`.
+Módulos clave: `services/course_generator.py` (orquestador del stream LEGACY, eventos NDJSON `step`/`warn`/`lesson`/`done`/`error`; el web usa `plan_generation` salvo que reciba temario+contenido), `services/course_planning.py`, `processors/{manifest_from_content,llm_mapper,map_topics,llm_lesson_writer,segment_book,faithfulness,ejercicio_classifier}.py`, `taxonomy.py`, `licenses.py`.
 
 ### Modelos LLM
 
@@ -154,7 +162,8 @@ python manage.py plan_course --contenido "libro_b.pdf" --nombre "Curso Clase B" 
 # 2. (revisá/editá out/plan_b.json a mano)
 # 3. Redacción DESDE el plan (procedencia 1:1; Haiku escribe, Sonnet juzga).
 python manage.py generate_course --from-plan out/plan_b.json --nombre "Curso Clase B" --codigo B --costo 19990 --out out/b.json --judge
-# 4. Importar (upsert por código; --dry-run, --prune destructivo)
+# 4. Importar (upsert por código; --dry-run, --prune destructivo). Bloquea si hay stubs, críticas del juez,
+#    claves de quiz dudosas o errores de validación; --forzar solo tras revisión humana (Brújula / apply_review).
 python manage.py import_course --file out/b.json
 ```
 
@@ -196,10 +205,34 @@ Demo/seed: `seed_catalogo` — datos de ejemplo (dev).
 
 ### Notas operativas
 
-- `generate_course` se corre en local (caro/IA) y el JSON se sube con `import_course` en el entorno desplegado (sin IA ni PDFs). Ver la memoria de seed para poblar Railway con `DATABASE_URL` pública.
+- Dos vías para crear un curso: (a) **CLI** — `generate_course` en local (caro/IA) y el JSON se sube con `import_course` en el entorno desplegado (sin IA ni PDFs; ver la memoria de seed para poblar Railway con `DATABASE_URL` pública); (b) **web** — el generador del panel admin (`autotest_website/src/components/CourseGenerator.js`) llama a `courses/plan/` → revisión del plan → `courses/generate/` (requiere `ANTHROPIC_API_KEY` en el backend desplegado) → `courses/import/` si hubo bloqueos aceptados. Ambas vías aplican el mismo bloqueo de fidelidad.
 - **Paralelismo**: `generate_course` NO toca la BD → se puede correr en paralelo (varios terminales, cada uno su `--out`; el límite es el rate-limit de Anthropic). `import_course` NO en paralelo (SQLite bloquea la BD; y comparten categorías canónicas) — importar en serie.
 - **Iterar barato**: para bajar reparos, preferir ajuste de prompt/pipeline cuando el hallazgo es **sistémico** (se amortiza en todos los cursos) o parche manual del JSON cuando es **puntual**; NO regenerar el curso completo solo para perseguir reparos (caro y no determinista). Diagnosticar en `draft`, correr `final` una sola vez al cierre.
-- El JSON generado incluye `auditoria` (cifras/anclaje/juez) cuando se corre con `--judge`. La herramienta de revisión humana ("Brújula del Libro", artifact fuera del repo) lee ese JSON y muestra por lección el ancla, el contenido y los hallazgos del juez.
+- El JSON generado incluye `auditoria` (cifras/anclaje/juez) cuando se corre con `--judge`; la Brújula lo muestra por lección (ver abajo).
+
+### Revisión humana — Brújula del Libro (`content_pipeline/review/`)
+
+Herramienta HTML de una sola página (`content_pipeline/review/brujula.html`, fuente única; también publicada como artifact) con 3 fases: **Estructura** (plan.json editable + aprobación), **Contenido** (curso generado vs fuente + hallazgos del juez) y **Revisión** (observaciones de auditores humanos). Dos roles: **Auditor** (sus acciones quedan como *propuestas*; nunca cambian el plan/curso) y **Editor** (dueño: acepta/rechaza; lo aceptado se aplica). Sin backend: estado en localStorage; el intercambio es por archivos.
+
+Ciclo:
+```powershell
+# 1. ZIP offline para auditores (brujula.html autocontenido + LEEME.txt; abre con doble clic)
+python manage.py build_brujula --plan out/plan_b.json [--course out/b.json] --out out/brujula_b.zip
+# 2. Cada auditor devuelve review_<codigo>_<autor>.json → el Editor los carga en la Brújula, decide y exporta review_<codigo>.json
+# 3. Aplicar lo ACEPTADO (sin IA; conflictos se reportan y no se aplican)
+python manage.py apply_review --review out/review_b.json --plan out/plan_b.json --out out/plan_b_rev.json     # estructura
+python manage.py apply_review --review out/review_b.json --course out/b.json --out out/b_rev.json [--dry-run]  # contenido
+```
+- **Ids estables** (`review/ids.py`): lección de plan `L-`+sha256(texto)[:10], unidad `U-`+sha256(nombre|primer id)[:8] (`plan_course` los emite; `build_brujula` rellena planes viejos); dividir/unir derivan `-a`/`-b` y `a+b`. Las lecciones de `generate_course --from-plan` llevan `plan_id`. Lecciones de curso se ubican por `plan_id` o clave `U{unidad_orden}.{posicion}`. **La Brújula (JS) y `review/apply.py` implementan las mismas ops** (`rename, texto, categoria, cap, reorder, split, merge, move, new_unit, delete, move_unit, merge_unit`): si cambiás una, cambiá la otra.
+- **Anotaciones ancladas**: el revisor selecciona texto (fuente del plan, contenido, enunciado/opciones/explicación del quiz) y elige *Resaltar · Comentar · Sugerir cambio / Corregir fuente · Error · Pedir fuente · Dividir aquí*. Cada nota guarda `anclaje {campo, q?, i?, cita, occ}` (n-ésima aparición de `cita` en el campo crudo) y se muestra al margen, vinculada a la marca; admite respuestas (`respuestas[]`). Layout: índice · página de lectura · notas. La estructura se cambia desde una **barra de herramientas fija** sobre la página (misma para toda lección: renombrar, ↑/↓, mover, dividir, unir, nueva unidad, tope, quitar, comentar); al hacer clic en una unidad del índice se abre su **vista de unidad** (renombrar, categoría, ↑/↓, unir, quitar, dividir la unidad entre lecciones, comentar). El auditor siempre propone (no hay modo que activar); el editor aplica directo mientras la estructura no esté aprobada.
+- **Correcciones** = reemplazo acotado `{campo, buscar, reemplazar}` (`buscar` se amplía con contexto hasta ser único; debe aparecer exactamente 1 vez) o `{campo, valor}` (quiz: `pregunta|opcion|correcta|explicacion`). Sobre la fuente del plan: op `texto {buscar, reemplazar}` (limpia ruido de extracción; el id de la lección no cambia). Renombrar una lección cambia su identidad en `import_course` (curso+unidad+posición+nombre).
+- `apply_review` agrega un registro a `revision_humana` en el JSON de salida (aplicadas, conflictos, autores).
+
+### Bloqueo de importación (fidelidad)
+
+- `generate_course` (y el stream web) guarda `validacion` en el JSON (`validators.validate_generated_course`: secciones **núcleo** obligatorias, fuentes/páginas, quiz válido, lecciones stub o de fuente débil, quizzes sin preguntas válidas; `revision_visual` lista las lecciones de fuente gráfica como advertencia) y la imprime.
+- Si una lección no se pudo redactar, queda como **stub marcado** (`fuente_debil: true`) — nunca como contenido normal.
+- `import_course` **bloquea** (`validators.import_blockers`) si hay errores de validación, lecciones stub/fuente débil, **críticas del juez** o **claves de quiz dudosas** (`juez_quiz`); `--dry-run` solo las lista. `--forzar` importa igual (solo tras revisión humana, p. ej. en la Brújula). Los validadores A2 (`validate_lessons`) siguen siendo exclusivos del curso A2.
 
 ## Conventions
 
