@@ -7,7 +7,8 @@ para ``CourseGenerateView`` / ``CourseGenerator.js``:
     {"event": "warn",      "step": str, "message": str, ..., "ts": int}
     {"event": "lesson",    "lesson": LessonPreview, "ts": int}
     {"event": "bloqueado", "bloqueos": [str], "curso_json": {...}, "ts": int}
-    {"event": "done",      "curso": {id, nombre, codigo}, "total": int, "ts": int}
+    {"event": "generado",  "curso_json": {...}, "total": int, "ts": int}   ← persist=False
+    {"event": "done",      "curso": {id, nombre, codigo}, "total": int, "curso_json": {...}, "ts": int}
     {"event": "error",     "message": str, "ts": int}
 
 Diferencia clave con el flujo legacy: la estructura NO se infiere (viene del plan
@@ -205,14 +206,19 @@ def generate_course_from_plan_stream(
                          message=f"IA: {payload['ia']['llamadas']} llamadas · ~US${payload['ia']['costo_usd']:.3f}.")
 
         bloqueos, _ = import_blockers(payload)
-        if bloqueos or not persist:
+        if bloqueos:
             yield _event("bloqueado", bloqueos=bloqueos, curso_json=payload, total=len(lessons))
+            return
+        if not persist:
+            # "Solo generar": el curso no toca la BD; el JSON se descarga para revisarlo
+            # (Brújula) o importarlo donde corresponda (p. ej. producción con import_course).
+            yield _event("generado", curso_json=payload, total=len(lessons), ia=payload["ia"])
             return
 
         yield _event("step", step="persistir", message="Guardando el curso y sus lecciones…")
         _summary, curso = import_generated_course(manifest, lessons)
         yield _event("step", step="persistir_ok", message=f"Curso #{curso.id} guardado.")
         yield _event("done", curso={"id": curso.id, "nombre": curso.nombre, "codigo": curso.codigo},
-                     total=len(lessons), ia=payload["ia"])
+                     total=len(lessons), ia=payload["ia"], curso_json=payload)
     except Exception as exc:  # noqa: BLE001 — todo fallo se reporta al cliente vía stream
         yield _event("error", message=str(exc))

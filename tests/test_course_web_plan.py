@@ -138,6 +138,27 @@ class CourseWebPlanFlowTests(TestCase):
         self.assertEqual(done["curso"]["id"], curso.id)
         self.assertTrue(any(e.get("step") == "juez_ok" for e in events))
 
+    def test_done_event_includes_course_json(self):
+        done = next(e for e in self._generate(_FakeLLM()) if e["event"] == "done")
+        self.assertEqual(len(done["curso_json"]["lessons"]), 2)
+        self.assertIn("auditoria", done["curso_json"])
+
+    def test_generate_only_does_not_touch_db(self):
+        events = self._generate(_FakeLLM(), guardar=False)
+        gen = next(e for e in events if e["event"] == "generado")
+        self.assertEqual(gen["curso_json"]["manifest"]["curso"]["codigo"], "WEB")
+        self.assertFalse(any(e["event"] in ("done", "bloqueado") for e in events))
+        self.assertEqual(Curso.objects.count(), 0)
+        # el JSON generado se puede importar después sin forzar (no tiene bloqueos)
+        res = self.client.post("/api/v1/schools/courses/import/", {"curso": gen["curso_json"]}, format="json")
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertFalse(res.json()["forzado"])
+
+    def test_generate_only_still_reports_blockers(self):
+        events = self._generate(_FakeLLM(faithfulness=0.3), guardar=False)
+        self.assertTrue(any(e["event"] == "bloqueado" for e in events))
+        self.assertFalse(any(e["event"] == "generado" for e in events))
+
     def test_generate_from_plan_blocks_on_critical_judge(self):
         events = self._generate(_FakeLLM(faithfulness=0.3))
         blocked = next(e for e in events if e["event"] == "bloqueado")

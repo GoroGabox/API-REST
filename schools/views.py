@@ -1223,6 +1223,8 @@ class CourseGenerateView(APIView):
       desde su fuente exacta, audita (cifras, juez de fidelidad/cobertura, juez de
       quiz) y valida. Si hay bloqueos NO importa: el evento ``bloqueado`` entrega
       el curso para revisarlo o importarlo con ``POST courses/import/``.
+      ``guardar=false`` = solo generar: no toca la BD y entrega el curso en el
+      evento ``generado`` (para descargarlo e importarlo en otro entorno).
     - **Legacy** — multipart con PDFs ``temario`` + ``contenido``: la IA infiere la
       estructura (flujo antiguo, se conserva por compatibilidad).
 
@@ -1345,6 +1347,7 @@ class CourseGenerateView(APIView):
             return Response({"detail": "'plan' debe ser un plan.json con unidades y lecciones."},
                             status=status.HTTP_400_BAD_REQUEST)
         juez = str(request.data.get("juez", "true")).lower() not in ("false", "0", "off", "no")
+        guardar = str(request.data.get("guardar", "true")).lower() not in ("false", "0", "off", "no")
         modo = (request.data.get("modo") or "draft").strip()
         stream = generate_course_from_plan_stream(
             plan,
@@ -1356,6 +1359,7 @@ class CourseGenerateView(APIView):
             orientacion=(request.data.get("orientacion") or None),
             judge=juez,
             lesson_model=default_model() if modo == "final" else draft_model(),
+            persist=guardar,
         )
         return _ndjson_response(json.dumps(evt, ensure_ascii=False) + "\n" for evt in stream)
 
