@@ -103,15 +103,20 @@ class CourseWebPlanFlowTests(TestCase):
 
     # --- planificar -------------------------------------------------------------
     def test_plan_endpoint_returns_plan_without_redaction(self):
-        res = self.client.post("/api/v1/schools/courses/plan/",
-                               {"contenido": _docx_book(), "nombre": "Curso Web", "codigo": "web", "largo": "corta"},
-                               format="multipart")
+        # Sin API key: cortes por palabras (la estructura por IA tiene sus propios tests).
+        with mock.patch("content_pipeline.llm.client.LLMClient.is_available", return_value=False):
+            res = self.client.post("/api/v1/schools/courses/plan/",
+                                   {"contenido": _docx_book(), "nombre": "Curso Web", "codigo": "web",
+                                    "largo": "corta"},
+                                   format="multipart")
         self.assertEqual(res.status_code, 200, res.content)
         plan = res.json()["plan"]
         self.assertEqual(len(plan["unidades"]), 3)
         self.assertTrue(all(l.get("id") and l.get("texto") for u in plan["unidades"] for l in u["lecciones"]))
         self.assertEqual(plan["curso"]["codigo"], "WEB")
         self.assertIsNone(res.json()["ia"])
+        self.assertIsNone(res.json()["estructura"])
+        self.assertEqual(plan["resumen"]["estructura"]["modo"], "palabras")
         self.assertEqual(Curso.objects.count(), 0)                 # nada se persiste al planificar
 
     def test_plan_endpoint_rejects_other_formats_and_non_admins(self):

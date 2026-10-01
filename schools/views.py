@@ -1375,8 +1375,10 @@ class CoursePlanView(APIView):
     """POST /api/v1/schools/courses/plan/ — Fase 1 del flujo recomendado (web).
 
     Multipart: ``contenido`` (libro PDF o DOCX), ``nombre``, ``codigo``,
-    ``largo`` (corta|media|larga), ``ia`` (true = nombra lecciones y clasifica
-    categorías con Haiku). Devuelve ``{plan, resumen, ia}`` SIN redactar nada: el
+    ``largo`` (corta|media|larga = granularidad), ``ia`` (true = clasifica categorías
+    y nombra lecciones sin título con Haiku). Con ``ANTHROPIC_API_KEY`` los cortes
+    de lección los decide la IA por tema y densidad (``plan_structure``); sin ella,
+    por palabras. Devuelve ``{plan, resumen, ia, estructura}`` SIN redactar nada: el
     operador revisa/edita el plan antes de pagar la redacción (``courses/generate/``).
     """
 
@@ -1405,10 +1407,16 @@ class CoursePlanView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         usar_ia = str(request.data.get("ia", "")).lower() in ("true", "1", "on", "yes")
 
+        from content_pipeline.llm.client import LLMClient
+        segmentador = None
+        if LLMClient.is_available():
+            from content_pipeline.services.plan_structure import LLMSegmenter
+            segmentador = LLMSegmenter()
+
         path = _save_temp_upload(libro, suffix)
         try:
             plan = build_plan(Path(path), nombre=meta["nombre"], codigo=meta["codigo"], largo=largo,
-                              is_profesional=meta["is_profesional"])
+                              is_profesional=meta["is_profesional"], segmentador=segmentador)
         except ValueError as exc:
             return Response({"detail": f"No se pudo planificar el libro: {exc}"},
                             status=status.HTTP_422_UNPROCESSABLE_ENTITY)
@@ -1419,15 +1427,16 @@ class CoursePlanView(APIView):
                 pass
 
         ia = None
-        if usar_ia:
-            from content_pipeline.llm.client import LLMClient, draft_model
-            if LLMClient.is_available():
-                from content_pipeline.services.plan_enrich import enrich_plan
-                client = LLMClient(model=draft_model())
-                enrich_plan(plan, client=client, model=draft_model())
-                ia = client.meter.as_dict()
+        if usar_ia and LLMClient.is_available():
+            from content_pipeline.llm.client import draft_model
+            from content_pipeline.services.plan_enrich import enrich_plan
+            client = LLMClient(model=draft_model())
+            enrich_plan(plan, client=client, model=draft_model())
+            ia = client.meter.as_dict()
         plan.setdefault("curso", {})["fuente_nombre"] = getattr(libro, "name", "") or ""
-        return Response({"plan": plan, "resumen": plan.get("resumen"), "ia": ia})
+        # ``estructura``: costo de la IA que decidió los cortes (None = cortes por palabras).
+        estructura = segmentador.client.meter.as_dict() if segmentador is not None else None
+        return Response({"plan": plan, "resumen": plan.get("resumen"), "ia": ia, "estructura": estructura})
 
 
 class CourseImportView(APIView):

@@ -1,11 +1,12 @@
 """Enriquecimiento del plan con IA (opcional): categorías + nombres de lección.
 
-La estructura y la densidad ya son deterministas (outline por tipografía); acá el
-LLM solo hace trabajo LIGERO de rotulado, así que corre barato (Haiku):
+La estructura la decide `plan_structure` (IA por tema/densidad) o el corte por
+palabras; acá el LLM solo hace trabajo LIGERO de rotulado, así que corre barato (Haiku):
   - **Categoría por unidad**: elige de la taxonomía CERRADA (misma que lecciones y
     banco de exámenes) según el título + un extracto del capítulo.
   - **Nombre de lección**: propone un título breve, específico y enseñable por
-    lección, a partir de su texto fuente (reemplaza los "Capítulo — parte N").
+    lección, a partir de su texto fuente (reemplaza los "Capítulo — parte N"). Las
+    lecciones cortadas por la IA de estructura ya traen título y se conservan.
 
 Todo es best-effort: ante fallo del LLM/JSON, se conserva lo determinista.
 """
@@ -16,6 +17,8 @@ from typing import Any
 from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
 from content_pipeline.processors.clean_text import shorten_text
 from content_pipeline.taxonomy import CATEGORY_NAMES, FALLBACK, resolve
+
+_TITULADAS = ("ia", "tope")  # cortes con título de la IA de estructura
 
 _CATS = "\n".join(f"- {c}" for c in CATEGORY_NAMES)
 
@@ -104,9 +107,12 @@ def enrich_plan(
 
     if nombres:
         for u in unidades:
+            # Las lecciones cortadas por la IA de estructura ya traen título por tema.
+            if all(lec.get("corte") in _TITULADAS for lec in u.get("lecciones", [])):
+                continue
             nombres_map = name_unit_lessons(u, client=client, model=model)
             for i, lec in enumerate(u.get("lecciones", []), 1):
-                if nombres_map.get(i):
+                if nombres_map.get(i) and lec.get("corte") not in _TITULADAS:
                     lec["nombre"] = nombres_map[i]
                     lec["seccion"] = lec.get("seccion") or None
     return plan

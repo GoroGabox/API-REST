@@ -1,9 +1,14 @@
 """Genera el PLAN de curso (unidades + lecciones) desde el libro, para revisar.
 
-Fase 1 del flujo dirigido por el índice. NO usa IA ni toca la BD: detecta la
-estructura por tipografía/archivos y reparte cada capítulo en lecciones según la
-banda de longitud (`--largo`). El JSON resultante se revisa/edita a mano y luego
-se redacta con `generate_course --from-plan`.
+Fase 1 del flujo dirigido por el índice. No redacta ni toca la BD: toma los
+capítulos de los archivos (`--dir`) o del libro, y la IA (modelo principal, Sonnet)
+agrupa los párrafos de cada capítulo en lecciones por TEMA y DENSIDAD, con la
+granularidad de `--largo` (corta|media|larga); las palabras solo son tope de
+seguridad. Si el libro único no trae capítulos detectables, la IA propone también
+las unidades. La IA solo devuelve rangos de párrafos → el texto de cada lección es
+la fuente exacta. Sin `ANTHROPIC_API_KEY` o con `--sin-ia-estructura` se corta por
+palabras (como antes). El JSON resultante se revisa/edita a mano y luego se redacta
+con `generate_course --from-plan`.
 
 Uso::
 
@@ -24,7 +29,7 @@ from content_pipeline.services.course_planner import BANDAS, build_plan
 
 
 class Command(BaseCommand):
-    help = "Genera el plan editable (unidades + lecciones) desde el libro, sin IA."
+    help = "Genera el plan editable (unidades + lecciones) desde el libro; la IA decide los cortes por tema."
 
     def add_arguments(self, parser):
         parser.add_argument("--contenido", default=None, help="Libro único (PDF/DOCX).")
@@ -32,7 +37,12 @@ class Command(BaseCommand):
         parser.add_argument("--nombre", required=True)
         parser.add_argument("--codigo", required=True)
         parser.add_argument("--largo", choices=list(BANDAS), default="media",
-                            help="Longitud por lección: corta|media|larga.")
+                            help="Granularidad por lección: corta (≈1 subtema) | media | larga (≈1 tema). "
+                                 "Las palabras de la banda son solo tope.")
+        parser.add_argument("--sin-ia-estructura", action="store_true",
+                            help="No usar IA para los cortes: reparte por palabras (offline).")
+        parser.add_argument("--structure-model", default=None,
+                            help="Modelo para la estructura (def. COURSE_LLM_MODEL, Sonnet).")
         parser.add_argument("--is-profesional", action="store_true")
         parser.add_argument("--ia", action="store_true",
                             help="Enriquecer con IA: clasifica categorías (taxonomía) y nombra las lecciones.")
@@ -55,10 +65,28 @@ class Command(BaseCommand):
 
         codigo = opts["codigo"].strip().upper()
         self.stdout.write(f"Construyendo outline desde: {source}")
+        segmentador = None
+        if not opts["sin_ia_estructura"]:
+            from content_pipeline.llm.client import LLMClient
+            if LLMClient.is_available():
+                from content_pipeline.services.plan_structure import LLMSegmenter
+                segmentador = LLMSegmenter(model=opts["structure_model"])
+                self.stdout.write(f"Estructura por IA ({segmentador.model}): cortes por tema y densidad…")
+            else:
+                self.stderr.write(self.style.WARNING(
+                    "Sin ANTHROPIC_API_KEY: las lecciones se cortan por palabras (sin criterio de tema)."))
         plan = build_plan(
             source, nombre=opts["nombre"].strip(), codigo=codigo,
             largo=opts["largo"], is_profesional=opts["is_profesional"],
+            segmentador=segmentador,
         )
+        if segmentador is not None:
+            m = segmentador.client.meter
+            self.stdout.write(f"  ~US${round(m.cost_usd, 4)} · {m.calls} llamadas")
+            errores = plan["resumen"]["estructura"].get("errores") or {}
+            for titulo, motivo in errores.items():
+                self.stderr.write(self.style.WARNING(
+                    f"  IA sin estructura para '{titulo}' ({motivo}); se cortó por palabras."))
 
         if opts["ia"]:
             from content_pipeline.llm.client import LLMClient, draft_model
@@ -76,13 +104,17 @@ class Command(BaseCommand):
         r = plan["resumen"]
         self.stdout.write(self.style.SUCCESS(
             f"Plan: {r['unidades']} unidades · {r['lecciones']} lecciones · "
-            f"{r['palabras_totales']} palabras · banda {opts['largo']} {r['banda']['min']}-{r['banda']['max']}"
+            f"{r['palabras_totales']} palabras · {opts['largo']} (tope {r['banda']['max']} pal) · "
+            f"estructura: {r['estructura']['modo']}"
         ))
         for u in plan["unidades"]:
             self.stdout.write(
                 f"  U{u['orden']} {u['nombre'][:48]:48} · {len(u['lecciones'])} lecc · "
                 f"{u['palabras']} pal · págs {u['paginas'][0]}-{u['paginas'][1]} · [{u['categoria']}]"
             )
+            for lec in u["lecciones"]:
+                self.stdout.write(f"      - {lec['nombre'][:60]:60} {lec['palabras_fuente']:>5} pal"
+                                  + (f" · densidad {lec['densidad']}" if lec.get("densidad") else ""))
 
         out = Path(opts["out"])
         out.parent.mkdir(parents=True, exist_ok=True)

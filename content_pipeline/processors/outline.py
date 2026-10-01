@@ -441,6 +441,21 @@ def _outline_single(path: Path) -> list[Chapter]:
     return [c for c in chapters if c.paras]
 
 
+def book_as_single_chapter(path: str | Path, titulo: str = "") -> Chapter:
+    """Todo el cuerpo del libro como UN capítulo (libros sin formato de capítulos).
+
+    Lo usa la estructura por IA: el LLM propone las unidades sobre estos párrafos.
+    """
+    path = Path(path)
+    lines = [ln for ln in extract_structured(path)
+             if not ln.is_noise and ln.text.strip() and not is_index_line(ln.text)]
+    ch = Chapter(titulo=titulo or _chapter_title_from_name(path),
+                 page_start=lines[0].page if lines else 0,
+                 page_end=lines[-1].page if lines else 0)
+    ch.paras = lines_to_paras(lines)
+    return ch
+
+
 def _outline_multi(files: list[Path]) -> list[Chapter]:
     chapters: list[Chapter] = []
     for f in files:

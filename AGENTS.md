@@ -14,7 +14,7 @@ Esta distinción es la que justifica la lógica condicional `if user.is_director
 
 ## Stack
 
-Django 5.2 + DRF 3.16 + SimpleJWT + drf-yasg (Swagger). SQLite locally (`db.sqlite3`), Postgres in deployed envs via `DATABASE_URL` (note: `settings.py` currently hardcodes sqlite — Postgres usage is via `.env` only, no `dj-database-url` wiring). Payment gateway: `transbank-sdk` (Webpay Plus). Virtualenv lives in-repo at `env/` (Windows layout: `env/Scripts/`).
+Django 5.2 + DRF 3.16 + SimpleJWT + drf-yasg (Swagger). Settings is a package `autotestAPI/settings/` (`base.py` + `development.py` / `production.py` / `test.py`), selected by `DJANGO_ENV` (default `development` if `DEBUG=True`, else `production`; `production` enables `SECURE_SSL_REDIRECT` and requires real `ALLOWED_HOSTS`). Database: `DATABASE_URL` via `dj-database-url` when set (Postgres on Railway), otherwise local SQLite `db.sqlite3`. Payment gateway: `transbank-sdk` (Webpay Plus). Virtualenv lives in-repo at `env/` (Windows layout: `env/Scripts/`). Dependencies in `requirements.txt`.
 
 ## Commands
 
@@ -43,7 +43,8 @@ python manage.py test
 python manage.py test accounts
 python manage.py test accounts.tests.SomeTestCase.test_method
 
-# Freeze deps (no requirements.txt currently checked in)
+# Install / freeze deps
+env/Scripts/pip.exe install -r requirements.txt
 env/Scripts/pip.exe freeze > requirements.txt
 ```
 
@@ -51,7 +52,7 @@ Swagger UI: `http://127.0.0.1:8000/api/v1/swagger/` · ReDoc: `/api/v1/redoc/` �
 
 ## Environment
 
-`.env` (loaded by `python-dotenv` in `settings.py`) must define: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `DATABASE_URL` (currently unused by settings — wire `dj-database-url` if you want it active), `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`. No `.env.example` exists — `ALLOWED_HOSTS` is hardcoded to `['*']` and `CORS_ALLOW_ALL_ORIGINS = True` regardless of env.
+`.env` (loaded by `python-dotenv` in `autotestAPI/settings/__init__.py`; template in `.env.example`) defines `SECRET_KEY` (required — startup fails without it), `DEBUG`, `ALLOWED_HOSTS` (comma-separated, default `localhost,127.0.0.1`), `CORS_ALLOWED_ORIGINS` (default `http://localhost:3000`), `CORS_ALLOW_ALL_ORIGINS` (default `False`; forced `False` in production), `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `FRONTEND_URL`, `TOTP_ISSUER`, `TBK_ENVIRONMENT`, optional `DATABASE_URL` and `DJANGO_ENV`. Course generation: `ANTHROPIC_API_KEY` (without it the pipeline falls back to extractive / the plan flow refuses to redact), `COURSE_LLM_MODEL`, `COURSE_LLM_MODEL_DRAFT`, `COURSE_LLM_ENABLED`; audio: see the TTS/storage vars under *Content pipeline*.
 
 ## Architecture
 
@@ -92,9 +93,9 @@ Manual activation (school-admin path): `POST /api/v1/sales/activar_curso/` → `
 
 ### Auth
 
-JWT via `rest_framework_simplejwt` — `MyTokenObtainPairView` extends the default to embed extra claims (see `accounts.serializers.MyTokenObtainPairSerializer`). Access token TTL is **5 minutes**; refresh 30 days with rotation + blacklist (`SIMPLE_JWT` in `settings.py`). Logout (`POST /api/v1/accounts/logout/`) blacklists the supplied refresh token. Password reset uses Django's `default_token_generator` + base64-encoded uid; confirmation hits `/api/v1/accounts/new_password/<uidb64>/<token>/`. Account activation has its own token flow under `send-activation-email/` and `activate/<token>/`.
+JWT via `rest_framework_simplejwt` — `MyTokenObtainPairView` extends the default to embed extra claims (see `accounts.serializers.MyTokenObtainPairSerializer`). Access token TTL is **15 minutes**; refresh 30 days with rotation + blacklist (`SIMPLE_JWT` in `settings/base.py`). Logout (`POST /api/v1/accounts/logout/`) blacklists the supplied refresh token. Password reset uses Django's `default_token_generator` + base64-encoded uid; confirmation hits `/api/v1/accounts/new_password/<uidb64>/<token>/`. Account activation has its own token flow under `send-activation-email/` and `activate/<token>/`.
 
-**DRF default auth = JWT only, no `DEFAULT_PERMISSION_CLASSES` is set** → every endpoint is open unless a view sets `permission_classes` explicitly. Most viewsets currently don't. Treat this as a known gap, not as intentional.
+**DRF defaults: JWT authentication + `DEFAULT_PERMISSION_CLASSES = IsAuthenticated`** → every endpoint requires login unless the view overrides `permission_classes` (public endpoints use `AllowAny`, e.g. login/registro, práctica libre; back-office uses `accounts.permissions.IsAdmin` / `IsDirector` / …). When adding a view, set its permissions explicitly.
 
 ### URL convention
 
@@ -106,7 +107,7 @@ Librería (NO app Django, no tiene modelos ni `urls.py`) que genera cursos y eje
 
 **Endpoints web (flujo PLAN → GENERAR, consumidos por `CourseGenerator.js` del webapp):**
 - `POST /api/v1/schools/courses/plan/` (`CoursePlanView`, multipart: `contenido` PDF/DOCX, `nombre`, `codigo`, `largo`, `ia`) → `{plan, resumen, ia}`. No redacta ni persiste.
-- `POST /api/v1/schools/courses/generate/` (`CourseGenerateView`): con JSON `{plan, nombre, codigo, precio_unitario, is_profesional?, juez?=true, modo?=draft|final}` redacta desde el plan aprobado (`services/plan_generation.generate_course_from_plan_stream`: lecciones, quiz con evidencia, cifras, juez por lección con progreso, juez de quiz, validación) y transmite NDJSON (`step/warn/lesson/done/error` + **`bloqueado`**). Si `import_blockers` encuentra bloqueos **no importa**: `bloqueado` trae `bloqueos` y `curso_json` para descargarlo (Brújula) o importarlo explícitamente. `done` también trae `curso_json` (descargable). Con **`guardar: false`** ("solo generar") no toca la BD: si no hay bloqueos emite **`generado`** con `curso_json`, para auditarlo en la Brújula o importarlo en otro entorno (p. ej. producción con `import_course`). Multipart con `temario`+`contenido` sigue disparando el **flujo legacy** (compatibilidad).
+- `POST /api/v1/schools/courses/generate/` (`CourseGenerateView`): con JSON `{plan, nombre, codigo, precio_unitario, is_profesional?, juez?=true, modo?=draft|final, guardar?=true, fuente_nombre?, orientacion?}` redacta desde el plan aprobado (`services/plan_generation.generate_course_from_plan_stream`: lecciones, quiz con evidencia, cifras, juez por lección con progreso, juez de quiz, validación) y transmite NDJSON (`step/warn/lesson/done/error` + **`bloqueado`**). Si `import_blockers` encuentra bloqueos **no importa**: `bloqueado` trae `bloqueos` y `curso_json` para descargarlo (Brújula) o importarlo explícitamente. `done` también trae `curso_json` (descargable). Con **`guardar: false`** ("solo generar") no toca la BD: si no hay bloqueos emite **`generado`** con `curso_json`, para auditarlo en la Brújula o importarlo en otro entorno (p. ej. producción con `import_course`). Multipart con `temario`+`contenido` sigue disparando el **flujo legacy** (compatibilidad).
 - `POST /api/v1/schools/courses/import/` (`CourseImportView`, JSON `{curso, forzar?}`): mismo bloqueo que `import_course`; 409 con `bloqueos` sin `forzar`, 201 con `forzar`.
 
 ### Flujo RECOMENDADO: PLAN → GENERAR (dirigido por el índice del libro)
@@ -238,5 +239,5 @@ python manage.py apply_review --review out/review_b.json --course out/b.json --o
 
 - Models, fields, and serializers use Spanish identifiers (`Usuario`, `nombre`, `apellido`, `escuela`, `pregunta`, `respuesta`). Match that — don't introduce English names mid-domain.
 - `__str__` methods on `Prueba` / `PruebaEjercicio` concatenate an int PK with `+` (`'#'+self.id+...`) — that's a latent bug (`TypeError`); don't copy the pattern. Cast with `str()` or use f-strings if you touch them.
-- View files are large (`accounts/views.py` 541 LOC, `sales/views.py` 460 LOC) and mix `APIView`, `ViewSet`, and generics — when extending, follow the existing pattern in the same file rather than refactoring.
+- View files are large (`accounts/views.py` ~1.3k LOC, `sales/views.py` and `schools/views.py` ~1.5k LOC each) and mix `APIView`, `ViewSet`, and generics — when extending, follow the existing pattern in the same file rather than refactoring.
 - Business logic that crosses models lives in `sales/services.py` (`asignar_llave_y_curso`, `registrar_compra_curso_individual`, `registrar_venta_unificada`, `precio_plan`, `precio_final_producto`, `tiene_acceso_a_curso`, `llaves_para_dias`, …). Prefer adding to `services.py` over inflating views.
