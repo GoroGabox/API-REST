@@ -44,6 +44,7 @@ data/output/*/*
 /prueba*.json
 /ejercicios_*.json
 /out/*.json
+/out/*.zip
 
 # IDE
 .vscode/
