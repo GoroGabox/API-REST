@@ -34,6 +34,141 @@ def _norm(s: str) -> str:
 class Para:
     text: str
     page: int
+    page_end: int = 0    # última página del párrafo (si cruza de página); 0 = misma
+
+
+# ---------------------------------------------------------------------------
+# Reconstrucción de párrafos
+# ---------------------------------------------------------------------------
+# El PDF entrega LÍNEAS físicas, no párrafos: tomar cada línea como párrafo hacía
+# que las lecciones empezaran/terminaran a mitad de oración (e incluso de palabra,
+# con guiones blandos "impredeci­ / bles"). Aquí se unen las líneas en párrafos
+# reales usando continuidad de la oración + interlineado.
+_SOFT_HYPHEN = "­"
+_TERMINAL_RE = re.compile(r"[.!?…:;»”\"')\]]$")
+_BULLET_RE = re.compile(r"^([•·●▪◦‣\-–—*]\s+|\d{1,2}[.)]\s+|[a-z][.)]\s+)")
+_OPENER_RE = re.compile(r"^(cap[ií]tulo|unidad|m[oó]dulo)(\s+\d+)?[\s.:\-–]*$", re.IGNORECASE)
+
+
+def _ends_sentence(text: str) -> bool:
+    return bool(_TERMINAL_RE.search(text.rstrip()))
+
+
+def _continues(prev: str, cur: str) -> bool:
+    """La línea ``cur`` continúa la oración de ``prev`` (sin importar el espaciado)."""
+    p = prev.rstrip()
+    if p.endswith(_SOFT_HYPHEN):
+        # palabra cortada: continúa solo si la línea siguiente sigue la palabra
+        return bool(re.match(r"[a-záéíóúñü]", cur))
+    if p.endswith("-") and len(p) > 1 and p[-2].isalpha() and cur[:1].islower():
+        return True
+    if _ends_sentence(p) or _BULLET_RE.match(cur):
+        return False
+    return bool(re.match(r"[a-záéíóúñü0-9(«“\"]", cur))
+
+
+def _join_lines(a: str, b: str) -> str:
+    a = a.rstrip()
+    b = b.lstrip()
+    if a.endswith(_SOFT_HYPHEN):
+        # solo se pega si la línea siguiente continúa la palabra (minúscula)
+        return a[:-1] + b if b[:1].islower() else f"{a[:-1]} {b}"
+    if a.endswith("-") and len(a) > 1 and a[-2].isalpha() and b[:1].islower():
+        # Guion REAL al fin de línea (el corte de sílaba del libro usa guion
+        # blando): es un compuesto ("físico-síquicos"), se conserva sin espacio.
+        return a + b
+    return f"{a} {b}"
+
+
+def _para_break(prev: Line, cur: Line) -> bool:
+    """¿Empieza un párrafo nuevo en ``cur``? (solo si no hay continuidad de oración)."""
+    if _BULLET_RE.match(cur.text):
+        return True
+    if not prev.page_h or not cur.page_h:      # DOCX: cada párrafo de Word ya es párrafo
+        return True
+    if cur.page != prev.page:
+        return _ends_sentence(prev.text)
+    line_h = max(prev.y1 - prev.y0, 1.0)
+    gap = cur.y0 - prev.y1
+    if gap < -line_h:                            # vuelve arriba: nueva columna/bloque
+        return _ends_sentence(prev.text)
+    if abs(cur.size - prev.size) > 0.6:          # cambio de cuerpo (pie de figura, recuadro)
+        return True
+    if not _ends_sentence(prev.text) and gap <= line_h * 0.6:
+        return False                             # misma oración con mayúscula (nombre propio)
+    return gap > line_h * 0.45 or _ends_sentence(prev.text) and gap > line_h * 0.3
+
+
+def _reorder_detours(lines: list[Line], title_norm: str = "") -> list[Line]:
+    """Saca de en medio los rótulos de figura que interrumpen una oración.
+
+    Caso típico: "para avisar que temporal­" · [rótulos "Testigo luces…" de un
+    diagrama] · "mente se está obstruyendo…". Solo se actúa cuando la línea
+    termina en GUION BLANDO (palabra cortada, inequívoco) y la siguiente empieza
+    con mayúscula (no puede continuar la palabra): se busca la continuación real
+    (minúscula, mismo cuerpo, con solo rótulos cortos en medio) y los rótulos se
+    mueven al final de esa oración. Solo PDF (en DOCX el orden ya es el del autor).
+    """
+    out = [ln for ln in lines if not (title_norm and _norm(ln.text) == title_norm)]
+    i = 0
+    while i < len(out) - 1:
+        prev, cur = out[i], out[i + 1]
+        p = prev.text.rstrip()
+        if not prev.page_h or not p.endswith(_SOFT_HYPHEN) or re.match(r"[a-záéíóúñü]", cur.text.strip()):
+            i += 1
+            continue
+        j = None
+        for k in range(i + 1, min(i + 41, len(out))):
+            t = out[k].text.strip()
+            if abs(out[k].size - prev.size) <= 0.6 and re.match(r"[a-záéíóúñü]", t):
+                j = k
+                break
+            if len(t.split()) > 4:        # no es un rótulo de figura: no reordenar (ante la
+                break                     # duda, mejor una palabra cortada que una unión falsa)
+        if j is None or j == i + 1:
+            i += 1
+            continue
+        k = j
+        while k < len(out) and not _ends_sentence(out[k].text):
+            k += 1
+        k = min(k + 1, len(out))
+        out = out[: i + 1] + out[j:k] + out[i + 1: j] + out[k:]
+        i += 1
+    return out
+
+
+def lines_to_paras(lines: list[Line], titulo: str = "") -> list[Para]:
+    """Une líneas de cuerpo en párrafos reales. Quita guiones blandos y el
+    rótulo de apertura del capítulo ("CAPÍTULO" / el propio título)."""
+    paras: list[Para] = []
+    prev: Line | None = None
+    title_norm = _norm(titulo)
+    head = 0
+    for ln in _reorder_detours(lines, title_norm):
+        text = ln.text.strip()
+        if not text:
+            continue
+        # El título del capítulo como línea suelta es rótulo de apertura o
+        # encabezado de página del capítulo (no se repite en todo el libro, así
+        # que el detector de ruido por posición no lo atrapa): nunca es cuerpo.
+        if title_norm and _norm(text) == title_norm:
+            continue
+        # Rótulo de apertura: "CAPÍTULO", "Capítulo 3".
+        if head < 4 and _OPENER_RE.match(text):
+            head += 1
+            continue
+        head = 4
+        if prev is not None and paras and (_continues(prev.text, text) or not _para_break(prev, ln)):
+            last = paras[-1]
+            last.text = _join_lines(last.text, text)
+            if ln.page != last.page:
+                last.page_end = max(last.page_end, ln.page)
+        else:
+            paras.append(Para(text=text, page=ln.page))
+        prev = ln
+    for p in paras:
+        p.text = re.sub(r"\s{2,}", " ", p.text.replace(_SOFT_HYPHEN, "")).strip()
+    return paras
 
 
 @dataclass
@@ -70,22 +205,35 @@ def _lines_to_chapter(titulo: str, lines: list[Line]) -> Chapter:
     """Arma un capítulo desde sus líneas (cuerpo + secciones por headings level>=2)."""
     ch = Chapter(titulo=_chapter_title_clean(titulo), page_start=0, page_end=0)
     cur: Section | None = None
+    pending: list[Line] = []
+    first = True
+
+    def flush() -> None:
+        nonlocal first
+        if not pending:
+            return
+        paras = lines_to_paras(pending, ch.titulo if first else "")
+        first = False
+        ch.paras.extend(paras)
+        if cur is not None:
+            cur.paras.extend(paras)
+        pending.clear()
+
     for ln in lines:
         if ln.is_noise or not ln.text.strip() or is_index_line(ln.text):
             continue
         if ch.page_start == 0:
             ch.page_start = ln.page
         ch.page_end = ln.page
-        if ln.level >= 2:  # nueva sección
+        if ln.level >= 2:  # nueva sección: cierra los párrafos del tramo anterior
+            flush()
             cur = Section(titulo=ln.text.strip(), page_start=ln.page)
             ch.sections.append(cur)
             continue
         if ln.level == 1:  # el título del capítulo (ya lo tenemos) — no es cuerpo
             continue
-        p = Para(text=ln.text.strip(), page=ln.page)
-        ch.paras.append(p)
-        if cur is not None:
-            cur.paras.append(p)
+        pending.append(ln)
+    flush()
     return ch
 
 
@@ -177,11 +325,11 @@ def _outline_from_index(path: Path, lines: list[Line]) -> list[Chapter] | None:
         return None  # sin capítulos identificables → dejar que otro método decida
 
     # Texto de cuerpo por página (sin ruido, sin headings, sin índice).
-    body_by_page: dict[int, list[str]] = {}
+    body_by_page: dict[int, list[Line]] = {}
     for ln in lines:
         if ln.page <= idx_page or ln.is_noise or ln.level >= 1 or is_index_line(ln.text):
             continue
-        body_by_page.setdefault(ln.page, []).append(ln.text.strip())
+        body_by_page.setdefault(ln.page, []).append(ln)
 
     # Construir capítulos: cada entrada-capítulo abre uno; secciones cuelgan de él.
     cap_idx = [i for i, m in enumerate(marked) if m[2]]
@@ -191,9 +339,8 @@ def _outline_from_index(path: Path, lines: list[Line]) -> list[Chapter] | None:
         next_ci = cap_idx[k + 1] if k + 1 < len(cap_idx) else len(marked)
         page_end = (marked[next_ci][1] - 1) if next_ci < len(marked) else max(body_by_page or [page_start])
         ch = Chapter(titulo=_chapter_title_clean(title), page_start=page_start, page_end=page_end)
-        for p in range(page_start, page_end + 1):
-            for txt in body_by_page.get(p, []):
-                ch.paras.append(Para(text=txt, page=p))
+        ch.paras = lines_to_paras(
+            [ln for p in range(page_start, page_end + 1) for ln in body_by_page.get(p, [])], ch.titulo)
         # secciones del índice dentro del capítulo
         for si in range(ci + 1, next_ci):
             stitle, spage, _ = marked[si]
@@ -250,20 +397,18 @@ def _outline_by_font_tier(path: Path, lines: list[Line]) -> list[Chapter] | None
     if len(starts) < 3:
         return None
 
-    body_by_page: dict[int, list[str]] = {}
+    body_by_page: dict[int, list[Line]] = {}
     for l in lines:
         if l.page <= 2 or l.is_noise or l.level >= 1 or l.size >= tier or is_index_line(l.text):
             continue
-        body_by_page.setdefault(l.page, []).append(l.text.strip())
+        body_by_page.setdefault(l.page, []).append(l)
 
     total = max((l.page for l in lines), default=1)
     chapters: list[Chapter] = []
     for k, (pg, title) in enumerate(starts):
         end = (starts[k + 1][0] - 1) if k + 1 < len(starts) else total
         ch = Chapter(titulo=_chapter_title_clean(title), page_start=pg, page_end=end)
-        for p in range(pg, end + 1):
-            for txt in body_by_page.get(p, []):
-                ch.paras.append(Para(text=txt, page=p))
+        ch.paras = lines_to_paras([ln for p in range(pg, end + 1) for ln in body_by_page.get(p, [])], ch.titulo)
         if ch.paras:
             chapters.append(ch)
     return chapters or None

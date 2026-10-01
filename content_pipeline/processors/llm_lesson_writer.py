@@ -11,6 +11,8 @@ Si una llamada al LLM falla, esa lección cae al renderizador extractivo
 """
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Iterator
 
 from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
@@ -57,9 +59,19 @@ _REQUIRED_SECTIONS = (
 )
 
 
-def _missing_sections(body: str) -> list[str]:
+# Flujo desde plan (fiel a la fuente): solo estas secciones son obligatorias; las
+# demás son opcionales y se omiten cuando el extracto no da material para ellas
+# (forzarlas empujaba a inventar ejemplos, errores y consejos que el libro no trae).
+CORE_SECTIONS = ("## Objetivo", "## Desarrollo", "## Puntos clave", "## Resumen")
+OPTIONAL_SECTIONS = (
+    "## Introducción", "## Aplicación práctica", "## Ejemplo aplicado",
+    "## Errores frecuentes", "## Actividad breve",
+)
+
+
+def _missing_sections(body: str, required: tuple[str, ...] = _REQUIRED_SECTIONS) -> list[str]:
     """Encabezados obligatorios ausentes en el cuerpo redactado."""
-    return [heading for heading in _REQUIRED_SECTIONS if heading not in body]
+    return [heading for heading in required if heading not in body]
 
 
 def _safe_stub_body(
@@ -213,6 +225,8 @@ def _complete_lesson_body(
     user: str,
     client: LLMClient,
     model: str,
+    required: tuple[str, ...] = _REQUIRED_SECTIONS,
+    temperature: float = 0.5,
 ) -> str:
     """Redacta el cuerpo con LLM, validando que esté completo.
 
@@ -228,7 +242,7 @@ def _complete_lesson_body(
             user=user,
             max_tokens=max_tokens,
             model=model,
-            temperature=0.5,
+            temperature=temperature,
         )
         body = resp.text
         if not body.strip():
@@ -237,7 +251,7 @@ def _complete_lesson_body(
         if resp.truncated:
             last_error = "cuerpo truncado por max_tokens"
             continue
-        missing = _missing_sections(body)
+        missing = _missing_sections(body, required)
         if missing:
             last_error = f"secciones faltantes: {', '.join(missing)}"
             continue
@@ -453,17 +467,106 @@ def generate_lessons_llm(
 # ---------------------------------------------------------------------------
 # Redacción DESDE UN PLAN (fuente exacta por lección; procedencia 1:1)
 # ---------------------------------------------------------------------------
-LESSON_FROM_SOURCE_USER = """\
+# La fuente de una lección del plan se entrega COMPLETA (sin truncar ni colapsar
+# párrafos): antes se cortaba a 8.000 caracteres y el final del extracto nunca
+# se redactaba. Este tope solo protege de planes editados a mano con lecciones
+# desmesuradas.
+_PLAN_SOURCE_CHARS = 30_000
+
+FAITHFUL_LESSON_SYSTEM = """\
+Eres un redactor pedagógico de cursos de conducción en Chile. Conviertes un
+EXTRACTO del manual oficial en una lección e-learning clara, en español neutro,
+para estudiantes adultos.
+{orientacion}
+PRINCIPIO: la lección enseña SOLO lo que dice el extracto. Todo dato, regla,
+cifra, plazo, sanción, definición o recomendación de la lección debe estar en el
+extracto. Si algo no está en el extracto, no lo escribas, aunque sea "sentido
+común" o sepas que es cierto.
+
+Reglas:
+- Explica con tus palabras lo explicativo, pero las DEFINICIONES, NORMAS LEGALES,
+  CIFRAS, LÍMITES, PLAZOS y SANCIONES se reproducen con la redacción del extracto
+  (puedes citarlas entre comillas). No redondees, no conviertas unidades.
+- No agregues ejemplos, casos, errores frecuentes ni consejos que el extracto no
+  contenga. Un ejemplo solo puede reformular una situación que el extracto describe.
+- No completes vacíos con conocimiento general. Si el extracto es breve, la
+  lección es breve.
+- Si el extracto trae rótulos de figuras o referencias a imágenes ("ver imagen"),
+  no describas la imagen ni inventes lo que muestra: omite la referencia.
+- Extensión: entre {min_palabras} y {max_palabras} palabras.
+
+Formato Markdown, en este orden. Las secciones marcadas (opcional) inclúyelas SOLO
+si el extracto da material concreto para ellas; si no, omítelas por completo (sin
+encabezado). Escribe los encabezados sin la palabra "(opcional)".
+
+# {titulo}
+
+## Objetivo
+(1-2 frases: qué podrá hacer el estudiante)
+
+## Introducción (opcional)
+(por qué importa el tema, solo si el extracto lo explica)
+
+## Desarrollo
+(el contenido del extracto, organizado y explicado: es la sección principal)
+
+## Aplicación práctica (opcional)
+(cómo se aplica al conducir, solo lo que el extracto indica)
+
+## Ejemplo aplicado (opcional)
+(una situación que el extracto describe)
+
+## Errores frecuentes (opcional)
+(viñetas con "- ": solo errores, riesgos o prohibiciones que el extracto menciona)
+
+## Puntos clave
+(3-6 viñetas con "- " con las ideas centrales del extracto)
+
+## Actividad breve (opcional)
+(una pregunta de repaso cuya respuesta está en el extracto)
+
+## Resumen
+(1 párrafo de cierre)
+
+No incluyas "## Fuente". Responde solo con el Markdown de la lección.
+"""
+
+FAITHFUL_LESSON_USER = """\
 Tema: {tema}
 Unidad: {unidad}
-Extensión objetivo: alrededor de {palabras} palabras (no te excedas del objetivo).
 
-Material fuente (redacta la lección ÚNICAMENTE a partir de esto, sin inventar):
+EXTRACTO DEL MANUAL (única fuente permitida):
 ---
 {fuente}
 ---
-Redacta la lección "{titulo}".
+Redacta la lección "{titulo}" entre {min_palabras} y {max_palabras} palabras.
 """
+
+# Compatibilidad: nombre anterior del prompt de usuario del flujo desde plan.
+LESSON_FROM_SOURCE_USER = FAITHFUL_LESSON_USER
+
+
+def lesson_length(palabras_fuente: int, tope: int) -> tuple[int, int]:
+    """Rango de palabras de la lección, PROPORCIONAL a su fuente.
+
+    Antes se pedía siempre el tope de la banda (1.200) aunque la fuente tuviera
+    700 palabras: el modelo rellenaba con contenido que no estaba en el libro.
+    Ahora el máximo es ~1,1× la fuente (piso 250, techo = tope del plan).
+    """
+    tope = int(tope or 1200)
+    maximo = min(tope, max(250, round(int(palabras_fuente or 0) * 1.1)))
+    return max(150, round(maximo * 0.6)), maximo
+
+
+def _plan_source(text: str) -> str:
+    text = (text or "").replace("­", "").strip()
+    if len(text) > _PLAN_SOURCE_CHARS:
+        text = text[:_PLAN_SOURCE_CHARS].rsplit(" ", 1)[0] + " […]"
+    return text
+
+
+def _clean_optional_markers(body: str) -> str:
+    return re.sub(r"(?m)^(#{1,6} [^\n]*?)\s*\(opcional\)\s*$", r"\1", body)
 
 
 def _stub_from_plan(title: str, tema: str, unidad_nombre: str, fuente_md: str) -> str:
@@ -472,7 +575,12 @@ def _stub_from_plan(title: str, tema: str, unidad_nombre: str, fuente_md: str) -
     return re.sub(r"## Fuente\n.*$", f"## Fuente\n{fuente_md}", body, flags=re.DOTALL)
 
 
-def write_lesson_from_source(
+def write_lesson_from_source(**kwargs: Any) -> str:
+    """Redacta una lección a partir de un texto fuente EXACTO (del plan)."""
+    return write_lesson_from_source_meta(**kwargs)[0]
+
+
+def write_lesson_from_source_meta(
     *,
     title: str,
     tema: str,
@@ -483,23 +591,201 @@ def write_lesson_from_source(
     client: LLMClient,
     model: str,
     orientacion: str | None = None,
-) -> str:
-    """Redacta una lección a partir de un texto fuente EXACTO (del plan)."""
-    fuente = shorten_text(source_text, _MAX_SOURCE_CHARS) or "(Sin material fuente para este tema.)"
+    visual: dict[str, Any] | None = None,
+) -> tuple[str, bool]:
+    """Como ``write_lesson_from_source`` pero devuelve ``(cuerpo, redactada)``.
+
+    ``palabras`` es el TOPE del plan; la extensión real se ajusta a la fuente
+    (``lesson_length``). ``redactada=False`` = la redacción falló y el cuerpo es
+    el stub de revisión: el llamador debe marcar la lección.
+    """
+    fuente = _plan_source(source_text) or "(Sin material fuente para este tema.)"
+    min_p, max_p = lesson_length(len(fuente.split()), palabras)
+    aviso_visual = ""
+    if visual and visual.get("nivel") == "alta":
+        aviso_visual = ("\nATENCIÓN: estas páginas del libro son mayormente gráficas (figuras o señales). "
+                        "El extracto solo trae sus rótulos: redacta únicamente lo que el texto dice, sin "
+                        "describir ni suponer lo que muestran las imágenes.\n")
     try:
         body = _complete_lesson_body(
-            system=LESSON_SYSTEM.replace("{titulo}", title).replace(
-                "{orientacion}", _orientacion_txt(orientacion)
-            ),
-            user=LESSON_FROM_SOURCE_USER.format(
-                tema=tema, unidad=unidad_nombre, palabras=palabras, fuente=fuente, titulo=title,
-            ),
+            system=FAITHFUL_LESSON_SYSTEM
+                .replace("{titulo}", title)
+                .replace("{orientacion}", _orientacion_txt(orientacion))
+                .replace("{min_palabras}", str(min_p))
+                .replace("{max_palabras}", str(max_p)),
+            user=FAITHFUL_LESSON_USER.format(
+                tema=tema, unidad=unidad_nombre, fuente=fuente, titulo=title,
+                min_palabras=min_p, max_palabras=max_p,
+            ) + aviso_visual,
             client=client,
             model=model,
+            required=CORE_SECTIONS,
+            temperature=0.3,
         )
-        return f"{body.rstrip()}\n\n## Fuente\n{fuente_md}"
+        return f"{_clean_optional_markers(body).rstrip()}\n\n## Fuente\n{fuente_md}", True
     except Exception:  # noqa: BLE001 — una lección nunca tumba el curso
-        return _stub_from_plan(title, tema, unidad_nombre, fuente_md)
+        return _stub_from_plan(title, tema, unidad_nombre, fuente_md), False
+
+
+# ---------------------------------------------------------------------------
+# Quiz de unidad DESDE UN PLAN: por lección, con evidencia textual verificada
+# ---------------------------------------------------------------------------
+# Antes el quiz recibía la unidad completa truncada a 8.000 caracteres (en
+# unidades grandes veía el 12-20% del material) y nada validaba las preguntas.
+# Ahora cada lección aporta preguntas generadas desde SU fuente completa, y cada
+# pregunta debe citar textualmente la frase del extracto que respalda la
+# respuesta: si esa cita no está en la fuente, la pregunta se descarta.
+QUIZ_PLAN_SYSTEM = """\
+Eres un evaluador de cursos de conducción en Chile. Creas preguntas de opción
+múltiple que evalúan la comprensión de un EXTRACTO del manual oficial.
+
+Reglas:
+- Cada pregunta se responde SOLO con el extracto: la respuesta correcta debe
+  estar dicha en él. No evalúes datos que no están en el extracto.
+- "evidencia": copia LITERALMENTE (sin cambiar palabras) la frase del extracto
+  que respalda la respuesta correcta.
+- 4 opciones distintas y plausibles, una sola correcta. Las incorrectas no deben
+  ser correctas según el extracto. Nada de "todas/ninguna de las anteriores".
+- No preguntes por detalles triviales (rótulos de figuras, números de página).
+
+Responde SOLO con JSON válido, sin ```:
+{"questions": [{"question": "…", "options": ["…", "…", "…", "…"],
+  "correct_index": 0, "explanation": "…", "evidencia": "…"}]}
+"""
+
+QUIZ_PLAN_USER = """\
+Lección: {titulo}
+
+EXTRACTO:
+---
+{fuente}
+---
+Crea exactamente {n} pregunta(s). Devuelve solo el JSON.
+"""
+
+_MIN_EVIDENCE_CHARS = 15
+_QUIZ_TOTAL_TARGET = 5   # preguntas mínimas por unidad (repartidas entre sus lecciones)
+
+
+def _norm_evidence(text: str) -> str:
+    t = str(text or "").lower().replace("­", "")
+    t = re.sub(r"[^0-9a-záéíóúüñ]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def validate_quiz_question(q: Any, source_norm: str) -> str | None:
+    """Motivo de descarte de una pregunta (None = válida)."""
+    if not isinstance(q, dict):
+        return "no es un objeto"
+    if not str(q.get("question") or "").strip():
+        return "sin enunciado"
+    opts = q.get("options")
+    if not isinstance(opts, list) or len(opts) != 4 or not all(str(o).strip() for o in opts):
+        return "no tiene 4 opciones"
+    if len({_norm_evidence(o) for o in opts}) != 4:
+        return "opciones repetidas"
+    ci = q.get("correct_index")
+    if not isinstance(ci, int) or isinstance(ci, bool) or not 0 <= ci < 4:
+        return "correct_index inválido"
+    if any(re.search(r"\b(todas|ninguna|ambas)\b.{0,25}\banteriores\b", str(o), re.IGNORECASE) for o in opts):
+        return "opción comodín"
+    ev = _norm_evidence(q.get("evidencia"))
+    if len(ev) < _MIN_EVIDENCE_CHARS:
+        return "sin evidencia"
+    if ev not in source_norm:
+        return "la evidencia no está en la fuente"
+    return None
+
+
+def _shuffle_options(q: dict[str, Any]) -> dict[str, Any]:
+    """Reordena las opciones de forma determinista: los LLM tienden a dejar la
+    correcta en la primera posición."""
+    import hashlib
+    import random
+
+    rnd = random.Random(int(hashlib.sha256(str(q["question"]).encode("utf-8")).hexdigest(), 16))
+    order = list(range(4))
+    rnd.shuffle(order)
+    out = dict(q)
+    out["options"] = [q["options"][i] for i in order]
+    out["correct_index"] = order.index(q["correct_index"])
+    return out
+
+
+def questions_for_lesson(
+    *, titulo: str, texto: str, n: int, client: LLMClient, model: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Hasta ``n`` preguntas válidas para una lección. Devuelve (preguntas, descartes)."""
+    fuente = _plan_source(texto)
+    source_norm = _norm_evidence(fuente)
+    kept: list[dict[str, Any]] = []
+    descartes: list[str] = []
+    seen: set[str] = set()
+    for _attempt in range(2):          # un reintento si quedaron preguntas descartadas
+        faltan = n - len(kept)
+        if faltan <= 0:
+            break
+        try:
+            resp = client.complete_meta(
+                system=QUIZ_PLAN_SYSTEM,
+                user=QUIZ_PLAN_USER.format(titulo=titulo, fuente=fuente, n=faltan),
+                max_tokens=600 + 450 * faltan,
+                model=model,
+                temperature=0.3,
+            )
+            if resp.truncated:
+                raise ValueError("respuesta truncada")
+            data = parse_json_object(resp.text)
+        except Exception as exc:  # noqa: BLE001 — una lección sin preguntas no tumba el quiz
+            descartes.append(f"{titulo}: {exc}")
+            continue
+        for q in data.get("questions") or []:
+            motivo = validate_quiz_question(q, source_norm)
+            key = _norm_evidence(q.get("question") if isinstance(q, dict) else "")
+            if motivo is None and key in seen:
+                motivo = "pregunta repetida"
+            if motivo:
+                descartes.append(f"{titulo}: {motivo}")
+                continue
+            seen.add(key)
+            q = _shuffle_options({
+                "question": str(q["question"]).strip(),
+                "options": [str(o).strip() for o in q["options"]],
+                "correct_index": q["correct_index"],
+                "explanation": str(q.get("explanation") or "").strip(),
+            }) | {"evidencia": str(q["evidencia"]).strip(), "leccion": titulo}
+            kept.append(q)
+            if len(kept) >= n:
+                break
+    return kept, descartes
+
+
+def write_quiz_from_plan(
+    *, unidad_nombre: str, lecciones: list[dict[str, Any]], client: LLMClient, model: str,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Quiz de la unidad cubriendo TODAS sus lecciones. Devuelve (quiz, meta, ok).
+
+    Cada lección aporta ``ceil(5 / n_lecciones)`` preguntas (mínimo 1), así toda
+    lección queda evaluada. ``ok=False`` si ninguna pregunta pasó la validación
+    (se cae al quiz extractivo y la unidad queda marcada para revisión).
+    """
+    per = max(1, math.ceil(_QUIZ_TOTAL_TARGET / max(1, len(lecciones))))
+    questions: list[dict[str, Any]] = []
+    meta: dict[str, Any] = {"lecciones": len(lecciones), "preguntas": 0, "descartadas": 0,
+                            "lecciones_sin_preguntas": [], "descartes": []}
+    for lec in lecciones:
+        titulo = str(lec.get("nombre", "")).strip()
+        qs, descartes = questions_for_lesson(
+            titulo=titulo, texto=str(lec.get("texto", "")), n=per, client=client, model=model)
+        questions.extend(qs)
+        meta["descartes"].extend(descartes)
+        if not qs:
+            meta["lecciones_sin_preguntas"].append(titulo)
+    meta["preguntas"] = len(questions)
+    meta["descartadas"] = len(meta["descartes"])
+    if not questions:
+        return _extractive_quiz([str(l.get("nombre", "")) for l in lecciones]), meta, False
+    return {"questions": questions, "passing_score": 75}, meta, True
 
 
 def generate_lessons_from_plan(
@@ -513,11 +799,13 @@ def generate_lessons_from_plan(
     """Redacta el curso DESDE el plan editable (fuente exacta por lección).
 
     Salida compatible con `import_generated_course`: 1 lección de texto por
-    lección del plan + 1 quiz por unidad.
+    lección del plan + 1 quiz por unidad (con preguntas de todas sus lecciones).
     """
     client = client or LLMClient()
     model = model or default_model()
     import hashlib
+
+    from content_pipeline.review.ids import lesson_id
 
     for unidad in plan.get("unidades", []):
         orden = int(unidad.get("orden", 0))
@@ -527,18 +815,17 @@ def generate_lessons_from_plan(
         if not lecciones:
             continue
         position = 1
-        unit_texts: list[str] = []
         for lec in lecciones:
             title = str(lec.get("nombre", "")).strip() or f"Lección {position}"
             texto = str(lec.get("texto", ""))
-            unit_texts.append(texto)
             pgs = lec.get("paginas") or [0, 0]
-            palabras = int(lec.get("palabras_objetivo") or 900)
+            tope = int(lec.get("palabras_objetivo") or 900)
+            _min_p, max_p = lesson_length(len(texto.split()), tope)
             fuente_md = f"{source_name}, páginas {pgs[0]}-{pgs[1]}."
-            body = write_lesson_from_source(
+            body, redactada = write_lesson_from_source_meta(
                 title=title, tema=title, unidad_nombre=unidad_nombre,
-                source_text=texto, palabras=palabras, fuente_md=fuente_md,
-                client=client, model=model, orientacion=orientacion,
+                source_text=texto, palabras=tope, fuente_md=fuente_md,
+                client=client, model=model, orientacion=orientacion, visual=lec.get("visual"),
             )
             yield {
                 "unidad_orden": orden,
@@ -550,7 +837,7 @@ def generate_lessons_from_plan(
                 "tipo": "texto",
                 "descripcion": shorten_text(
                     f"{title} — dentro de {unidad_nombre}.", 240),
-                "duracion_min": _clamp(round(palabras / 130) * 1, 15, 60),  # ~130 wpm lectura
+                "duracion_min": _clamp(round(max_p / 130) * 1, 15, 60),  # ~130 wpm lectura
                 "contenido": body,
                 "transcripcion": "",
                 "fuentes": [{
@@ -561,11 +848,18 @@ def generate_lessons_from_plan(
                     "fragmento_resumen": shorten_text(texto, 600),
                     "hash_fragmento": hashlib.sha256(texto.encode("utf-8")).hexdigest(),
                 }],
-                "fuente_debil": False,
+                # Stub de revisión (la redacción falló): marcado para que la
+                # validación y el import lo bloqueen en vez de publicarlo.
+                "fuente_debil": not redactada,
+                "plan_id": lec.get("id") or lesson_id(texto),  # vínculo estable con el plan (revisión humana)
+                # Fuente mayormente gráfica: revisar la lección contra el libro (no bloquea).
+                "revision_visual": lec.get("visual"),
                 "_source_text": texto,  # para la auditoría de fidelidad (no se persiste)
             }
             position += 1
 
+        quiz, quiz_meta, quiz_ok = write_quiz_from_plan(
+            unidad_nombre=unidad_nombre, lecciones=lecciones, client=client, model=model)
         yield {
             "unidad_orden": orden,
             "unidad_nombre": unidad_nombre,
@@ -575,13 +869,8 @@ def generate_lessons_from_plan(
             "posicion": position,
             "tipo": "quiz",
             "descripcion": f"Evaluación de cierre de la unidad {unidad_nombre}.",
-            "duracion_min": 25,
-            "contenido": _write_quiz(
-                unidad_nombre=unidad_nombre,
-                temas=[str(l.get("nombre", "")) for l in lecciones],
-                segments=[], client=client, model=model,
-                fuente_text="\n\n".join(unit_texts),
-            ),
+            "duracion_min": _clamp(round(len(quiz.get("questions") or []) * 1.5), 10, 30),
+            "contenido": quiz,
             "transcripcion": "",
             "fuentes": [{
                 "fuente_nombre": source_name,
@@ -591,4 +880,7 @@ def generate_lessons_from_plan(
                 "fragmento_resumen": f"Evaluación de la unidad {unidad_nombre}.",
                 "hash_fragmento": "",
             }],
+            # Sin preguntas válidas → quiz extractivo de respaldo, bloqueado hasta revisión.
+            "fuente_debil": not quiz_ok,
+            "quiz_meta": quiz_meta,
         }

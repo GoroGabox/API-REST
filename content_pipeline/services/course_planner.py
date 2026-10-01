@@ -15,6 +15,8 @@ import re
 from typing import Any
 
 from content_pipeline.processors.outline import Chapter, Para, build_outline
+from content_pipeline.processors.visual_pages import annotate_plan_visuals
+from content_pipeline.review.ids import ensure_plan_ids
 from content_pipeline.taxonomy import resolve as resolve_categoria
 
 _SENT_RE = re.compile(r"(?<=[.!?…])\s+")
@@ -33,10 +35,10 @@ def _split_big_para(p: Para, target: int, high: int) -> list[Para]:
             continue
         sw = len(sent.split())
         if buf and w + sw > target:
-            out.append(Para(text=" ".join(buf), page=p.page)); buf = []; w = 0
+            out.append(Para(text=" ".join(buf), page=p.page, page_end=p.page_end)); buf = []; w = 0
         buf.append(sent); w += sw
     if buf:
-        out.append(Para(text=" ".join(buf), page=p.page))
+        out.append(Para(text=" ".join(buf), page=p.page, page_end=p.page_end))
     return out or [p]
 
 # Bandas de palabras por lección: (mínimo, objetivo, máximo).
@@ -124,7 +126,7 @@ def build_plan(
         lecciones: list[dict[str, Any]] = []
         for j, (seed, paras) in enumerate(groups, start=1):
             texto = "\n\n".join(p.text for p in paras)
-            pgs = [p.page for p in paras if p.page]
+            pgs = [pg for p in paras for pg in (p.page, p.page_end) if pg]
             lecciones.append({
                 "nombre": _lesson_name(seed, ch.titulo, j, len(groups)),
                 "seccion": seed or None,
@@ -143,7 +145,7 @@ def build_plan(
         })
 
     total_lecc = sum(len(u["lecciones"]) for u in unidades)
-    return {
+    plan = ensure_plan_ids({  # ids estables → las observaciones de auditores apuntan por id
         "curso": {
             "nombre": nombre, "codigo": codigo,
             "is_profesional": bool(is_profesional),
@@ -157,4 +159,7 @@ def build_plan(
             "palabras_totales": sum(u["palabras"] for u in unidades),
             "banda": {"largo": largo, "min": band[0], "objetivo": band[1], "max": band[2]},
         },
-    }
+    })
+    # Lecciones cuya fuente es mayormente gráfica (señales, figuras): revisión humana.
+    plan["resumen"]["revision_visual"] = annotate_plan_visuals(plan, source)
+    return plan

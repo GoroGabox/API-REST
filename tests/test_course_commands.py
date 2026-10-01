@@ -80,8 +80,9 @@ class ImportCourseCommandTests(TestCase):
         self.assertIn("DRY-RUN", out.getvalue())
 
     def test_import_crea_y_es_idempotente(self):
-        call_command("import_course", file=str(self.file), stdout=StringIO())
-        call_command("import_course", file=str(self.file), stdout=StringIO())
+        # La lección de prueba es mínima (sin secciones): se fuerza para probar solo el upsert.
+        call_command("import_course", file=str(self.file), forzar=True, stdout=StringIO(), stderr=StringIO())
+        call_command("import_course", file=str(self.file), forzar=True, stdout=StringIO(), stderr=StringIO())
 
         self.assertEqual(Curso.objects.filter(codigo="CLI").count(), 1)
         self.assertEqual(Unidad.objects.count(), 1)

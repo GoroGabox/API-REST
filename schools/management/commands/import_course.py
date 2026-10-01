@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from content_pipeline.exporters.django_importer import import_a2_course
 from content_pipeline.exporters.json_exporter import read_json
+from content_pipeline.processors.validators import import_blockers
 from schools.models import Curso
 
 
@@ -34,6 +35,12 @@ class Command(BaseCommand):
         parser.add_argument("--manifest", help="JSON de manifest (alternativa a --file).")
         parser.add_argument("--lessons", help="JSON de lecciones (alternativa a --file).")
         parser.add_argument("--dry-run", action="store_true", help="No escribe; solo reporta qué haría.")
+        parser.add_argument(
+            "--forzar",
+            action="store_true",
+            help="Importa aunque haya bloqueos (lecciones sin redactar, fuente débil, "
+                 "críticas del juez o errores de validación). Usar solo tras revisión humana.",
+        )
         parser.add_argument(
             "--prune",
             action="store_true",
@@ -55,6 +62,15 @@ class Command(BaseCommand):
             raise CommandError("Indica --file, o bien --manifest y --lessons juntos.")
 
         codigo = (manifest.get("curso") or {}).get("codigo", "?")
+        bloqueos, _v = import_blockers({"manifest": manifest, "lessons": lessons,
+                                         "auditoria": data.get("auditoria") if opts.get("file") else None})
+        if bloqueos:
+            for b in bloqueos:
+                self.stderr.write(self.style.WARNING(f"  BLOQUEO {b}"))
+            if not opts["forzar"] and not opts["dry_run"]:
+                raise CommandError(
+                    f"{len(bloqueos)} bloqueo(s): revisá el curso (Brújula / apply_review) o importá con --forzar."
+                )
         accion = "DRY-RUN" if opts["dry_run"] else "IMPORT"
         self.stdout.write(f"Curso: {codigo} · {len(lessons)} lecciones · {accion}")
 

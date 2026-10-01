@@ -39,6 +39,7 @@ class Line:
     y0: float            # posición vertical (top) — 0 en DOCX
     page_h: float        # alto de página — 0 en DOCX
     style: str = ""      # estilo de párrafo (DOCX)
+    y1: float = 0.0      # borde inferior de la línea (PDF) — para medir el interlineado
     level: int = 0       # 0 cuerpo · 1 capítulo · 2 sección · 3 subsección
     is_noise: bool = False
 
@@ -71,9 +72,10 @@ def _pdf_lines(path: Path) -> list[Line]:
                         (int(s.get("flags", 0)) & 16) or "bold" in str(s.get("font", "")).lower()
                         for s in spans
                     )
-                    y0 = float(ln.get("bbox", [0, 0, 0, 0])[1])
+                    bbox = ln.get("bbox", [0, 0, 0, 0])
                     lines.append(Line(page=pno, text=re.sub(r"\s+", " ", text),
-                                      size=round(size, 1), bold=bold, y0=y0, page_h=ph))
+                                      size=round(size, 1), bold=bold, y0=float(bbox[1]), page_h=ph,
+                                      y1=float(bbox[3])))
     return lines
 
 

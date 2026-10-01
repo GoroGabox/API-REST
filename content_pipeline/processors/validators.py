@@ -382,3 +382,101 @@ def build_validation_report(
         lines.append(f"- U{orden} {unidad.get('nombre')}: {unit_minutes} min / objetivo {target} min")
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Validación GENÉRICA de cursos generados (cualquier código de curso)
+# ---------------------------------------------------------------------------
+# Las validaciones de arriba son del Curso A2 (exigen código A2 y sus secciones).
+# Estas aplican a cualquier salida de ``generate_course`` y alimentan el bloqueo
+# de ``import_course``: nada sin redactar, sin fuente o con quiz roto llega a BD.
+
+# Texto que deja el stub cuando la redacción falla (``llm_lesson_writer._safe_stub_body``).
+STUB_MARKER = "no se pudo redactar automáticamente"
+
+
+def _lesson_label(lesson: dict[str, Any]) -> str:
+    return f"U{lesson.get('unidad_orden')}.{lesson.get('posicion')} {lesson.get('nombre') or '(sin nombre)'}"
+
+
+def validate_generated_course(manifest: dict[str, Any], lessons: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Valida un curso generado. Devuelve ``{errores, advertencias, stubs}``.
+
+    - errores: faltan nombre/contenido/fuente, páginas inválidas, secciones
+      obligatorias ausentes en una lección redactada, quiz inválido.
+    - stubs: lecciones sin redactar (stub de revisión) o con fuente débil
+      (extractivo neutral): no deben publicarse sin revisión humana.
+    """
+    # Solo las secciones NÚCLEO son obligatorias: las opcionales (introducción,
+    # ejemplo, errores frecuentes…) se omiten cuando el extracto no las respalda.
+    from content_pipeline.processors.llm_lesson_writer import CORE_SECTIONS
+
+    errores: list[str] = []
+    advertencias: list[str] = []
+    stubs: list[str] = []
+    by_unit: dict[int, list[dict[str, Any]]] = {}
+    for lesson in lessons:
+        by_unit.setdefault(int(lesson.get("unidad_orden") or 0), []).append(lesson)
+    for unidad in manifest.get("unidades", []) or []:
+        orden = int(unidad.get("orden") or 0)
+        if not by_unit.get(orden):
+            errores.append(f"U{orden}: sin lecciones.")
+        elif not any(l.get("tipo") == "quiz" for l in by_unit[orden]):
+            advertencias.append(f"U{orden}: sin quiz de cierre.")
+
+    for lesson in lessons:
+        label = _lesson_label(lesson)
+        if not lesson.get("nombre"):
+            errores.append(f"{label}: falta nombre.")
+        fuentes = lesson.get("fuentes")
+        if not isinstance(fuentes, list) or not fuentes:
+            errores.append(f"{label}: falta fuente trazable.")
+        else:
+            for k, f in enumerate(fuentes, start=1):
+                pi, pf = int(f.get("pagina_inicio") or 0), int(f.get("pagina_fin") or 0)
+                if pi <= 0 or pf < pi:
+                    errores.append(f"{label}: fuente {k} con páginas inválidas ({pi}-{pf}).")
+        if lesson.get("tipo") == "quiz":
+            _validate_quiz_content(lesson.get("contenido"), label, errores)
+            if lesson.get("fuente_debil"):
+                stubs.append(f"{label} (quiz sin preguntas válidas)")
+            sin_preg = (lesson.get("quiz_meta") or {}).get("lecciones_sin_preguntas") or []
+            if sin_preg:
+                advertencias.append(f"{label}: lecciones sin preguntas en el quiz: {', '.join(sin_preg)}.")
+            continue
+        content = str(lesson.get("contenido") or "")
+        if not content.strip():
+            errores.append(f"{label}: falta contenido.")
+            continue
+        if lesson.get("fuente_debil") or STUB_MARKER in content:
+            stubs.append(label)
+            continue
+        missing = [s for s in (*CORE_SECTIONS, "## Fuente") if s not in content]
+        if missing:
+            errores.append(f"{label}: faltan secciones {', '.join(missing)}.")
+    visual = [f"{_lesson_label(l)} ({(l.get('revision_visual') or {}).get('nivel')})"
+              for l in lessons if l.get("revision_visual")]
+    for l in lessons:
+        v = l.get("revision_visual") or {}
+        if v.get("nivel") == "alta":
+            advertencias.append(f"{_lesson_label(l)}: requiere revisión visual — {v.get('motivo', '')}")
+    return {"errores": errores, "advertencias": advertencias, "stubs": stubs, "revision_visual": visual}
+
+
+def import_blockers(data: dict[str, Any]) -> tuple[list[str], dict[str, list[str]]]:
+    """Motivos que impiden importar un curso generado (vacío = se puede importar)."""
+    v = validate_generated_course(data.get("manifest") or {}, data.get("lessons") or [])
+    bloqueos = list(v["errores"])
+    if v["stubs"]:
+        muestra = "; ".join(v["stubs"][:5]) + (" …" if len(v["stubs"]) > 5 else "")
+        bloqueos.append(f"{len(v['stubs'])} lección(es) sin redactar o con fuente débil: {muestra}")
+    criticas = (((data.get("auditoria") or {}).get("juez") or {}).get("criticas")) or []
+    if criticas:
+        muestra = "; ".join(str(c.get("leccion")) for c in criticas[:5]) + (" …" if len(criticas) > 5 else "")
+        bloqueos.append(f"{len(criticas)} lección(es) con fidelidad crítica según el juez: {muestra}")
+    problemas_quiz = (((data.get("auditoria") or {}).get("juez_quiz") or {}).get("problemas")) or []
+    if problemas_quiz:
+        muestra = "; ".join(f"{p.get('leccion')}: «{str(p.get('pregunta'))[:90]}» — {p.get('problema')}"
+                            for p in problemas_quiz[:3])
+        bloqueos.append(f"{len(problemas_quiz)} pregunta(s) de quiz con clave dudosa según el juez: {muestra}")
+    return bloqueos, v
