@@ -479,26 +479,34 @@ def _chapter_title_from_name(path: Path) -> str:
 _CHAP_NUM_RE = re.compile(r"cap[ií]tulo\s*(\d+)", re.IGNORECASE)
 
 
+def chapter_files(source: str | Path | list[str | Path]) -> list[Path]:
+    """Archivos de capítulo en el orden del outline (carpeta o lista). Vacío si es archivo único."""
+    if isinstance(source, (list, tuple)):
+        files = [Path(p) for p in source]
+    else:
+        p = Path(source)
+        if not p.is_dir():
+            return []
+        files = [f for f in p.iterdir()
+                 if f.suffix.lower() in (".docx", ".pdf") and _CHAP_NUM_RE.search(f.name)]
+        if not files:
+            raise ValueError(f"Sin archivos de capítulo (.docx/.pdf con 'Capítulo N') en: {source}")
+
+    def _order(f: Path) -> int:
+        m = _CHAP_NUM_RE.search(f.name)
+        return int(m.group(1)) if m else 9999
+    return sorted(files, key=_order)
+
+
 def build_outline(source: str | Path | list[str | Path]) -> list[Chapter]:
     """Outline del libro. ``source`` = carpeta, archivo único, o lista de archivos.
 
     - Carpeta o lista → un capítulo por archivo (ordenados por 'Capítulo N' si aplica).
     - Archivo único → capítulos por tipografía (``level==1``).
     """
-    if isinstance(source, (list, tuple)):
-        files = [Path(p) for p in source]
-    else:
-        p = Path(source)
-        if p.is_dir():
-            files = [f for f in p.iterdir()
-                     if f.suffix.lower() in (".docx", ".pdf") and _CHAP_NUM_RE.search(f.name)]
-        else:
-            return _outline_single(p)
+    if not isinstance(source, (list, tuple)) and not Path(source).is_dir():
+        return _outline_single(Path(source))
+    files = chapter_files(source)
     if not files:
         raise ValueError(f"Sin archivos de capítulo (.docx/.pdf con 'Capítulo N') en: {source}")
-
-    def _order(f: Path) -> int:
-        m = _CHAP_NUM_RE.search(f.name)
-        return int(m.group(1)) if m else 9999
-    files.sort(key=_order)
     return _outline_multi(files)

@@ -8,7 +8,7 @@ from typing import Any
 from django.db import transaction
 
 from content_pipeline import taxonomy
-from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, PlanCurso, Unidad
+from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, LeccionImagen, PlanCurso, Unidad
 
 
 @dataclass
@@ -170,6 +170,28 @@ def import_a2_course(
                     hash_fragmento=source.get("hash_fragmento", ""),
                 )
                 summary.add("fuente_create")
+
+            # Figuras del libro (``extract_images``): si la lección trae la clave se
+            # reemplazan; si no la trae, se conservan las existentes.
+            if isinstance(lesson.get("imagenes"), list):
+                LeccionImagen.objects.filter(leccion=leccion).delete()
+                for img in lesson["imagenes"]:
+                    if not img.get("url"):
+                        continue                    # extraída sin subir (--sin-subir)
+                    LeccionImagen.objects.create(
+                        leccion=leccion,
+                        url=img["url"],
+                        orden=int(img.get("orden") or 0),
+                        pagina=img.get("pagina") or None,
+                        pie=str(img.get("pie") or "")[:255],
+                        alt=str(img.get("alt") or "")[:500],
+                        ancho=int(img.get("ancho") or 0),
+                        alto=int(img.get("alto") or 0),
+                        origen=img.get("origen") or "pdf",
+                        mapeo=img.get("mapeo") or "",
+                        hash=img.get("hash") or "",
+                    )
+                    summary.add("imagen_create")
 
         if prune:
             stale = Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)

@@ -184,7 +184,7 @@ class LLMClient:
         self,
         *,
         system: str,
-        user: str,
+        user: str | list[dict],  # texto o bloques de contenido (p. ej. imagen base64 + texto)
         max_tokens: int,
         model: str | None = None,
         temperature: float = 0.4,

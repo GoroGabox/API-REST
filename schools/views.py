@@ -766,6 +766,7 @@ class LeccionViewSet(viewsets.ModelViewSet):
         qs = (
             Leccion.objects
             .select_related('curso', 'unidad', 'categoria')
+            .prefetch_related('imagenes')   # figuras del libro (detalle / lista por curso)
             .order_by(*LECCION_ORDERING)
         )
         # Gating de contenido premium: el estudiante solo ve lecciones de cursos

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
+    Escuela, Curso, Leccion, LeccionImagen, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
     PREGUNTAS_SESION_TEMATICA,
 )
 
@@ -83,17 +83,24 @@ class LeccionSerializer(serializers.ModelSerializer):
         ]
 
 
+class LeccionImagenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LeccionImagen
+        fields = ['id', 'url', 'orden', 'pagina', 'pie', 'alt', 'ancho', 'alto']
+
+
 class LeccionDetalleSerializer(serializers.ModelSerializer):
-    """Detalle completo: incluye contenido + transcripción."""
+    """Detalle completo: incluye contenido + transcripción + figuras del libro."""
     unidad_orden = serializers.IntegerField(source='unidad.orden', read_only=True)
     unidad_nombre = serializers.CharField(source='unidad.nombre', read_only=True)
+    imagenes = LeccionImagenSerializer(many=True, read_only=True)
 
     class Meta:
         model = Leccion
         fields = [
             'id', 'curso', 'unidad', 'unidad_orden', 'unidad_nombre',
             'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'contenido', 'transcripcion',
-            'duracion_min', 'url_video', 'url_audio', 'url_pdf',
+            'duracion_min', 'url_video', 'url_audio', 'url_pdf', 'imagenes',
         ]
 
 
