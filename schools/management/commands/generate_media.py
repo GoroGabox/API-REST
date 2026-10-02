@@ -29,6 +29,7 @@ from content_pipeline.media.narration import (
     strip_markdown,
 )
 from content_pipeline.media.storage import StorageError, get_audio_storage
+from content_pipeline.media.recursos import upsert_recurso
 from content_pipeline.media.tts import TTSError, get_tts_provider
 
 
@@ -46,6 +47,13 @@ def _resumen_auditoria(lessons: list[dict]) -> dict:
         "con_audio": sum(1 for l in lessons if (l.get("url_audio") or "").startswith("http")
                          and "placeholder" not in l.get("url_audio", "")),
     }
+
+
+def _set_audio(lesson: dict, url: str, fname: str) -> None:
+    """Narración como recurso de la lección (clave ``audio``) + espejo ``url_audio``."""
+    lesson["url_audio"] = url        # espejo de compatibilidad (JSON/clientes previos)
+    upsert_recurso(lesson, {"tipo": "audio", "rol": "narracion", "clave": "audio", "url": url,
+                            "orden": 1000, "titulo": "Narración de la lección", "meta": {"archivo": fname}})
 
 
 class Command(BaseCommand):
@@ -185,7 +193,7 @@ class Command(BaseCommand):
             try:
                 if not opts["overwrite"] and storage.exists(fname):
                     self.stdout.write(f"  [{index}] audio ya existe, omito: {fname}")
-                    lesson["url_audio"] = storage.url(fname)
+                    _set_audio(lesson, storage.url(fname), fname)
                     _guardar()
                     continue
                 self.stdout.write(f"  [{index}] {nombre} — sintetizando ({len(script):,} chars)…")
@@ -198,7 +206,7 @@ class Command(BaseCommand):
                     f"Progreso guardado en {out_path}; re-corre para retomar."
                 ) from exc
 
-            lesson["url_audio"] = url
+            _set_audio(lesson, url, fname)
             lesson["audio_meta"] = {
                 **meta, "provider": provider.name, "voz": provider.voice_id,
                 "chars": len(script), "archivo": fname,

@@ -44,6 +44,39 @@ solo llega al responsable cuando exportás y enviás el archivo.
 """
 
 
+def _collect_figures(bundle: dict, opts: dict) -> dict[str, Path]:
+    """Archivos de figuras a incluir en el ZIP ({ruta en el zip: archivo local}).
+
+    Las rutas del plan (``figuras[].archivo``) y del curso (``recursos[].archivo_local``)
+    son relativas a su JSON; en el ZIP quedan en ``figuras/<nombre>`` y la ruta del
+    bundle se reescribe a esa ubicación (la Brújula las abre junto a ``brujula.html``).
+    """
+    files: dict[str, Path] = {}
+
+    def add(base: Path, ref: str) -> str:
+        path = Path(ref) if Path(ref).is_absolute() else base / ref
+        if not path.exists():
+            return ref
+        arc = f"figuras/{path.name}"
+        files[arc] = path
+        return arc
+
+    if bundle.get("plan") and opts.get("plan"):
+        base = Path(opts["plan"]).parent
+        for u in bundle["plan"].get("unidades") or []:
+            for lec in u.get("lecciones") or []:
+                for f in lec.get("figuras") or []:
+                    if f.get("archivo"):
+                        f["archivo"] = add(base, f["archivo"])
+    if bundle.get("course") and opts.get("course"):
+        base = Path(opts["course"]).parent
+        for lec in bundle["course"].get("lessons") or []:
+            for r in lec.get("recursos") or []:
+                if r.get("archivo_local") and not r.get("url"):
+                    r["archivo_local"] = add(base, r["archivo_local"])
+    return files
+
+
 class Command(BaseCommand):
     help = "Genera un ZIP offline de la Brújula del Libro con el plan y/o curso embebidos, para auditores."
 
@@ -75,6 +108,7 @@ class Command(BaseCommand):
             bundle["course"] = course
             codigo = codigo or ((course.get("manifest") or {}).get("curso") or {}).get("codigo", "")
         codigo = (codigo or "curso").upper()
+        figuras = _collect_figures(bundle, opts)
 
         payload = json.dumps(bundle, ensure_ascii=False).replace("</", "<\\/")
         page = TEMPLATE.read_text(encoding="utf-8")
@@ -88,7 +122,10 @@ class Command(BaseCommand):
         with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("brujula.html", html)
             zf.writestr("LEEME.txt", LEEME.format(codigo=codigo, codigo_l=codigo.lower()))
+            for arcname, path in figuras.items():
+                zf.write(path, arcname)
         n_l = sum(len(u.get("lecciones", [])) for u in (bundle.get("plan") or {}).get("unidades", []))
         n_c = len((bundle.get("course") or {}).get("lessons", []))
         self.stdout.write(self.style.SUCCESS(
-            f"Brujula {codigo} ({opts['modo']}) -> {out} · plan: {n_l} lecciones · curso: {n_c} lecciones"))
+            f"Brujula {codigo} ({opts['modo']}) -> {out} · plan: {n_l} lecciones · curso: {n_c} lecciones"
+            f" · {len(figuras)} figuras"))

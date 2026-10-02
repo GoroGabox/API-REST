@@ -18,6 +18,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from content_pipeline.processors.validators import validate_generated_course
+from content_pipeline.media.recursos import rebase_archivos
 from content_pipeline.services.plan_generation import manifest_from_plan
 from content_pipeline.exporters.json_exporter import write_json
 from content_pipeline.licenses import orientation_for
@@ -471,6 +472,12 @@ class Command(BaseCommand):
             payload["ia"] = client.meter.as_dict()
         out_path = Path(opts["out"])
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Figuras del plan: sus archivos son relativos al plan → relativos al JSON del curso.
+        if rebase_archivos(lessons, plan_path.parent, out_path.parent):
+            n_fig = sum(1 for l in lessons for r in l.get("recursos") or [] if r.get("rol") == "figura")
+            n_auto = sum(1 for l in lessons for r in l.get("recursos") or [] if (r.get("meta") or {}).get("insertada"))
+            self.stdout.write(f"Figuras: {n_fig} insertadas en el texto ({n_auto} ubicadas automáticamente). "
+                              "Publicalas con publish_media antes de importar.")
         write_json(out_path, payload)
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"Curso generado desde plan: {len(lessons)} lecciones → {out_path}"))

@@ -45,6 +45,9 @@ data/output/*/*
 /ejercicios_*.json
 /out/*.json
 /out/*.zip
+# Figuras extraídas junto al plan/curso y medios publicados en local (publish_media --storage local)
+/out/figuras_*/
+/autotestAPI/media/
 
 # IDE
 .vscode/

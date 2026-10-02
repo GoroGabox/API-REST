@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from content_pipeline.processors.figure_markers import figure_ids
+
 
 @dataclass(frozen=True)
 class ValidationResult:
@@ -454,6 +456,15 @@ def validate_generated_course(manifest: dict[str, Any], lessons: list[dict[str, 
         missing = [s for s in (*CORE_SECTIONS, "## Fuente") if s not in content]
         if missing:
             errores.append(f"{label}: faltan secciones {', '.join(missing)}.")
+        # Figuras: cada {{figura:ID}} debe tener su recurso imagen en la lección.
+        claves = {r.get("clave") for r in lesson.get("recursos") or [] if r.get("tipo") == "imagen"}
+        huerfanos = sorted({fid for fid in figure_ids(content) if fid not in claves})
+        if huerfanos:
+            errores.append(f"{label}: marcador(es) de figura sin recurso: {', '.join(huerfanos)}.")
+        auto = [r.get("clave") for r in lesson.get("recursos") or [] if (r.get("meta") or {}).get("insertada") == "auto"]
+        if auto:
+            advertencias.append(f"{label}: {len(auto)} figura(s) ubicadas automáticamente al final del Desarrollo "
+                                f"(el redactor no las insertó): revisar su posición.")
     visual = [f"{_lesson_label(l)} ({(l.get('revision_visual') or {}).get('nivel')})"
               for l in lessons if l.get("revision_visual")]
     for l in lessons:
@@ -474,6 +485,14 @@ def import_blockers(data: dict[str, Any]) -> tuple[list[str], dict[str, list[str
     if criticas:
         muestra = "; ".join(str(c.get("leccion")) for c in criticas[:5]) + (" …" if len(criticas) > 5 else "")
         bloqueos.append(f"{len(criticas)} lección(es) con fidelidad crítica según el juez: {muestra}")
+    sin_publicar = []
+    for lesson in data.get("lessons") or []:
+        urls = {r.get("clave"): r.get("url") for r in lesson.get("recursos") or [] if r.get("tipo") == "imagen"}
+        if any(fid in urls and not urls[fid] for fid in figure_ids(str(lesson.get("contenido") or ""))):
+            sin_publicar.append(_lesson_label(lesson))
+    if sin_publicar:
+        muestra = "; ".join(sin_publicar[:5]) + (" …" if len(sin_publicar) > 5 else "")
+        bloqueos.append(f"{len(sin_publicar)} lección(es) con figuras sin publicar (corré publish_media): {muestra}")
     problemas_quiz = (((data.get("auditoria") or {}).get("juez_quiz") or {}).get("problemas")) or []
     if problemas_quiz:
         muestra = "; ".join(f"{p.get('leccion')}: «{str(p.get('pregunta'))[:90]}» — {p.get('problema')}"

@@ -14,6 +14,7 @@ Config (settings o entorno):
     AUDIO_S3_PUBLIC_BASE_URL    -> URL pública del bucket (R2: dominio r2.dev o propio)
     AUDIO_S3_PREFIX             -> 'course_audio/' (default)
     IMAGES_S3_PREFIX            -> 'course_images/' (default)
+    DOCS_S3_PREFIX              -> 'course_docs/' (default; PDFs de páginas del libro)
 """
 from __future__ import annotations
 
@@ -23,10 +24,11 @@ from typing import Protocol
 from content_pipeline.media.tts import _conf
 
 # Carpeta local / prefijo S3 por defecto según el tipo de medio.
-_SUBDIRS = {"audio": "course_audio", "images": "course_images"}
-_PREFIX_CONF = {"audio": "AUDIO_S3_PREFIX", "images": "IMAGES_S3_PREFIX"}
+_SUBDIRS = {"audio": "course_audio", "images": "course_images", "docs": "course_docs"}
+_PREFIX_CONF = {"audio": "AUDIO_S3_PREFIX", "images": "IMAGES_S3_PREFIX", "docs": "DOCS_S3_PREFIX"}
 _CONTENT_TYPES = {".mp3": "audio/mpeg", ".png": "image/png", ".jpg": "image/jpeg",
-                  ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+                  ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
+                  ".pdf": "application/pdf"}
 
 
 def _content_type(filename: str) -> str:
@@ -149,7 +151,7 @@ class S3Storage:
 
 
 def get_storage(name: str | None = None, *, kind: str = "audio", **opts) -> AudioStorage:
-    """Storage para ``kind`` = 'audio' | 'images'. `opts` (media_dir/base_url) solo aplican al local."""
+    """Storage para ``kind`` = 'audio' | 'images' | 'docs'. `opts` (media_dir/base_url) solo aplican al local."""
     name = (name or _conf("AUDIO_STORAGE", "local") or "local").lower()
     if name == "local":
         return LocalStorage(subdir=_SUBDIRS.get(kind, "course_audio"), **opts)

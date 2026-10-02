@@ -7,8 +7,10 @@ granularidad de `--largo` (corta|media|larga); las palabras solo son tope de
 seguridad. Si el libro único no trae capítulos detectables, la IA propone también
 las unidades. La IA solo devuelve rangos de párrafos → el texto de cada lección es
 la fuente exacta. Sin `ANTHROPIC_API_KEY` o con `--sin-ia-estructura` se corta por
-palabras (como antes). El JSON resultante se revisa/edita a mano y luego se redacta
-con `generate_course --from-plan`.
+palabras (como antes). Además extrae las FIGURAS del libro y las ubica por lección y
+párrafo (`figuras_<codigo>/` junto al plan; `--sin-figuras` lo apaga, `--describir-figuras`
+agrega pie/alt con IA de visión). El JSON resultante se revisa/edita a mano (o en la
+Brújula) y luego se redacta con `generate_course --from-plan`.
 
 Uso::
 
@@ -48,6 +50,11 @@ class Command(BaseCommand):
                             help="Enriquecer con IA: clasifica categorías (taxonomía) y nombra las lecciones.")
         parser.add_argument("--plan-model", default=None,
                             help="Modelo para el enriquecimiento (def. Haiku; trabajo ligero).")
+        parser.add_argument("--sin-figuras", action="store_true",
+                            help="No extraer las figuras del libro (por defecto se extraen y ubican por párrafo).")
+        parser.add_argument("--describir-figuras", action="store_true",
+                            help="IA con visión (Haiku): pie + alt por figura y descarte de decorativas.")
+        parser.add_argument("--describe-model", default=None, help="Modelo de visión (def. Haiku).")
         parser.add_argument("--out", required=True, help="Ruta del plan.json de salida.")
 
     def handle(self, *args, **opts):
@@ -101,6 +108,11 @@ class Command(BaseCommand):
                 enrich_plan(plan, client=client, model=model)
                 self.stdout.write(f"  ~US${round(client.meter.cost_usd, 4)} · {client.meter.calls} llamadas")
 
+        out = Path(opts["out"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if not opts["sin_figuras"]:
+            self._figuras(plan, source, out, codigo, opts)
+
         r = plan["resumen"]
         self.stdout.write(self.style.SUCCESS(
             f"Plan: {r['unidades']} unidades · {r['lecciones']} lecciones · "
@@ -114,11 +126,36 @@ class Command(BaseCommand):
             )
             for lec in u["lecciones"]:
                 self.stdout.write(f"      - {lec['nombre'][:60]:60} {lec['palabras_fuente']:>5} pal"
-                                  + (f" · densidad {lec['densidad']}" if lec.get("densidad") else ""))
+                                  + (f" · densidad {lec['densidad']}" if lec.get("densidad") else "")
+                                  + (f" · {len(lec['figuras'])} fig" if lec.get("figuras") else ""))
 
-        out = Path(opts["out"])
-        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"Plan escrito: {out}"))
         self.stdout.write("Revisá/editá el plan y luego: python manage.py generate_course --from-plan " + str(out))
+
+    def _figuras(self, plan, source, out: Path, codigo: str, opts) -> None:
+        """Figuras del libro → ``figuras`` por lección (ubicadas por párrafo)."""
+        from content_pipeline.services.plan_figures import attach_figures_to_plan
+
+        client = model = None
+        if opts["describir_figuras"]:
+            from content_pipeline.llm.client import LLMClient, draft_model
+            if LLMClient.is_available():
+                model = opts["describe_model"] or draft_model()
+                client = LLMClient(model=model)
+            else:
+                self.stderr.write(self.style.WARNING("--describir-figuras requiere ANTHROPIC_API_KEY; se omite."))
+        self.stdout.write("Extrayendo figuras del libro…")
+        resumen = attach_figures_to_plan(plan, source, out.parent / f"figuras_{codigo}", rel_to=out.parent,
+                                         client=client, model=model)
+        plan["resumen"]["figuras"] = resumen
+        self.stdout.write(
+            f"  {resumen['asignadas']} figuras en {resumen['lecciones_con_figuras']} lecciones · "
+            f"mapeo {resumen['mapeo']} · {len(resumen['sin_leccion'])} sin lección · "
+            f"descartadas {resumen['descartadas']} → {resumen['carpeta']}")
+        if client is not None:
+            self.stdout.write(f"  IA ({model}): ~US${round(client.meter.cost_usd, 4)} · {client.meter.calls} llamadas")
+        if resumen["visuales_sin_figuras"]:
+            self.stderr.write(self.style.WARNING(
+                "  Lecciones gráficas sin figuras: " + "; ".join(resumen["visuales_sin_figuras"][:8])))

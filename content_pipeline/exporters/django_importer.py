@@ -8,7 +8,8 @@ from typing import Any
 from django.db import transaction
 
 from content_pipeline import taxonomy
-from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, LeccionImagen, PlanCurso, Unidad
+from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, LeccionRecurso, PlanCurso, Unidad
+from schools.services import PLACEHOLDER_URL, sync_media_mirror
 
 
 @dataclass
@@ -43,6 +44,76 @@ def _lesson_defaults(lesson: dict[str, Any], categoria: Categoria) -> dict[str, 
         "url_audio": lesson.get("url_audio", "http://placeholder.url") or "http://placeholder.url",
         "url_pdf": lesson.get("url_pdf", "") or "",
     }
+
+
+_FIGURA_META = ("pie", "alt", "pagina", "ancho", "alto", "origen", "mapeo", "hash")
+_MEDIOS_LEGACY = (("url_audio", "audio", "narracion", "audio"),
+                  ("url_video", "video", "principal", "video"),
+                  ("url_pdf", "pdf", "descarga", "pdf"))
+
+
+def _recursos_spec(lesson: dict[str, Any]) -> tuple[list[dict[str, Any]], bool, set[str]]:
+    """(recursos, reemplazar_todo, roles_a_reemplazar) desde el JSON de la lección.
+
+    - ``recursos`` (formato actual) → reemplazo completo por clave.
+    - JSON previos: ``imagenes`` → figuras (reemplaza solo el rol figura) y
+      ``url_audio/url_video/url_pdf`` reales → recursos (upsert sin borrar nada).
+    """
+    items: list[dict[str, Any]] = []
+    roles: set[str] = set()
+    todo = isinstance(lesson.get("recursos"), list)
+    if todo:
+        items.extend(r for r in lesson["recursos"] if isinstance(r, dict) and r.get("clave"))
+    elif isinstance(lesson.get("imagenes"), list):
+        roles.add("figura")
+        for k, img in enumerate(lesson["imagenes"], start=1):
+            clave = img.get("clave") or (f"F-{img['hash'][:10]}" if img.get("hash") else f"F-{k}")
+            items.append({"tipo": "imagen", "rol": "figura", "clave": clave, "url": img.get("url") or "",
+                          "orden": img.get("orden") or k,
+                          "meta": {key: img.get(key) for key in _FIGURA_META if img.get(key) is not None}})
+    claves = {r["clave"] for r in items}
+    for campo, tipo, rol, clave in _MEDIOS_LEGACY:
+        url = lesson.get(campo) or ""
+        ya_hay = clave in claves or any(r.get("tipo") == tipo for r in items)
+        if url and url != PLACEHOLDER_URL and not ya_hay:
+            items.append({"tipo": tipo, "rol": rol, "clave": clave, "url": url, "orden": 1000})
+    return items, todo, roles
+
+
+def _sync_recursos(leccion: Leccion, lesson: dict[str, Any], summary: "ImportSummary") -> None:
+    """Upsert de ``LeccionRecurso`` por ``(leccion, clave)`` + espejo ``url_*``.
+
+    Recursos sin ``url`` (archivo local aún no publicado con ``publish_media``) no se
+    crean, pero tampoco borran el que ya estuviera publicado con esa clave.
+    """
+    items, todo, roles = _recursos_spec(lesson)
+    keep: set[str] = set()
+    for r in items:
+        keep.add(r["clave"])
+        if not r.get("url"):
+            summary.add("recurso_sin_url")
+            continue
+        _obj, created = LeccionRecurso.objects.update_or_create(
+            leccion=leccion, clave=str(r["clave"])[:64],
+            defaults={
+                "tipo": r.get("tipo") or "imagen",
+                "rol": r.get("rol") or "figura",
+                "url": r["url"],
+                "orden": int(r.get("orden") or 0),
+                "titulo": str(r.get("titulo") or "")[:255],
+                "meta": r.get("meta") or {},
+            },
+        )
+        summary.add("recurso_create" if created else "recurso_update")
+    stale = LeccionRecurso.objects.filter(leccion=leccion).exclude(clave__in=keep)
+    if not todo:
+        stale = stale.filter(rol__in=roles) if roles else stale.none()
+    n = stale.count()
+    if n:
+        for obj in stale:          # uno a uno: dispara la señal del espejo
+            obj.delete()
+        summary.add("recurso_delete", n)
+    sync_media_mirror(leccion)
 
 
 def _would_update(model, **lookup: Any) -> bool:
@@ -171,27 +242,7 @@ def import_a2_course(
                 )
                 summary.add("fuente_create")
 
-            # Figuras del libro (``extract_images``): si la lección trae la clave se
-            # reemplazan; si no la trae, se conservan las existentes.
-            if isinstance(lesson.get("imagenes"), list):
-                LeccionImagen.objects.filter(leccion=leccion).delete()
-                for img in lesson["imagenes"]:
-                    if not img.get("url"):
-                        continue                    # extraída sin subir (--sin-subir)
-                    LeccionImagen.objects.create(
-                        leccion=leccion,
-                        url=img["url"],
-                        orden=int(img.get("orden") or 0),
-                        pagina=img.get("pagina") or None,
-                        pie=str(img.get("pie") or "")[:255],
-                        alt=str(img.get("alt") or "")[:500],
-                        ancho=int(img.get("ancho") or 0),
-                        alto=int(img.get("alto") or 0),
-                        origen=img.get("origen") or "pdf",
-                        mapeo=img.get("mapeo") or "",
-                        hash=img.get("hash") or "",
-                    )
-                    summary.add("imagen_create")
+            _sync_recursos(leccion, lesson, summary)
 
         if prune:
             stale = Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)

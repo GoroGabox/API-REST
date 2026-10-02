@@ -179,31 +179,50 @@ class LeccionFuente(models.Model):
     def __str__(self):
         return f"{self.leccion.nombre} / {self.fuente_nombre} pp. {self.pagina_inicio}-{self.pagina_fin}"
 
-class LeccionImagen(models.Model):
-    """Figura del libro asociada a una lección (extraída por ``extract_images``).
+class LeccionRecurso(models.Model):
+    """Todo lo que acompaña al texto de una lección: figuras, audio, video, PDFs.
 
-    Se muestra como figura/galería junto al contenido; ``orden`` sigue la posición en
-    el libro. ``mapeo`` indica cómo se ubicó (texto | pagina | unidad) para revisión.
+    El texto vive en ``Leccion.contenido`` (Markdown). Las figuras se insertan en él
+    con marcadores ``{{figura:<clave>}}`` (los pone el redactor del pipeline); el
+    cliente reemplaza cada marcador por el recurso con esa ``clave``. Los recursos no
+    referenciados se muestran aparte (galería, reproductor, descargas) según ``rol``.
+
+    ``meta`` (JSON) guarda lo específico del tipo: ``pie``, ``alt``, ``pagina``,
+    ``paginas``, ``ancho``, ``alto``, ``duracion_seg``, ``origen``, ``mapeo``, ``hash``…
+    Los campos ``Leccion.url_audio/url_video/url_pdf`` son un ESPEJO de compatibilidad
+    que se rellena desde aquí (``schools.services.sync_media_mirror``).
     """
-    ORIGEN_CHOICES = [('pdf', 'PDF'), ('docx', 'Word')]
+    TIPO_CHOICES = [
+        ('imagen', 'Imagen'),
+        ('audio', 'Audio'),
+        ('video', 'Video'),
+        ('pdf', 'PDF'),
+    ]
+    ROL_CHOICES = [
+        ('figura', 'Figura del libro'),
+        ('narracion', 'Narración (audio de la lectura)'),
+        ('principal', 'Medio principal'),
+        ('paginas_libro', 'Páginas del libro'),
+        ('descarga', 'Descarga'),
+    ]
 
-    leccion = models.ForeignKey(Leccion, on_delete=models.CASCADE, related_name="imagenes")
+    leccion = models.ForeignKey(Leccion, on_delete=models.CASCADE, related_name="recursos")
+    tipo = models.CharField(max_length=10, choices=TIPO_CHOICES)
+    rol = models.CharField(max_length=20, choices=ROL_CHOICES, default='figura')
+    clave = models.CharField(max_length=64)          # id del marcador ({{figura:<clave>}}) o 'audio', 'paginas'…
     url = models.URLField(max_length=500)
     orden = models.IntegerField(default=0)
-    pagina = models.IntegerField(null=True, blank=True)
-    pie = models.CharField(max_length=255, blank=True, default='')
-    alt = models.CharField(max_length=500, blank=True, default='')
-    ancho = models.IntegerField(default=0)
-    alto = models.IntegerField(default=0)
-    origen = models.CharField(max_length=10, choices=ORIGEN_CHOICES, default='pdf')
-    mapeo = models.CharField(max_length=20, blank=True, default='')
-    hash = models.CharField(max_length=64, blank=True, default='')
+    titulo = models.CharField(max_length=255, blank=True, default='')
+    meta = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["orden", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["leccion", "clave"], name="uniq_recurso_leccion_clave"),
+        ]
 
     def __str__(self):
-        return f"{self.leccion_id} · figura {self.orden}"
+        return f"{self.leccion_id} · {self.tipo}/{self.rol} · {self.clave}"
 
 
 class Glosario(models.Model):
@@ -230,7 +249,8 @@ class Recurso(models.Model):
     descripcion = models.CharField(max_length=500, blank=True, default='')
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True)
     curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True, related_name='recursos')
-    leccion = models.ForeignKey('Leccion', on_delete=models.SET_NULL, null=True, blank=True, related_name='recursos')
+    leccion = models.ForeignKey('Leccion', on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='recursos_biblioteca')  # 'recursos' = LeccionRecurso
     tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='pdf')
     url = models.URLField()
     paginas = models.IntegerField(null=True, blank=True)

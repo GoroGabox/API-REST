@@ -92,6 +92,38 @@ def _band_max(plan: dict[str, Any]) -> int:
     return int(((plan.get("resumen") or {}).get("banda") or {}).get("max") or 1200)
 
 
+def _n_paras(texto: str) -> int:
+    return len([x for x in re.split(r"\n\s*\n", str(texto or "")) if x.strip()])
+
+
+def _shift_figs(figs: list[dict[str, Any]] | None, delta: int) -> list[dict[str, Any]]:
+    """Figuras de la 2ª lección al unir: su párrafo se desplaza (-1 = tras el último de la 1ª)."""
+    out = []
+    for f in figs or []:
+        par = f.get("parrafo")
+        out.append(dict(f, parrafo=None if par is None else int(par) + delta))
+    return out
+
+
+def _split_figs(figs: list[dict[str, Any]] | None, k: int, por_parrafo: bool):
+    """Reparte las figuras al dividir en el trozo ``k``: van con su párrafo."""
+    a, b = [], []
+    for f in figs or []:
+        par = f.get("parrafo")
+        if por_parrafo and par is not None and int(par) >= k:
+            b.append(dict(f, parrafo=int(par) - k))
+        else:
+            a.append(dict(f))
+    return a, b
+
+
+def _find_fig(lec: dict[str, Any], fid: str) -> int:
+    for i, f in enumerate(lec.get("figuras") or []):
+        if f.get("id") == fid:
+            return i
+    raise ReviewConflict(f"la figura {fid} ya no está en la lección")
+
+
 def merge_lessons(a: dict[str, Any], b: dict[str, Any], band_max: int) -> dict[str, Any]:
     pgs = [p for p in (a.get("paginas"), b.get("paginas")) if p and p[0]]
     out = dict(a)
@@ -103,6 +135,8 @@ def merge_lessons(a: dict[str, Any], b: dict[str, Any], band_max: int) -> dict[s
         palabras_fuente=int(a.get("palabras_fuente") or 0) + int(b.get("palabras_fuente") or 0),
         palabras_objetivo=max(int(a.get("palabras_objetivo") or 0), int(b.get("palabras_objetivo") or 0)) or band_max,
     )
+    if a.get("figuras") or b.get("figuras"):
+        out["figuras"] = [dict(f) for f in a.get("figuras") or []] + _shift_figs(b.get("figuras"), _n_paras(a.get("texto")))
     return out
 
 
@@ -121,6 +155,8 @@ def split_lesson(lec: dict[str, Any], k: int) -> list[dict[str, Any]]:
     base = _strip_parte(lec.get("nombre", "")) or lec.get("nombre", "")
     a = dict(lec, id=f"{lec.get('id')}-a", nombre=base, texto=a_txt, palabras_fuente=wa, paginas=pa)
     b = dict(lec, id=f"{lec.get('id')}-b", nombre=f"{base} (cont.)", texto=b_txt, palabras_fuente=wb, paginas=pb)
+    if "figuras" in lec:
+        a["figuras"], b["figuras"] = _split_figs(lec.get("figuras"), k, _n_paras(lec.get("texto")) >= 2)
     return [a, b]
 
 
@@ -206,6 +242,22 @@ def apply_structure_op(plan: dict[str, Any], cambio: dict[str, Any], target: dic
                 "categoria": units[ui].get("categoria", "General"),
                 "paginas": [0, 0], "palabras": 0, "lecciones": rest,
             })
+        elif op == "figura_quitar":
+            figs = lessons[li].get("figuras") or []
+            del figs[_find_fig(lessons[li], str(args["figura"]))]
+        elif op == "figura_pie":
+            fig = lessons[li]["figuras"][_find_fig(lessons[li], str(args["figura"]))]
+            fig["pie"] = str(args.get("pie", ""))
+            if "alt" in args:
+                fig["alt"] = str(args["alt"])
+        elif op == "figura_mover":
+            fig = lessons[li]["figuras"].pop(_find_fig(lessons[li], str(args["figura"])))
+            dui, dli = _find_lesson(plan, str(args.get("leccion") or tid))
+            par = args.get("parrafo")
+            fig["parrafo"] = None if par is None else int(par)
+            destino = units[dui]["lecciones"][dli].setdefault("figuras", [])
+            destino.append(fig)
+            destino.sort(key=lambda f: (10 ** 9 if f.get("parrafo") is None else int(f["parrafo"])))
         elif op == "delete":
             del lessons[li]
         else:

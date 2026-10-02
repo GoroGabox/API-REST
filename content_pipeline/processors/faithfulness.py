@@ -22,6 +22,7 @@ import unicodedata
 from typing import Any
 
 from content_pipeline.processors.clean_text import extract_keywords, shorten_text
+from content_pipeline.processors.figure_markers import strip_markers
 from content_pipeline.processors.lesson_generator import (
     _combined_text,
     _mapping_lookup,
@@ -241,7 +242,7 @@ def audit_lessons(
         if not source:
             continue  # sin fuente: lo cubre la alerta de cobertura, no la de fidelidad
         auditadas += 1
-        content = str(lesson.get("contenido") or "")
+        content = strip_markers(str(lesson.get("contenido") or ""))
 
         figs = _flag_figures(content, book_number_cores, book_units)  # cifras vs TODO el libro
         if figs:
@@ -278,7 +279,7 @@ def audit_lessons_from_plan(
         if not src:
             continue
         auditadas += 1
-        content = str(lesson.get("contenido") or "")
+        content = strip_markers(str(lesson.get("contenido") or ""))
         figs = _flag_figures(content, _source_number_cores(src), _source_figure_units(src))
         if figs:
             figuras.append({"leccion": _label(lesson), "cifras": figs})
@@ -318,7 +319,7 @@ def audit_generated_json(lessons: list[dict[str, Any]]) -> dict[str, Any]:
         if not source:
             continue
         auditadas += 1
-        figs = unsupported_figures(str(lesson.get("contenido") or ""), source)
+        figs = unsupported_figures(strip_markers(str(lesson.get("contenido") or "")), source)
         if figs:
             figuras.append({"leccion": _label(lesson), "cifras": figs})
     return {"auditadas": auditadas, "figuras": figuras}
@@ -486,7 +487,8 @@ def judge_lessons_llm(
     for lesson, source in pairs:
         label = _label(lesson)
         try:
-            res = _judge_one(str(lesson.get("contenido") or ""), source, client=client, model=model)
+            res = _judge_one(strip_markers(str(lesson.get("contenido") or ""), lesson.get("recursos"), modo="pie"),
+                           source, client=client, model=model)
         except Exception as exc:  # noqa: BLE001 — un fallo puntual no tumba la auditoría
             errores.append(f"{label}: {exc}")
             continue

@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 
 from content_pipeline.llm.client import LLMClient, draft_model
+from content_pipeline.processors.figure_markers import strip_markers
 from content_pipeline.processors.faithfulness import (
     _ANY_NUM_RE,
     _num_core,
@@ -64,6 +65,7 @@ class NarrationResult:
 
 def strip_markdown(text: str) -> str:
     """Fallback sin IA: quita la sintaxis Markdown para que se pueda locutar."""
+    text = strip_markers(text)                              # {{figura:…}} no se locuta
     text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)          # code spans/blocks
     text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.MULTILINE)  # headings
     text = re.sub(r"^\s{0,3}[-*+]\s+", "", text, flags=re.MULTILINE)   # bullets
@@ -87,7 +89,7 @@ def build_narration_script_meta(
     if client is None and not LLMClient.is_available():
         return NarrationResult(strip_markdown(contenido))
     client = client or LLMClient()
-    user = NARRATION_USER.format(nombre=nombre, contenido=contenido)
+    user = NARRATION_USER.format(nombre=nombre, contenido=strip_markers(contenido))
     resp = None
     for max_tokens in (MAX_TOKENS, MAX_TOKENS_RETRY):
         resp = client.complete_meta(

@@ -169,6 +169,18 @@
   .flags li::before{content:"● ";font-size:9px;vertical-align:1px}
   .reading{font-family:var(--f-read);font-size:17px;line-height:1.75;color:var(--ink);max-width:66ch}
   .reading p{margin:0 0 1.05em}
+  .figs{margin:var(--s6) 0;padding-top:var(--s5);border-top:1px solid var(--line);font-family:var(--f-ui)}
+  .figs h2{font-size:14px;font-weight:600;margin:0 0 var(--s4)}
+  .figs h2 small{color:var(--muted);font-weight:500}
+  .figcard{display:grid;grid-template-columns:minmax(0,180px) 1fr;gap:var(--s4);margin:0 0 var(--s4);align-items:start}
+  .figcard img,.fig img{max-width:100%;max-height:220px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:6px}
+  .figcard figcaption{display:grid;gap:var(--s1);font-size:13px}
+  .figcard small{color:var(--muted)}
+  .figacts{display:flex;flex-wrap:wrap;gap:var(--s1);margin-top:var(--s1)}
+  .fig{margin:1.2em 0;text-align:center}
+  .fig figcaption{font-family:var(--f-ui);font-size:13px;color:var(--muted);margin-top:.4em}
+  .fig-miss{display:inline-block;font-family:var(--f-ui);font-size:12px;color:var(--c-warn)}
+  @media (max-width:640px){.figcard{grid-template-columns:1fr}}
   .reading h2{font-family:var(--f-read);font-size:20px;font-weight:600;margin:1.6em 0 .5em;line-height:1.3}
   .reading h3{font-family:var(--f-read);font-size:18px;font-weight:600;margin:1.4em 0 .4em}
   .reading ul{margin:0 0 1.05em;padding-left:1.2em}
@@ -501,7 +513,7 @@ function normalizeCourse(raw){
           (l.contenido.questions||[]).map(x=>({q:x.question,opts:x.options,ci:x.correct_index,exp:x.explanation})):null;
         return {uo:l.unidad_orden,un:l.unidad_nombre,cat:l.categoria,tema:l.tema_regulatorio,plan_id:l.plan_id||null,
           nombre:l.nombre,pos:l.posicion,tipo:l.tipo,contenido:q?"":String(l.contenido||""),quiz:q,
-          visual:l.revision_visual||null,
+          visual:l.revision_visual||null,recursos:l.recursos||[],
           fuentes:(l.fuentes||[]).map(s=>({pi:s.pagina_inicio,pf:s.pagina_fin,res:s.fragmento_resumen||""}))};
       })};
   }else c=raw;
@@ -573,12 +585,22 @@ function splitSegments(t){
   if(s.length<2)s=String(t||"").split(/(?<=[.!?])\s+/).map(x=>x.trim()).filter(Boolean);
   return s;
 }
+const nParas=t=>String(t||"").split(/\n\s*\n/).filter(x=>x.trim()).length;
+const shiftFigs=(fs,d)=>(fs||[]).map(f=>Object.assign({},f,{parrafo:f.parrafo==null?null:(+f.parrafo)+d}));
+function splitFigs(fs,k,porParrafo){
+  const a=[],b=[];
+  (fs||[]).forEach(f=>{if(porParrafo&&f.parrafo!=null&&+f.parrafo>=k)b.push(Object.assign({},f,{parrafo:+f.parrafo-k}));else a.push(Object.assign({},f));});
+  return [a,b];
+}
+function findFig(l,fid){const i=(l.figuras||[]).findIndex(f=>f.id===fid);if(i<0)throw new Error("la figura ya no está en la lección");return i;}
 function mergeLessons(a,b,max){
   const pg=[a.paginas,b.paginas].filter(p=>p&&p[0]);
-  return Object.assign({},a,{id:`${a.id}+${b.id}`,nombre:stripParte(a.nombre)||a.nombre,
+  const out=Object.assign({},a,{id:`${a.id}+${b.id}`,nombre:stripParte(a.nombre)||a.nombre,
     paginas:pg.length?[Math.min(...pg.map(p=>p[0])),Math.max(...pg.map(p=>p[1]||p[0]))]:[0,0],
     texto:(a.texto||"")+"\n\n"+(b.texto||""),palabras_fuente:(a.palabras_fuente||0)+(b.palabras_fuente||0),
     palabras_objetivo:Math.max(a.palabras_objetivo||0,b.palabras_objetivo||0)||max});
+  if((a.figuras||[]).length||(b.figuras||[]).length)out.figuras=(a.figuras||[]).map(f=>Object.assign({},f)).concat(shiftFigs(b.figuras,nParas(a.texto)));
+  return out;
 }
 function splitLesson(l,k){
   const segs=splitSegments(l.texto);
@@ -587,8 +609,10 @@ function splitLesson(l,k){
   let pa=[0,0],pb=[0,0];
   if(p[0]){const p1=p[1]||p[0],cut=Math.floor(p[0]+(p1-p[0])*wa/Math.max(1,wa+wb)+0.5);pa=[p[0],cut];pb=[cut,p1];}
   const base=stripParte(l.nombre)||l.nombre;
-  return [Object.assign({},l,{id:l.id+"-a",nombre:base,texto:A,palabras_fuente:wa,paginas:pa}),
+  const out=[Object.assign({},l,{id:l.id+"-a",nombre:base,texto:A,palabras_fuente:wa,paginas:pa}),
           Object.assign({},l,{id:l.id+"-b",nombre:base+" (cont.)",texto:B,palabras_fuente:wb,paginas:pb})];
+  if("figuras" in l)[out[0].figuras,out[1].figuras]=splitFigs(l.figuras,k,nParas(l.texto)>=2);
+  return out;
 }
 function replaceOnce(t,buscar,rep){
   const n=countIn(String(t||""),buscar);
@@ -621,6 +645,11 @@ function applyOp(p,cambio,target){
     else if(op==="new_unit"){if(li===0)throw new Error("la lección ya inicia su unidad");const rest=L.splice(li);
       U.splice(ui+1,0,{id:"U-"+String(rest[0].id).slice(2,10),orden:0,nombre:a.nombre||stripParte(rest[0].nombre)||rest[0].nombre,
         categoria:U[ui].categoria||"General",paginas:[0,0],palabras:0,lecciones:rest});}
+    else if(op==="figura_quitar"){L[li].figuras.splice(findFig(L[li],a.figura),1);}
+    else if(op==="figura_pie"){const f=L[li].figuras[findFig(L[li],a.figura)];f.pie=String(a.pie||"");if("alt" in a)f.alt=String(a.alt);}
+    else if(op==="figura_mover"){const [f]=L[li].figuras.splice(findFig(L[li],a.figura),1);const [dui,dli]=findLesson(p,a.leccion||target.id);
+      f.parrafo=a.parrafo==null?null:parseInt(a.parrafo,10);const D=U[dui].lecciones[dli];D.figuras=D.figuras||[];D.figuras.push(f);
+      D.figuras.sort((x,y)=>(x.parrafo==null?1e9:+x.parrafo)-(y.parrafo==null?1e9:+y.parrafo));}
     else if(op==="delete")L.splice(li,1);
     else throw new Error("operación desconocida");
   }
@@ -631,7 +660,9 @@ function describeOp(c){
   return ({rename:`Renombrar a «${a.nombre}»`,categoria:`Categoría: ${a.categoria}`,cap:`Tope de ${fmt(a.palabras_objetivo)} palabras`,
     reorder:a.dir<0?"Subir una posición":"Bajar una posición",move_unit:a.dir<0?"Subir la unidad":"Bajar la unidad",
     merge:"Unir con la lección siguiente",merge_unit:"Unir con la unidad siguiente",split:`Dividir antes del párrafo ${+a.k+1}`,
-    move:"Mover a otra unidad",new_unit:"Iniciar una unidad nueva aquí",delete:"Quitar del curso",texto:"Corregir el texto fuente"})[c.op]||c.op;
+    move:"Mover a otra unidad",new_unit:"Iniciar una unidad nueva aquí",delete:"Quitar del curso",texto:"Corregir el texto fuente",
+    figura_quitar:"Quitar la figura",figura_pie:`Pie de figura: «${a.pie||""}»`,
+    figura_mover:a.leccion?"Mover la figura a otra lección":(a.parrafo==null?"Ubicar la figura al final":`Ubicar la figura tras el párrafo ${+a.parrafo+1}`)})[c.op]||c.op;
 }
 
 /* historial: plan + observaciones */
@@ -1073,6 +1104,37 @@ function renderPlanUnit(e,unit,ui){
     <div class="ulist">${rows}</div>
     ${pagerHTML(U[ui-1]&&[U[ui-1].id,U[ui-1].nombre],U[ui+1]&&[U[ui+1].id,U[ui+1].nombre],"Unidad")}`;
 }
+/* ---------- Figuras del libro (plan: figuras[]; curso: recursos[] + {{figura:ID}}) ---------- */
+const FIG_RE=/\{\{figura:([A-Za-z0-9_-]+)\}\}/g;
+function figSrc(f){return f.url||f.archivo||f.archivo_local||"";}
+function figImg(src,alt){return src?`<img src="${esc(src)}" alt="${esc(alt||"")}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'fig-miss',textContent:'(imagen no disponible en este equipo)'}))">`:`<span class="fig-miss">(sin archivo)</span>`;}
+function withFigures(html,recursos){
+  const by={};(recursos||[]).forEach(r=>{if(r.tipo==="imagen")by[r.clave]=r;});
+  return html.replace(FIG_RE,(m,id)=>{const r=by[id];if(!r)return `<span class="fig-miss">[figura ${esc(id)} sin recurso]</span>`;
+    const pie=(r.meta||{}).pie||"";return `<figure class="fig">${figImg(figSrc(r),(r.meta||{}).alt||pie)}${pie?`<figcaption>${esc(pie)}</figcaption>`:""}</figure>`;});
+}
+function figsPanelHTML(l,all,k){
+  const fs=l.figuras||[];if(!fs.length)return "";
+  const segs=String(l.texto||"").split(/\n\s*\n/).map(x=>x.trim()).filter(Boolean),n=segs.length;
+  const can=isAud()||canStruct(),prev=all[k-1]&&all[k-1].l,next=all[k+1]&&all[k+1].l;
+  const where=f=>f.parrafo==null?"Sin ubicar en el texto (asignada por página)":(+f.parrafo<0?"Al inicio de la lección":`Tras el párrafo ${+f.parrafo+1}: «${esc(String(segs[+f.parrafo]||"").slice(0,90))}…»`);
+  return `<section class="figs"><h2>Figuras del libro <small>${fs.length}</small></h2>${fs.map(f=>{
+    const par=f.parrafo==null?"":String(f.parrafo),d=`data-fid="${esc(f.id)}" data-lid="${esc(l.id)}"`;
+    return `<figure class="figcard">${figImg(figSrc(f),f.alt||f.pie)}<figcaption><b>${esc(f.pie||"(sin pie)")}</b>
+      <small>${where(f)} · pág. ${esc(String(f.pagina??"–"))} · ${esc(f.mapeo||"")}</small>
+      ${can?`<span class="figacts">
+        <button class="btn" data-act="fig-pie" ${d} data-pie="${esc(f.pie||"")}">Pie</button>
+        <button class="btn" data-act="fig-up" ${d} data-par="${par===""?n:par}" ${par!==""&&+par<0?"disabled":""}>↑ Párrafo</button>
+        <button class="btn" data-act="fig-down" ${d} data-par="${par===""?-2:par}" ${par!==""&&+par>=n-1?"disabled":""}>↓ Párrafo</button>
+        ${prev?`<button class="btn" data-act="fig-to" ${d} data-to="${esc(prev.id)}" data-par="${nParas(prev.texto)-1}">← Lección anterior</button>`:""}
+        ${next?`<button class="btn" data-act="fig-to" ${d} data-to="${esc(next.id)}" data-par="-1">Lección siguiente →</button>`:""}
+        <button class="btn danger" data-act="fig-del" ${d}>Quitar</button></span>`:""}
+    </figcaption></figure>`;}).join("")}</section>`;
+}
+function figOp(b,cambio,msg){
+  const e=E(),[ui,li]=findLesson(e.plan,b.dataset.lid),u=e.plan.unidades[ui],l=u.lecciones[li];
+  structural(cambio,{tipo:"leccion",id:l.id,nombre:l.nombre,clave:`${u.orden}.${li+1}`},msg);
+}
 function renderPage(){
   const e=E(),pg=el("page");state.order={};
   renderToolbar();
@@ -1096,6 +1158,7 @@ function renderPage(){
         <span><i class="cdot-i" style="background:${CAT_COLOR[u.categoria]||CAT_COLOR.General}"></i> ${esc(u.categoria||"General")}</span></div>
       ${al.length?`<ul class="flags">${al.map(a=>`<li>${esc(a)}</li>`).join("")}</ul>`:""}
       ${body}
+      ${figsPanelHTML(l,all,k)}
       ${pagerHTML(all[k-1]&&[all[k-1].l.id,all[k-1].l.nombre],all[k+1]&&[all[k+1].l.id,all[k+1].l.nombre])}`;
     return;
   }
@@ -1125,7 +1188,7 @@ function renderPage(){
           return `<li class="${i===q.ci?"ok":""}"><span class="lt">${String.fromCharCode(65+i)}${i===q.ci?" ✓":""}</span><span class="ot" ${ctxAttrs(co)}>${renderField(co,o,"line")}</span>
             ${i!==q.ci?`<button class="propose" data-act="propose-ci" data-q="${qi}" data-i="${i}">${isAud()?"Proponer como correcta":"Marcar correcta"}</button>`:"<span></span>"}</li>`;}).join("")}</ol>
         ${q.exp?`<div class="qx" ${ctxAttrs(cx)}>${renderField(cx,q.exp,"line")}</div>`:""}</div>`;}).join("");
-  }else{const c={src:"curso",clave:l.clave,campo:"contenido"};body=`<div class="reading" ${ctxAttrs(c)}>${renderField(c,l.contenido,"md")}</div>`;}
+  }else{const c={src:"curso",clave:l.clave,campo:"contenido"};body=`<div class="reading" ${ctxAttrs(c)}>${withFigures(renderField(c,l.contenido,"md"),l.recursos)}</div>`;}
   const got=words(l.contenido),cap=planL&&planL.palabras_objetivo;
   pg.innerHTML=`<button class="eyebrow link" data-go="U${l.uo}" title="Ver la unidad">Unidad ${l.uo} · ${esc(u.nombre||l.un||"")}</button>
     <h1 class="ttl">${esc(l.nombre)}</h1>
@@ -1452,6 +1515,11 @@ function act(a,b){
       saveFile(planFileName(e),JSON.stringify(out,null,2));},
     "to-rev":()=>setView("revision"),"to-plan":()=>setView("estructura"),export:exportReview,
     "split-off":()=>{state.split=null;renderPage();},
+    "fig-del":()=>figOp(b,{op:"figura_quitar",args:{figura:b.dataset.fid}},"Figura quitada"),
+    "fig-pie":()=>{const v=window.prompt("Pie de figura",b.dataset.pie||"");if(v!=null&&v!==b.dataset.pie)figOp(b,{op:"figura_pie",args:{figura:b.dataset.fid,pie:v}},"Pie actualizado");},
+    "fig-up":()=>figOp(b,{op:"figura_mover",args:{figura:b.dataset.fid,parrafo:+b.dataset.par-1}},"Figura movida"),
+    "fig-down":()=>figOp(b,{op:"figura_mover",args:{figura:b.dataset.fid,parrafo:+b.dataset.par+1}},"Figura movida"),
+    "fig-to":()=>figOp(b,{op:"figura_mover",args:{figura:b.dataset.fid,leccion:b.dataset.to,parrafo:b.dataset.par===""?null:+b.dataset.par}},"Figura movida a otra lección"),
     cut:()=>{const {cur}=currentPlan();state.split=null;structural({op:"split",args:{k:+b.dataset.k}},{tipo:"leccion",id:cur.l.id,nombre:cur.l.nombre,clave:`${cur.u.orden}.${cur.li+1}`},"Lección dividida");},
     "propose-ci":()=>{const {cur}=currentCourse(),qi=+b.dataset.q,i=+b.dataset.i;
       commit(newItem("contenido",targetForCtx({src:"curso",clave:cur.clave,campo:"pregunta",q:qi}),{tipo:"sugerencia",severidad:"critica",cambio:{campo:"correcta",valor:i},motivo:""}),

@@ -114,7 +114,7 @@ class PdfExtractionTests(_TmpMixin, SimpleTestCase):
         figs, _ = extract_pdf_figures(_pdf(self.tmp))
         asignadas, sin = map_figures_to_plan(figs, _plan())
         self.assertEqual(sin, [])
-        self.assertEqual([m for _f, m in asignadas["L-a"]], ["texto"])
+        self.assertEqual([(m, par) for _f, m, par in asignadas["L-a"]], [("texto", 0)])  # tras el párrafo 0
         self.assertEqual(len(asignadas["L-b"]), 1)
 
 
@@ -207,7 +207,8 @@ class CommandAndImportTests(_TmpMixin, TestCase):
     def _course(self):
         lessons = [
             {"unidad_orden": 1, "nombre": "Revisión previa", "posicion": 1, "tipo": "texto", "categoria": "General",
-             "contenido": "c", "plan_id": "L-a", "fuentes": []},
+             "contenido": "c", "plan_id": "L-a",
+             "fuentes": [{"fuente_nombre": "Libro", "pagina_inicio": 1, "pagina_fin": 2}]},
             {"unidad_orden": 1, "nombre": "Tablero y señales", "posicion": 2, "tipo": "texto",
              "categoria": "General", "contenido": "c", "plan_id": "L-b", "fuentes": []},
         ]
@@ -215,43 +216,65 @@ class CommandAndImportTests(_TmpMixin, TestCase):
                     "unidades": [{"orden": 1, "nombre": "U1", "categoria": "General"}]}
         return {"manifest": manifest, "lessons": lessons}
 
-    def test_command_uploads_maps_and_import_creates_images(self):
-        from django.core.management import call_command
-        from schools.models import Leccion, LeccionImagen
-        from schools.serializers import LeccionDetalleSerializer
-        from content_pipeline.exporters.django_importer import import_generated_course
-
-        plan_p, course_p, out_p = self.tmp / "plan.json", self.tmp / "c.json", self.tmp / "c_img.json"
-        plan_p.write_text(json.dumps(_plan()), encoding="utf-8")
-        course_p.write_text(json.dumps(self._course()), encoding="utf-8")
-        call_command("extract_images", plan=str(plan_p), course=str(course_p), contenido=str(_pdf(self.tmp)),
-                     out=str(out_p), storage="local", media_dir=str(self.tmp / "media"),
-                     base_url="http://x/img/", stdout=io.StringIO(), stderr=io.StringIO())
-        data = json.loads(out_p.read_text(encoding="utf-8"))
-        img = data["lessons"][0]["imagenes"][0]
-        self.assertTrue(img["url"].startswith("http://x/img/IMG/"))
-        self.assertEqual((img["pie"], img["mapeo"], img["pagina"]), ("Indicador de combustible", "texto", 1))
-        self.assertEqual(data["imagenes_meta"]["asignadas"], 2)
-
-        import_generated_course(data["manifest"], data["lessons"])
-        lec = Leccion.objects.get(nombre="Revisión previa")
-        self.assertEqual(lec.imagenes.count(), 1)
-        self.assertEqual(LeccionDetalleSerializer(lec).data["imagenes"][0]["pie"], "Indicador de combustible")
-        # Re-import reemplaza (no duplica); una lección sin la clave conserva sus figuras.
-        import_generated_course(data["manifest"], data["lessons"])
-        self.assertEqual(LeccionImagen.objects.filter(leccion=lec).count(), 1)
-        data["lessons"][0].pop("imagenes")
-        import_generated_course(data["manifest"], data["lessons"])
-        self.assertEqual(LeccionImagen.objects.filter(leccion=lec).count(), 1)
-
-    def test_sin_subir_keeps_local_files_and_import_skips_them(self):
+    def _extract(self):
         from django.core.management import call_command
         plan_p, course_p, out_p = self.tmp / "plan.json", self.tmp / "c.json", self.tmp / "out" / "c_img.json"
         plan_p.write_text(json.dumps(_plan()), encoding="utf-8")
         course_p.write_text(json.dumps(self._course()), encoding="utf-8")
-        call_command("extract_images", plan=str(plan_p), course=str(course_p), contenido=str(_pdf(self.tmp)),
-                     out=str(out_p), sin_subir=True, stdout=io.StringIO(), stderr=io.StringIO())
-        img = json.loads(out_p.read_text(encoding="utf-8"))["lessons"][0]["imagenes"][0]
-        self.assertEqual(img["url"], "")
-        self.assertTrue(Path(img["archivo_local"]).exists())
-        self.assertIn("img_IMG", img["archivo_local"])
+        self.pdf = _pdf(self.tmp)
+        call_command("extract_images", plan=str(plan_p), course=str(course_p), contenido=str(self.pdf),
+                     out=str(out_p), stdout=io.StringIO(), stderr=io.StringIO())
+        return out_p
+
+    def test_extract_writes_local_figure_resources(self):
+        out_p = self._extract()
+        data = json.loads(out_p.read_text(encoding="utf-8"))
+        rec = data["lessons"][0]["recursos"][0]
+        self.assertEqual((rec["tipo"], rec["rol"], rec["url"]), ("imagen", "figura", ""))
+        self.assertTrue(rec["clave"].startswith("F-"))
+        self.assertEqual((rec["meta"]["pie"], rec["meta"]["mapeo"], rec["meta"]["parrafo"]),
+                         ("Indicador de combustible", "texto", 0))
+        self.assertTrue((out_p.parent / rec["archivo_local"]).exists())       # relativo al JSON
+        self.assertEqual(data["imagenes_meta"]["asignadas"], 2)
+
+    def test_publish_and_import(self):
+        from django.core.management import call_command
+        from schools.models import Leccion, LeccionRecurso
+        from schools.serializers import LeccionDetalleSerializer
+        from content_pipeline.exporters.django_importer import import_generated_course
+
+        out_p = self._extract()
+        # Sin publicar: import no crea figuras (no tienen URL).
+        data = json.loads(out_p.read_text(encoding="utf-8"))
+        import_generated_course(data["manifest"], data["lessons"])
+        self.assertEqual(LeccionRecurso.objects.count(), 0)
+
+        pub_p = self.tmp / "pub.json"
+        call_command("publish_media", file=str(out_p), out=str(pub_p), storage="local",
+                     media_dir=str(self.tmp / "media"), base_url="http://x/media/",
+                     paginas_libro=True, contenido=str(self.pdf), stdout=io.StringIO(), stderr=io.StringIO())
+        data = json.loads(pub_p.read_text(encoding="utf-8"))
+        recs = {r["clave"]: r for r in data["lessons"][0]["recursos"]}
+        fig = next(r for r in recs.values() if r["rol"] == "figura")
+        self.assertTrue(fig["url"].startswith("http://x/media/course_images/IMG/"))
+        pag = recs["paginas"]
+        self.assertEqual((pag["tipo"], pag["rol"], pag["titulo"]), ("pdf", "paginas_libro", "Páginas del libro (1-2)"))
+        self.assertTrue(pag["url"].endswith("course_docs/IMG/paginas_001-002.pdf"))
+        pdf_local = self.tmp / "media" / "course_docs" / "IMG" / "paginas_001-002.pdf"
+        self.assertEqual(len(fitz.open(str(pdf_local))), 2)                   # solo sus 2 páginas
+        self.assertEqual(data["medios_meta"]["faltantes"], 0)
+
+        # Re-publicar no re-sube (idempotente).
+        pub2 = self.tmp / "pub2.json"
+        call_command("publish_media", file=str(out_p), out=str(pub2), storage="local",
+                     media_dir=str(self.tmp / "media"), base_url="http://x/media/",
+                     stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual(json.loads(pub2.read_text(encoding="utf-8"))["medios_meta"]["subidos"], 0)
+
+        data = json.loads((self.tmp / "pub.json").read_text(encoding="utf-8"))
+        import_generated_course(data["manifest"], data["lessons"])
+        lec = Leccion.objects.get(nombre="Revisión previa")
+        self.assertEqual(lec.recursos.filter(rol="figura").count(), 1)
+        detalle = LeccionDetalleSerializer(lec).data
+        self.assertEqual(detalle["imagenes"][0]["pie"], "Indicador de combustible")
+        self.assertTrue(detalle["url_pdf"].endswith("paginas_001-002.pdf"))   # espejo

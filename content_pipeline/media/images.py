@@ -146,7 +146,8 @@ def _ruido_key(text: str) -> str:
 
 def _es_pie(text: str) -> bool:
     t = text.strip()
-    return bool(t) and not t.isdigit() and not re.match(r"^([•·●▪◦\-–—*]|\d{1,2}[.)])\s", t)
+    # Un pie no es un número suelto, una viñeta ni una frase que introduce otra ("…:").
+    return bool(t) and not t.isdigit() and not t.endswith(":") and not re.match(r"^([•·●▪◦\-–—*]|\d{1,2}[.)])\s", t)
 
 
 def _pos_key(bbox) -> tuple:
@@ -396,9 +397,31 @@ def _flat_lessons(plan: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for ui, u in enumerate(plan.get("unidades") or []):
         for lec in u.get("lecciones") or []:
-            out.append({"unidad": ui, "leccion": lec, "norm": " " + _norm(lec.get("texto", "")) + " ",
+            paras = [_norm(p) for p in str(lec.get("texto", "")).split("\n\n")]
+            # " p0 p1 p2 " con el inicio de cada párrafo (para ubicar la figura entre párrafos).
+            norm, starts = " ", []
+            for para in paras:
+                starts.append(len(norm))
+                norm += (para + " ") if para else ""
+            out.append({"unidad": ui, "leccion": lec, "norm": norm, "starts": starts,
                         "paginas": lec.get("paginas") or [0, 0]})
     return out
+
+
+def _parrafo(lesson: dict[str, Any], needle: str, *, despues_de_ancla: bool) -> int | None:
+    """Índice del párrafo TRAS el cual va la figura (-1 = antes del primero).
+
+    Ancla previa (texto antes de la figura) → tras el párrafo donde TERMINA el ancla;
+    ancla posterior → antes del párrafo donde EMPIEZA.
+    """
+    from bisect import bisect_right
+
+    pos = lesson["norm"].find(f" {needle} ")
+    if pos < 0:
+        return None
+    if despues_de_ancla:
+        return bisect_right(lesson["starts"], pos + len(needle)) - 1
+    return bisect_right(lesson["starts"], pos + 1) - 2
 
 
 def _pick(cands: list[dict[str, Any]], fig: Figura) -> dict[str, Any]:
@@ -413,26 +436,31 @@ def _pick(cands: list[dict[str, Any]], fig: Figura) -> dict[str, Any]:
 
 
 def map_figures_to_plan(figs: list[Figura], plan: dict[str, Any], *, por_archivo: bool = False
-                        ) -> tuple[dict[str, list[tuple[Figura, str]]], list[Figura]]:
-    """``({lesson_id: [(figura, mapeo)]}, sin_leccion)``; mapeo = texto | pagina | unidad.
+                        ) -> tuple[dict[str, list[tuple[Figura, str, int | None]]], list[Figura]]:
+    """``({lesson_id: [(figura, mapeo, parrafo)]}, sin_leccion)``.
 
+    ``mapeo`` = texto | pagina | unidad. ``parrafo`` = índice del párrafo del ``texto`` de
+    la lección (separado por líneas en blanco) tras el cual aparece la figura en el libro
+    (-1 = antes del primero; ``None`` si se ubicó solo por página/unidad).
     ``por_archivo``: las figuras vienen de una carpeta de capítulos (``archivo`` = índice
     de unidad) → se busca primero en esa unidad y el respaldo es su primera lección.
     """
     lessons = _flat_lessons(plan)
     # Páginas informativas: los planes desde Word traen [1, 1] en todas las lecciones.
     paginas_utiles = len({tuple(l["paginas"]) for l in lessons}) > 1
-    asignadas: dict[str, list[tuple[Figura, str]]] = defaultdict(list)
+    asignadas: dict[str, list[tuple[Figura, str, int | None]]] = defaultdict(list)
     sin: list[Figura] = []
     for fig in figs:
         pool = [l for l in lessons if l["unidad"] == fig.archivo] if por_archivo else lessons
-        elegido, mapeo = None, ""
+        elegido, mapeo, parrafo = None, "", None
         for texto, desde_final in ((fig.ancla_antes, True), (fig.ancla_despues, False)):
             for nd in _needles(texto, desde_final=desde_final):
-                cands = [l for l in pool if f" {nd} " in l["norm"]] or \
-                        ([l for l in lessons if f" {nd} " in l["norm"]] if por_archivo else [])
+                cands = [l for l in pool if f" {nd} " in l["norm"]]
+                if not cands and por_archivo:
+                    cands = [l for l in lessons if f" {nd} " in l["norm"]]
                 if cands:
                     elegido, mapeo = _pick(cands, fig), "texto"
+                    parrafo = _parrafo(elegido, nd, despues_de_ancla=desde_final)
                     break
             if elegido:
                 break
@@ -445,10 +473,52 @@ def map_figures_to_plan(figs: list[Figura], plan: dict[str, Any], *, por_archivo
         if elegido is None:
             sin.append(fig)
             continue
-        asignadas[elegido["leccion"].get("id", "")].append((fig, mapeo))
+        asignadas[elegido["leccion"].get("id", "")].append((fig, mapeo, parrafo))
     for lst in asignadas.values():
         lst.sort(key=lambda x: x[0].orden)
     return dict(asignadas), sin
+
+
+def save_figures(asignadas: dict[str, list[tuple[Figura, str, int | None]]], out_dir: str | Path, *,
+                 rel_to: str | Path | None = None, descripciones: dict[str, dict[str, Any]] | None = None,
+                 ) -> tuple[dict[str, list[dict[str, Any]]], Counter]:
+    """Escribe las figuras en ``out_dir`` y arma sus entradas por lección.
+
+    Entrada: ``{id, archivo, pagina, parrafo, pie, alt, ancho, alto, mapeo, hash, ext}``.
+    ``archivo`` queda relativo a ``rel_to`` (la carpeta del JSON que lo referencia).
+    Las figuras que la IA marcó como decorativas (``relevante: false``) se omiten.
+    """
+    import os
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    descripciones = descripciones or {}
+    motivos: Counter = Counter()
+    por_leccion: dict[str, list[dict[str, Any]]] = {}
+    for lid, lst in asignadas.items():
+        entradas = []
+        for fig, mapeo, parrafo in lst:
+            desc = descripciones.get(fig.hash) or {}
+            if desc and not desc.get("relevante", True):
+                motivos["decorativa_ia"] += 1
+                continue
+            target = out_dir / f"{fig.hash[:16]}.{fig.ext}"
+            if not target.exists():
+                target.write_bytes(fig.data)
+            try:
+                archivo = os.path.relpath(target, rel_to) if rel_to else str(target)
+            except ValueError:            # otra unidad de disco (Windows): ruta absoluta
+                archivo = str(target.resolve())
+            pie = desc.get("pie") or fig.pie_libro
+            entradas.append({
+                "id": f"F-{fig.hash[:10]}", "archivo": Path(archivo).as_posix(), "pagina": fig.pagina,
+                "parrafo": parrafo, "pie": pie, "alt": desc.get("alt") or pie,
+                "ancho": fig.ancho, "alto": fig.alto, "origen": fig.origen, "mapeo": mapeo,
+                "hash": fig.hash, "ext": fig.ext,
+            })
+        if entradas:
+            por_leccion[lid] = entradas
+    return por_leccion, motivos
 
 
 # ---------------------------------------------------------------------------

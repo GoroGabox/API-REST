@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    Escuela, Curso, Leccion, LeccionImagen, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
+    Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
     PREGUNTAS_SESION_TEMATICA,
 )
 
@@ -83,24 +83,42 @@ class LeccionSerializer(serializers.ModelSerializer):
         ]
 
 
-class LeccionImagenSerializer(serializers.ModelSerializer):
+class LeccionRecursoSerializer(serializers.ModelSerializer):
     class Meta:
-        model = LeccionImagen
-        fields = ['id', 'url', 'orden', 'pagina', 'pie', 'alt', 'ancho', 'alto']
+        model = LeccionRecurso
+        fields = ['id', 'tipo', 'rol', 'clave', 'url', 'orden', 'titulo', 'meta']
 
 
 class LeccionDetalleSerializer(serializers.ModelSerializer):
-    """Detalle completo: incluye contenido + transcripción + figuras del libro."""
+    """Detalle completo: contenido + transcripción + recursos.
+
+    ``recursos``: figuras, audio, video y PDFs (``LeccionRecurso``); las figuras se
+    insertan en ``contenido`` con ``{{figura:<clave>}}``. ``imagenes`` y ``url_*`` se
+    mantienen por compatibilidad con clientes previos (derivados de ``recursos``).
+    """
     unidad_orden = serializers.IntegerField(source='unidad.orden', read_only=True)
     unidad_nombre = serializers.CharField(source='unidad.nombre', read_only=True)
-    imagenes = LeccionImagenSerializer(many=True, read_only=True)
+    recursos = LeccionRecursoSerializer(many=True, read_only=True)
+    imagenes = serializers.SerializerMethodField()
+
+    def get_imagenes(self, obj):
+        meta_int = lambda m, k: int(m.get(k) or 0)  # noqa: E731
+        return [
+            {
+                'id': r.id, 'clave': r.clave, 'url': r.url, 'orden': r.orden,
+                'pagina': (r.meta or {}).get('pagina'),
+                'pie': (r.meta or {}).get('pie') or '', 'alt': (r.meta or {}).get('alt') or '',
+                'ancho': meta_int(r.meta or {}, 'ancho'), 'alto': meta_int(r.meta or {}, 'alto'),
+            }
+            for r in obj.recursos.all() if r.tipo == 'imagen'
+        ]
 
     class Meta:
         model = Leccion
         fields = [
             'id', 'curso', 'unidad', 'unidad_orden', 'unidad_nombre',
             'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'contenido', 'transcripcion',
-            'duracion_min', 'url_video', 'url_audio', 'url_pdf', 'imagenes',
+            'duracion_min', 'url_video', 'url_audio', 'url_pdf', 'recursos', 'imagenes',
         ]
 
 

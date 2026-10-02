@@ -16,7 +16,9 @@ import re
 from typing import Any, Iterator
 
 from content_pipeline.llm.client import LLMClient, default_model, parse_json_object
+from content_pipeline.media.recursos import figura_recurso
 from content_pipeline.processors.clean_text import shorten_text
+from content_pipeline.processors.figure_markers import figures_prompt, sanitize_markers
 from content_pipeline.processors.generic_lesson_generator import (
     _quiz_content as _extractive_quiz,
     render_generic_lesson,
@@ -473,6 +475,7 @@ def generate_lessons_llm(
 # desmesuradas.
 _PLAN_SOURCE_CHARS = 30_000
 
+
 FAITHFUL_LESSON_SYSTEM = """\
 Eres un redactor pedagógico de cursos de conducción en Chile. Conviertes un
 EXTRACTO del manual oficial en una lección e-learning clara, en español neutro,
@@ -493,6 +496,9 @@ Reglas:
   lección es breve.
 - Si el extracto trae rótulos de figuras o referencias a imágenes ("ver imagen"),
   no describas la imagen ni inventes lo que muestra: omite la referencia.
+- Si se te entrega una lista de FIGURAS DEL LIBRO, inserta cada una con su marcador
+  exacto ({{figura:ID}}) en una línea propia, junto al contenido que ilustra, una sola
+  vez. Puedes remitir a ella, pero solo con lo que dicen el extracto y su pie.
 - Extensión: entre {min_palabras} y {max_palabras} palabras.
 
 Formato Markdown, en este orden. Las secciones marcadas (opcional) inclúyelas SOLO
@@ -592,8 +598,12 @@ def write_lesson_from_source_meta(
     model: str,
     orientacion: str | None = None,
     visual: dict[str, Any] | None = None,
+    figuras: list[dict[str, Any]] | None = None,
 ) -> tuple[str, bool]:
     """Como ``write_lesson_from_source`` pero devuelve ``(cuerpo, redactada)``.
+
+    ``figuras`` (del plan): el redactor las inserta con ``{{figura:<id>}}``; el llamador
+    sanea los marcadores (``figure_markers.sanitize_markers``).
 
     ``palabras`` es el TOPE del plan; la extensión real se ajusta a la fuente
     (``lesson_length``). ``redactada=False`` = la redacción falló y el cuerpo es
@@ -601,8 +611,8 @@ def write_lesson_from_source_meta(
     """
     fuente = _plan_source(source_text) or "(Sin material fuente para este tema.)"
     min_p, max_p = lesson_length(len(fuente.split()), palabras)
-    aviso_visual = ""
-    if visual and visual.get("nivel") == "alta":
+    aviso_visual = figures_prompt(figuras or [], source_text)
+    if visual and visual.get("nivel") == "alta" and not figuras:
         aviso_visual = ("\nATENCIÓN: estas páginas del libro son mayormente gráficas (figuras o señales). "
                         "El extracto solo trae sus rótulos: redacta únicamente lo que el texto dice, sin "
                         "describir ni suponer lo que muestran las imágenes.\n")
@@ -826,7 +836,16 @@ def generate_lessons_from_plan(
                 title=title, tema=title, unidad_nombre=unidad_nombre,
                 source_text=texto, palabras=tope, fuente_md=fuente_md,
                 client=client, model=model, orientacion=orientacion, visual=lec.get("visual"),
+                figuras=lec.get("figuras"),
             )
+            figuras = lec.get("figuras") or []
+            body, marcadores = sanitize_markers(body, figuras)
+            recursos = []
+            for k, f in enumerate(figuras, start=1):
+                rec = figura_recurso(f, orden=k)
+                if f["id"] in marcadores["auto"]:
+                    rec["meta"]["insertada"] = "auto"   # el redactor no la ubicó: revisar
+                recursos.append(rec)
             yield {
                 "unidad_orden": orden,
                 "unidad_nombre": unidad_nombre,
@@ -854,6 +873,8 @@ def generate_lessons_from_plan(
                 "plan_id": lec.get("id") or lesson_id(texto),  # vínculo estable con el plan (revisión humana)
                 # Fuente mayormente gráfica: revisar la lección contra el libro (no bloquea).
                 "revision_visual": lec.get("visual"),
+                "recursos": recursos,                   # figuras (archivo_local; publish_media las sube)
+                "figuras_meta": {k: v for k, v in marcadores.items() if v} or None,
                 "_source_text": texto,  # para la auditoría de fidelidad (no se persiste)
             }
             position += 1
