@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 
 from schools.models import Escuela, Curso, PlanCurso
 from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
@@ -93,7 +93,10 @@ def canjear_access_key(estudiante, key_str: str, curso_id: int) -> EstudianteCur
       - La llave debe existir, estar 'active', y dentro del rango temporal.
       - El estudiante no debe estar ya inscrito en el curso.
       - El curso debe existir.
-      - La llave se marca como 'used' tras canjearse (un solo uso).
+      - La llave no debe estar ligada ya a otra inscripción (un solo uso: las
+        llaves que entrega `activar_curso` ya vienen ligadas a su estudiante).
+      - Tras canjearse queda 'active' y ligada a la inscripción: el acceso
+        vigente (`cursos_con_acceso_vigente`) exige status 'active'.
 
     Returns el EstudianteCurso creado. Raise CanjeError en cualquier violación.
     """
@@ -119,30 +122,18 @@ def canjear_access_key(estudiante, key_str: str, curso_id: int) -> EstudianteCur
         access_key.save(update_fields=['status'])
         raise CanjeError("Llave expirada.", 'key_expired')
 
+    if EstudianteCurso.objects.filter(access_key_id=access_key).exists():
+        raise CanjeError("La llave ya fue utilizada.", 'key_already_bound')
+
     if EstudianteCurso.objects.filter(estudiante_id=estudiante, curso_id=curso).exists():
         raise CanjeError("Ya estás inscrito en este curso.", 'already_enrolled')
 
-    inscripcion = EstudianteCurso.objects.create(
+    return EstudianteCurso.objects.create(
         estudiante_id=estudiante,
         curso_id=curso,
         access_key_id=access_key,
     )
-    access_key.status = 'used'
-    access_key.save(update_fields=['status'])
-    return inscripcion
 
-
-def asignar_llave_y_curso(estudiante, curso, dias):
-    with transaction.atomic():
-        access_key = AccessKey.objects.create(
-            valid_until=timezone.now() + timezone.timedelta(days=dias)
-        )
-        EstudianteCurso.objects.create(
-            estudiante_id=estudiante,
-            curso_id=curso,
-            access_key_id=access_key,
-        )
-        return access_key
 
 
 # ============================================================
@@ -161,8 +152,16 @@ class SinSaldoError(Exception):
         self.code = code
 
 
+def suscripcion_vigente(escuela, now=None):
+    """True si la escuela tiene suscripción activa y no vencida."""
+    if not escuela.basic_access:
+        return False
+    until = escuela.basic_access_until
+    return until is None or until >= (now or timezone.now())
+
+
 def tiene_seat(escuela):
-    return escuela.basic_access and escuela.basic_seats_used < escuela.basic_seats_max
+    return suscripcion_vigente(escuela) and escuela.basic_seats_used < escuela.basic_seats_max
 
 
 def tiene_key(escuela, keys_needed):
@@ -203,12 +202,38 @@ def mensaje_sin_saldo(source, keys_needed=1):
     return "Tu escuela no tiene ni cupos ni llaves disponibles."
 
 
-def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None):
-    """Crea AccessKey + EstudianteCurso según el origen ('seat' | 'key')."""
+def inscripcion_previa(estudiante, curso):
+    """(EstudianteCurso | None, vigente: bool) del estudiante en el curso."""
+    ec = (
+        EstudianteCurso.objects.select_related('access_key_id')
+        .filter(estudiante_id=estudiante, curso_id=curso).first()
+    )
+    if ec is None:
+        return None, False
+    return ec, bool(ec.access_key_id and ec.access_key_id.is_valid())
+
+
+def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None,
+                       contar_seat=False):
+    """Crea AccessKey + EstudianteCurso según el origen ('seat' | 'key').
+
+    Un cupo vence con la suscripción de la escuela del estudiante
+    (`basic_access_until`; null = sin vencimiento). Si el estudiante ya tenía
+    una inscripción sin acceso vigente (llave revocada/vencida), se le asigna la
+    llave nueva en vez de crear otra (unique estudiante+curso). El llamador debe
+    rechazar antes el caso con acceso vigente (`inscripcion_previa`).
+
+    `contar_seat=True` (activación de admin, que no descuenta saldo) igual
+    contabiliza el cupo en `basic_seats_used` de la escuela del estudiante: así
+    revocarlo/liberarlo después no libera el cupo de otro alumno.
+    """
     with transaction.atomic():
         if resolved_source == "seat":
+            escuela = getattr(estudiante, 'escuela', None)
+            if contar_seat and escuela is not None:
+                Escuela.objects.filter(pk=escuela.pk).update(basic_seats_used=F('basic_seats_used') + 1)
             access_key = AccessKey.objects.create(
-                valid_until=None,
+                valid_until=escuela.basic_access_until if escuela else None,
                 origen="seat",
             )
         else:
@@ -216,11 +241,16 @@ def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escue
                 valid_until=timezone.now() + timedelta(days=days),
                 origen="key",
             )
-        EstudianteCurso.objects.create(
-            estudiante_id=estudiante,
-            curso_id=curso,
-            access_key_id=access_key,
-        )
+        previa, _ = inscripcion_previa(estudiante, curso)
+        if previa is not None:
+            previa.access_key_id = access_key
+            previa.save(update_fields=['access_key_id'])
+        else:
+            EstudianteCurso.objects.create(
+                estudiante_id=estudiante,
+                curso_id=curso,
+                access_key_id=access_key,
+            )
     return access_key
 
 
@@ -238,7 +268,7 @@ def activar_curso_para_estudiante(*, estudiante, curso, days, source, es_admin, 
     """
     if es_admin:
         resolved = "seat" if source == "seat" else "key"
-        return asignar_por_source(estudiante, curso, days, resolved)
+        return asignar_por_source(estudiante, curso, days, resolved, contar_seat=True)
 
     if escuela is None:
         raise SinSaldoError("No se indicó la escuela para descontar el saldo.")
@@ -254,21 +284,49 @@ def activar_curso_para_estudiante(*, estudiante, curso, days, source, es_admin, 
 
 
 def _aplicar_efectos_a_escuela(escuela_id: int, producto, is_director: bool):
-    """Aplica accesos / contadores de llaves a la escuela bajo lock de fila."""
+    """Aplica llaves / suscripción a la escuela bajo lock de fila.
+
+    - Llaves: `basic_key += cant_basic_key`.
+    - Suscripción (`basic_access`): activa, suma `cant_seats` a
+      `basic_seats_max` (si estaba vencida, el período nuevo parte con los
+      cupos del producto) y extiende `basic_access_until` en `duracion_dias`
+      desde hoy o desde el fin vigente (null = sin vencimiento). Los cupos ya
+      asignados vencen con la suscripción, así que se extienden con ella.
+    Un producto puede traer ambas cosas.
+    """
     if not is_director or escuela_id is None:
         return
     escuela_locked = Escuela.objects.select_for_update().get(pk=escuela_id)
-    if producto.basic_access:
-        escuela_locked.basic_access = True
-    elif producto.cant_basic_key and producto.cant_basic_key > 0:
+    cambio = False
+    if producto.cant_basic_key and producto.cant_basic_key > 0:
         escuela_locked.basic_key += producto.cant_basic_key
-    else:
-        return
-    escuela_locked.save()
+        cambio = True
+    if producto.basic_access:
+        now = timezone.now()
+        vigente = suscripcion_vigente(escuela_locked, now)
+        escuela_locked.basic_access = True
+        cupos = max(0, producto.cant_seats or 0)
+        # Vigente: la compra suma cupos. Vencida/inexistente: nuevo período con
+        # los cupos del producto (los ya ocupados siguen contando en seats_used).
+        escuela_locked.basic_seats_max = (
+            escuela_locked.basic_seats_max + cupos if vigente else max(cupos, escuela_locked.basic_seats_used)
+        )
+        if producto.duracion_dias:
+            base = escuela_locked.basic_access_until if vigente and escuela_locked.basic_access_until else now
+            escuela_locked.basic_access_until = base + timedelta(days=producto.duracion_dias)
+        else:
+            escuela_locked.basic_access_until = None
+        AccessKey.objects.filter(
+            origen='seat', status='active',
+            estudiantecurso__estudiante_id__escuela_id=escuela_id,
+        ).update(valid_until=escuela_locked.basic_access_until)
+        cambio = True
+    if cambio:
+        escuela_locked.save()
 
 
 @transaction.atomic
-def registrar_venta_transbank(*, user, producto, escuela, result, token_ws, fecha_venta):
+def registrar_venta_transbank(*, user, producto, escuela, result, token_ws, fecha_venta=None):
     """Persiste la Venta + TransbankTransaction y aplica efectos a la escuela."""
     venta = Venta.objects.create(
         usuario=user,
@@ -302,7 +360,7 @@ class CompraCursoError(Exception):
 
 
 @transaction.atomic
-def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
+def registrar_compra_curso_individual(*, user, method, result, fecha_venta=None,
                                       dias=None):
     """Registra la compra individual de un curso por un estudiante.
 
@@ -409,7 +467,7 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta,
 
 
 @transaction.atomic
-def registrar_venta_unificada(*, user, producto, escuela, method, result, fecha_venta):
+def registrar_venta_unificada(*, user, producto, escuela, method, result, fecha_venta=None):
     """Variante del flujo unificado: persiste Venta + transacción específica."""
     venta = Venta.objects.create(
         usuario=user,

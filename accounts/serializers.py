@@ -22,15 +22,16 @@ class UsuariorRegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        # Registro público: solo datos de identidad. Roles y activación se gestionan
-        # del lado del servidor (estudiante por defecto, activación por email).
+        # Registro público: solo datos de identidad. Roles se gestionan del lado
+        # del servidor (siempre estudiante). Sin `escuela`: un anónimo no puede
+        # auto-vincularse a una escuela; eso lo hace el director (vincular /
+        # alta masiva) o una solicitud aprobada. Un `escuela` enviado se ignora.
         fields = [
             'nombre',
             'apellido',
             'email',
             'password',
             'password2',
-            'escuela',
         ]
 
     def validate(self, data):
@@ -56,7 +57,7 @@ class UsuariorRegisterSerializer(serializers.ModelSerializer):
 
 class AdminUsuarioCreateSerializer(serializers.ModelSerializer):
     """Alta de usuarios por un admin: honra roles y estado (a diferencia del
-    registro público, que siempre crea estudiantes inactivos)."""
+    registro público, que siempre crea estudiantes activos sin escuela)."""
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True, required=False)
 

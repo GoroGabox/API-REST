@@ -11,7 +11,7 @@ from transbank.common.integration_commerce_codes import IntegrationCommerceCodes
 from transbank.common.integration_api_keys import IntegrationApiKeys
 from transbank.common.integration_type import IntegrationType
 from rest_framework.views import APIView
-from django.db import transaction as db_transaction
+from django.db import IntegrityError, transaction as db_transaction
 from django.http import HttpResponse
 from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order, parse_accounting_date
 from rest_framework.exceptions import ValidationError
@@ -28,7 +28,6 @@ from accounts.permissions import (
     is_estudiante,
 )
 from .services import (
-    asignar_llave_y_curso,
     canjear_access_key,
     CanjeError,
     registrar_venta_transbank,
@@ -38,6 +37,9 @@ from .services import (
     precio_final_producto,
     precio_plan,
     tiene_acceso_a_curso,
+    cursos_con_acceso_vigente,
+    inscripcion_previa,
+    suscripcion_vigente,
     llaves_para_dias,
     # Helpers de activación seat/key (fuente única en services; ver más abajo).
     resolver_source_director as _resolver_source_director,
@@ -155,6 +157,52 @@ def _validar_monto_contra_curso(buy_order, amount):
             status=status.HTTP_400_BAD_REQUEST,
         ), None
     return None, curso
+
+
+def _comprador(request, buyer_id):
+    """Usuario del buy_order: el propio request.user, o el indicado si es admin
+    (la propiedad ya la validó `_enforce_payment_ownership`)."""
+    if buyer_id == request.user.id:
+        return request.user
+    return Usuario.objects.filter(id=buyer_id).first()
+
+
+def _exigir_director_con_escuela(user):
+    """Los Productos (llaves/suscripción) se aplican a la escuela del director
+    comprador: a otro rol se le cobraría sin entregarle nada. Response 403 o None."""
+    if user is not None and is_director(user) and user.escuela_id:
+        return None
+    return Response(
+        {"error": "Solo un director con escuela puede comprar llaves o suscripciones."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _resolver_compra_producto(request, buy_order, amount):
+    """Comprador y Producto desde el buy_order AUTORITATIVO de Transbank.
+
+    No se confía en `product_id`/`user_id` del cliente en la confirmación: el
+    producto sale del buy_order (`order_<producto>_<usuario>`), el comprador
+    debe ser `request.user` (admin: el usuario del buy_order) y el monto cobrado
+    se revalida contra el precio del producto.
+    Devuelve (Response de error | None, user, producto).
+    """
+    product_id, buyer_id = extract_ids_from_buy_order(buy_order)
+    if product_id is None:
+        return Response({"success": False, "details": "buy_order inválido en la confirmación."},
+                        status=status.HTTP_400_BAD_REQUEST), None, None
+    if buyer_id != request.user.id and not is_admin(request.user):
+        return Response({"success": False, "details": "El comprador no coincide con el pago."},
+                        status=status.HTTP_403_FORBIDDEN), None, None
+    user = request.user if buyer_id == request.user.id else Usuario.objects.filter(id=buyer_id).first()
+    producto = Producto.objects.filter(id=product_id).first()
+    if user is None or producto is None:
+        return Response({"success": False, "details": "Recursos no encontrados."},
+                        status=status.HTTP_400_BAD_REQUEST), None, None
+    if int(round(float(amount or 0))) != precio_final_producto(producto):
+        return Response({"success": False, "details": "El monto cobrado no coincide con el precio del producto."},
+                        status=status.HTTP_400_BAD_REQUEST), None, None
+    return None, user, producto
 
 
 def _scope_estudiante_curso(qs, user):
@@ -460,6 +508,7 @@ class CursosDisponiblesParaUsuarioView(APIView):
             many=True,
             context={
                 "owned_ids": owned_ids,
+                "vigentes": cursos_con_acceso_vigente(user),
                 "escuela": escuela,
             },
         )
@@ -490,6 +539,7 @@ class CanjearLlaveView(APIView):
                 'key_inactive': status.HTTP_400_BAD_REQUEST,
                 'key_expired': status.HTTP_400_BAD_REQUEST,
                 'already_enrolled': status.HTTP_409_CONFLICT,
+                'key_already_bound': status.HTTP_409_CONFLICT,
             }.get(code, status.HTTP_400_BAD_REQUEST)
             return Response({"error": str(e), "code": code}, status=http_status)
         except (TypeError, ValueError):
@@ -555,18 +605,35 @@ class ActivarCursoView(APIView):
             return Response({"error": "source debe ser 'auto', 'key' o 'seat'."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            days = int(days) if days not in (None, "") else 7
+            if days <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"error": "days debe ser un entero positivo."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
             user = Usuario.objects.get(id=user_id)
             curso = Curso.objects.get(id=curso_id)
-            days = int(days) if days else 7
-        except Curso.DoesNotExist:
+        except (Curso.DoesNotExist, ValueError, TypeError):
             return Response({"error": "Curso no encontrado."}, status=status.HTTP_404_NOT_FOUND)
         except Usuario.DoesNotExist:
             return Response({"error": "Usuario no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
+        if not user.is_estudiante:
+            return Response({"error": "Solo se pueden activar cursos para estudiantes."}, status=status.HTTP_400_BAD_REQUEST)
+        # Con acceso vigente no se vuelve a cobrar; una inscripción sin acceso
+        # (revocada/vencida) se reactiva con la llave nueva (asignar_por_source).
+        _previa, vigente = inscripcion_previa(user, curso)
+        if vigente:
+            return Response(
+                {"error": "El estudiante ya tiene acceso vigente a este curso. Usa extender_llave."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # Admin sin escuela objetivo: siempre usa key (no toca saldos).
         if is_admin(request.user):
             resolved_source = "seat" if source == "seat" else "key"
-            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
+            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None,
+                                             contar_seat=True)
             return Response({
                 "message": "Clave activada con éxito.",
                 "access_key": access_key.key,
@@ -722,17 +789,12 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
         if tiene_acceso_a_curso(estudiante, curso.id):
             return Response({"error": "El estudiante ya tiene acceso vigente a este curso."},
                             status=status.HTTP_409_CONFLICT)
-        # Una inscripción previa (aunque vencida) bloquea crear otra (unique
-        # estudiante+curso). En ese caso el director debe extender/revocar.
-        if EstudianteCurso.objects.filter(estudiante_id=estudiante, curso_id=curso).exists():
-            return Response(
-                {"error": "El estudiante ya tiene una inscripción a este curso (vencida). Usa extender o revocar."},
-                status=status.HTTP_409_CONFLICT,
-            )
+        # Una inscripción previa sin acceso vigente (vencida/revocada) se
+        # reactiva con la llave nueva (`asignar_por_source`).
 
         if is_admin(request.user):
             resolved_source = 'seat' if source == 'seat' else 'key'
-            access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
+            access_key = _asignar_por_source(estudiante, curso, days, resolved_source, contar_seat=True)
         else:
             keys_needed = llaves_para_dias(days)
             with db_transaction.atomic():
@@ -1009,6 +1071,10 @@ class SaleInitiationViewSet(APIView):
         if owner_check is not None:
             return owner_check
 
+        rol_err = _exigir_director_con_escuela(_comprador(request, student_id))
+        if rol_err is not None:
+            return rol_err
+
         # Anti price-tampering (mismo criterio que el flujo unificado).
         price_err, _producto = _validar_monto_contra_producto(buy_order, amount)
         if price_err is not None:
@@ -1016,7 +1082,7 @@ class SaleInitiationViewSet(APIView):
 
         return_url = _frontend_return_url()
 
-        options = WebpayOptions(IntegrationCommerceCodes.WEBPAY_PLUS, IntegrationApiKeys.WEBPAY, IntegrationType.TEST)
+        options = _build_webpay_options()
         tx = Transaction(options)
 
         try:
@@ -1056,7 +1122,7 @@ class PaymentConfirmationView(APIView):
                     'details': 'Esta transacción ya fue procesada.'
                 }, status=400)
         
-        options = WebpayOptions(IntegrationCommerceCodes.WEBPAY_PLUS, IntegrationApiKeys.WEBPAY, IntegrationType.TEST)
+        options = _build_webpay_options()
         tx = Transaction(options)
         try:
             result = tx.commit(token_ws)
@@ -1066,12 +1132,10 @@ class PaymentConfirmationView(APIView):
         if result['status'] != 'AUTHORIZED':
             return Response({"success": False, "details": "Pago no autorizado."}, status=status.HTTP_401_UNAUTHORIZED)
 
-        try:
-            user = Usuario.objects.get(id=user_id)
-            producto = Producto.objects.get(id=product_id)
-            escuela = user.escuela  # nullable; FK ya resuelve
-        except (Usuario.DoesNotExist, Producto.DoesNotExist) as e:
-            return Response({"success": False, 'details': f'Recursos no encontrados: {str(e)}'}, status=400)
+        err, user, producto = _resolver_compra_producto(request, result.get('buy_order'), result.get('amount'))
+        if err is not None:
+            return err
+        escuela = user.escuela  # nullable; FK ya resuelve
 
         try:
             registrar_venta_transbank(
@@ -1082,6 +1146,9 @@ class PaymentConfirmationView(APIView):
                 token_ws=token_ws,
                 fecha_venta=parse_accounting_date(result['accounting_date']),
             )
+        except IntegrityError:
+            # Carrera entre dos confirmaciones del mismo token: ya se registró.
+            return Response({"success": False, 'details': 'Esta transacción ya fue procesada.'}, status=400)
         except Exception as e:
             return Response({
                 "success": False,
@@ -1137,7 +1204,10 @@ class TransbankPaymentStrategy(PaymentStrategy):
 
         options = _build_webpay_options()
         tx = Transaction(options)
-        result = tx.commit(token)
+        try:
+            result = tx.commit(token)
+        except TransbankError as e:
+            return {"success": False, "message": f"Error en la transacción: {e}"}
 
         if result["status"] == "AUTHORIZED":
             return {
@@ -1216,7 +1286,9 @@ class UnifiedSaleInitiationView(APIView):
             if item_type == "curso":
                 price_err, _item = _validar_monto_contra_curso(buy_order, amount)
             else:
-                price_err, _item = _validar_monto_contra_producto(buy_order, amount)
+                price_err = _exigir_director_con_escuela(_comprador(request, student_id))
+                if price_err is None:
+                    price_err, _item = _validar_monto_contra_producto(buy_order, amount)
             if price_err is not None:
                 return price_err
 
@@ -1288,8 +1360,10 @@ class UnifiedPaymentConfirmationView(APIView):
                         user=request.user,
                         method=method,
                         result=result,
-                        fecha_venta=parse_accounting_date(result["transaction_date"]),
                     )
+                except IntegrityError:
+                    return Response({"success": False, "details": "Esta transacción ya fue procesada."},
+                                    status=status.HTTP_200_OK)
                 except CompraCursoError as e:
                     http = (
                         status.HTTP_409_CONFLICT
@@ -1299,18 +1373,24 @@ class UnifiedPaymentConfirmationView(APIView):
                     return Response({"success": False, "details": str(e), "code": e.code}, status=http)
                 return Response({"success": True, "details": "Curso adquirido.", "data": result}, status=status.HTTP_201_CREATED)
 
-            user = Usuario.objects.get(id=result["user_id"])
-            producto = Producto.objects.get(id=result["product_id"])
-            escuela = user.escuela
-
-            registrar_venta_unificada(
-                user=user,
-                producto=producto,
-                escuela=escuela,
-                method=method,
-                result=result,
-                fecha_venta=parse_accounting_date(result["transaction_date"]),
+            err, user, producto = _resolver_compra_producto(
+                request, (result.get("extra_data") or {}).get("buy_order"), result.get("amount"),
             )
+            if err is not None:
+                return err
+
+            try:
+                registrar_venta_unificada(
+                    user=user,
+                    producto=producto,
+                    escuela=user.escuela,
+                    method=method,
+                    result=result,
+                )
+            except IntegrityError:
+                # Carrera entre dos confirmaciones del mismo token: ya se registró.
+                return Response({"success": False, "details": "Esta transacción ya fue procesada."},
+                                status=status.HTTP_200_OK)
 
             return Response({"success": True, "details": "Venta completada.", "data": result}, status=status.HTTP_201_CREATED)
 
@@ -1361,11 +1441,13 @@ class SubscriptionStatusView(APIView):
                 "keys_available": int(keys),
             }
 
+        basic = tier(
+            suscripcion_vigente(escuela), escuela.basic_seats_used, escuela.basic_seats_max, escuela.basic_key,
+        )
+        basic["access_until"] = escuela.basic_access_until
         return Response({
             "escuela_id": escuela.id,
-            "basic": tier(
-                escuela.basic_access, escuela.basic_seats_used, escuela.basic_seats_max, escuela.basic_key,
-            ),
+            "basic": basic,
         })
 
 

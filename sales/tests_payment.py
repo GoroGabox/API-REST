@@ -69,7 +69,12 @@ def enrol_purchase(student, curso, dias=30):
 
 class PayInitSecurityTest(TestCase):
     def setUp(self):
-        self.user = make_student()
+        # Productos (llaves/suscripción) = compra de director con escuela.
+        escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
+        self.user = make_student(escuela=escuela)
+        self.user.is_estudiante = False
+        self.user.is_director = True
+        self.user.save()
         self.prod = make_producto(valor_neto=10000, descuento=0)
         self.client = APIClient()
         self.client.force_authenticate(self.user)

@@ -358,30 +358,11 @@ class CertificadosPorEscuelaView(APIView):
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _enviar_credenciales_estudiante(email, nombre, password):
-    """Envía credenciales temporales al estudiante recién creado (best-effort)."""
-    try:
-        from django.core.mail import send_mail
-        send_mail(
-            subject="Tu cuenta AutoTest",
-            message=(
-                f"Hola {nombre or 'estudiante'},\n\n"
-                f"Se creó tu cuenta en AutoTest.\n"
-                f"Correo: {email}\n"
-                f"Contraseña temporal: {password}\n\n"
-                f"Te recomendamos cambiarla en tu primer inicio de sesión."
-            ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=True,
-        )
-    except Exception:
-        pass
-
-
 def vincular_o_crear_estudiante(email, nombre, apellido, escuela_id):
     """Vincula (o crea) un estudiante en `escuela_id`. Maneja su propia
-    transacción y, al crear, envía credenciales por email.
+    transacción y, al crear, envía por email el enlace para definir su
+    contraseña (nunca una contraseña en texto plano; mismo correo que el alta
+    masiva).
 
     Devuelve dict {status, email, user_id?, detail?} con
     status ∈ {created, linked, already_linked, error}.
@@ -423,7 +404,11 @@ def vincular_o_crear_estudiante(email, nombre, apellido, escuela_id):
         new_user.is_active = True
         new_user.escuela_id = escuela_id
         new_user.save(update_fields=["is_active", "escuela"])
-        _enviar_credenciales_estudiante(email, nombre, random_password)
+        try:
+            from accounts.services import enviar_invitacion_password
+            enviar_invitacion_password(new_user)
+        except Exception:
+            pass  # best-effort: el director puede reenviar la invitación
         return {"status": "created", "email": new_user.email, "user_id": new_user.id}
 
 

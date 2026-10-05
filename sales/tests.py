@@ -20,7 +20,9 @@ class MercadoPagoStubTests(APITestCase):
 
 class UnifiedSaleInitiationTests(APITestCase):
     def setUp(self):
-        self.user = make_user("t@u.com", is_estudiante=True)
+        # Los Productos (llaves/suscripción) solo los compra un director con escuela.
+        self.escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
+        self.user = make_user("t@u.com", is_director=True, escuela=self.escuela)
         self.client.force_authenticate(self.user)
 
     def test_mercadopago_devuelve_501(self):
@@ -126,7 +128,8 @@ class PaymentOwnershipTests(APITestCase):
     """user_id en payloads de pago debe coincidir con request.user (excepto admin)."""
 
     def setUp(self):
-        self.user = make_user("buyer@x.com", is_estudiante=True)
+        self.escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
+        self.user = make_user("buyer@x.com", is_director=True, escuela=self.escuela)
         self.other = make_user("other@x.com", is_estudiante=True)
         self.admin = make_user("ad@x.com", is_admin=True)
 

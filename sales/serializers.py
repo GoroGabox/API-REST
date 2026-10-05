@@ -166,19 +166,7 @@ class CursoDisponibleSerializer(serializers.ModelSerializer):
         return obj.id in owned_ids
 
     def get_user_can_access(self, obj):
-        escuela = self.context.get("escuela")
-        already_owned = self.get_already_owned(obj)
-
-        # Si ya es suyo, puede acceder
-        if already_owned:
-            return True
-
-        if escuela is None:
-            return False
-
-        # Regla de acceso de la escuela: con la suscripción (basic_access)
-        # activa, el estudiante accede a todos los cursos (un solo tier).
-        if escuela.basic_access:
-            return True
-
-        return False
+        # Misma regla que el gate del contenido (`tiene_acceso_a_curso`): una
+        # inscripción con llave activa y vigente. Una compra vencida o que la
+        # escuela tenga suscripción (sin cupo asignado) no dan acceso.
+        return obj.id in self.context.get("vigentes", set())

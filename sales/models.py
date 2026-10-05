@@ -16,6 +16,10 @@ class Producto(models.Model):
     
     cant_basic_key = models.IntegerField(default=0, blank=True, null=True)
     basic_access = models.BooleanField(default=False)
+    # Suscripción: cupos que suma a `Escuela.basic_seats_max` y días de vigencia
+    # que extiende `Escuela.basic_access_until` (null = sin vencimiento).
+    cant_seats = models.IntegerField(default=0)
+    duracion_dias = models.IntegerField(null=True, blank=True)
     # Permite ocultar un paquete del catálogo sin borrarlo (control admin).
     activo = models.BooleanField(default=True)
 

@@ -552,7 +552,10 @@ class CanjearLlaveTests(APITestCase):
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(EstudianteCurso.objects.filter(estudiante_id=self.user).count(), 1)
         self.key.refresh_from_db()
-        self.assertEqual(self.key.status, 'used')
+        # Queda 'active' y ligada a la inscripción: así da acceso vigente.
+        self.assertEqual(self.key.status, 'active')
+        from sales.services import tiene_acceso_a_curso
+        self.assertTrue(tiene_acceso_a_curso(self.user, self.curso.id))
 
     def test_canjear_dos_veces_misma_llave_falla(self):
         self.client.post('/api/v1/sales/canjear_llave/', {
@@ -561,8 +564,8 @@ class CanjearLlaveTests(APITestCase):
         r2 = self.client.post('/api/v1/sales/canjear_llave/', {
             "access_key": self.key.key, "curso_id": self.curso.id,
         }, format='json')
-        self.assertEqual(r2.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(r2.data['code'], 'key_inactive')
+        self.assertEqual(r2.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(r2.data['code'], 'key_already_bound')
 
     def test_canjear_llave_inexistente_404(self):
         r = self.client.post('/api/v1/sales/canjear_llave/', {

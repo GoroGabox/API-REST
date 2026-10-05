@@ -26,9 +26,10 @@ class Escuela(models.Model):
 
     - **Llaves** (`basic_key`): acceso TEMPORAL. Cada activacion descuenta 1
       llave y crea una AccessKey con expiracion (7 dias por defecto).
-    - **Suscripcion** (`basic_access`): acceso ILIMITADO en tiempo, pero
-      acotado por cupos (`basic_seats_max`). Cada activacion descuenta 1 seat;
-      liberar un estudiante restituye el seat. No consume llaves.
+    - **Suscripcion** (`basic_access`): acceso acotado por cupos
+      (`basic_seats_max`) y por la vigencia de la suscripcion
+      (`basic_access_until`, null = sin vencimiento). Cada activacion descuenta
+      1 seat; liberar un estudiante restituye el seat. No consume llaves.
     """
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)
@@ -46,6 +47,9 @@ class Escuela(models.Model):
     basic_access = models.BooleanField(default=False)
     basic_seats_max = models.IntegerField(default=0)
     basic_seats_used = models.IntegerField(default=0)
+    # Fin de la suscripción (null = sin vencimiento). Los cupos asignados vencen
+    # con ella; renovar la extiende.
+    basic_access_until = models.DateTimeField(null=True, blank=True)
 
     def save(self, *args, **kwargs):
         # Toda escuela nace con un código; se genera una sola vez y no cambia.
