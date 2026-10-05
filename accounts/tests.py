@@ -1008,3 +1008,33 @@ class CredentialResendCooldownTests(APITestCase):
         self.assertEqual(
             self.client.post(reverse('password_reset_invite', args=[est2.id])).status_code, 200,
         )
+
+
+class PasswordResetRequestEnumerationTests(APITestCase):
+    """reset_password/ no debe revelar si un email tiene cuenta."""
+
+    def setUp(self):
+        self.user = make_user("existe@x.com")
+
+    def _post(self, email):
+        return self.client.post(reverse('reset_password'), {"email": email}, format='json')
+
+    def test_misma_respuesta_exista_o_no(self):
+        from django.core import mail
+        r_existe = self._post("existe@x.com")
+        r_no = self._post("noexiste@x.com")
+        self.assertEqual(r_existe.status_code, status.HTTP_200_OK)
+        self.assertEqual(r_no.status_code, status.HTTP_200_OK)
+        self.assertEqual(r_existe.data, r_no.data)
+        # Solo la cuenta existente recibe el correo con el link.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["existe@x.com"])
+        self.assertIn("/change-password?uidb64=", mail.outbox[0].body)
+
+    def test_email_sin_distinguir_mayusculas(self):
+        from django.core import mail
+        self.assertEqual(self._post("EXISTE@x.com").status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_email_vacio_es_400(self):
+        self.assertEqual(self._post("").status_code, status.HTTP_400_BAD_REQUEST)

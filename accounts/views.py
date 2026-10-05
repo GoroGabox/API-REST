@@ -345,22 +345,31 @@ class PasswordResetRequestView(APIView):
     throttle_classes = [PasswordResetRateThrottle]
 
     def post(self, request, *args, **kwargs):
-        email = request.data.get('email')
-        user = Usuario.objects.filter(email=email).first()
+        email = (request.data.get('email') or '').strip()
+        if not email:
+            return Response({"error": "Ingresa tu correo electrónico."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Respuesta idéntica exista o no la cuenta: no revelar qué emails están
+        # registrados (enumeración de usuarios). Fallos de envío tampoco se
+        # exponen (fail_silently) para no distinguir por status.
+        user = Usuario.objects.filter(email__iexact=email).first()
         if user:
             uid = urlsafe_base64_encode(force_bytes(user.id))
             token = default_token_generator.make_token(user)
             frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
             password_reset_link = f'{frontend_url}/change-password?uidb64={uid}&token={token}'
-            
+
             send_mail(
                 subject='Restablecimiento de contraseña',
                 message='Sigue este enlace para restablecer tu contraseña: {}'.format(password_reset_link),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
+                fail_silently=True,
             )
-            return Response({"mensaje": "Se ha enviado un correo electrónico con instrucciones para restablecer tu contraseña."}, status=status.HTTP_200_OK)
-        return Response({"error": "No se ha encontrado un usuario con ese correo electrónico."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"mensaje": "Si el correo está registrado, te enviamos instrucciones para restablecer tu contraseña."},
+            status=status.HTTP_200_OK,
+        )
 
 class PasswordResetInviteView(APIView):
     """POST /api/v1/accounts/password-reset-invite/<user_id>/
