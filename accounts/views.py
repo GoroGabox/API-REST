@@ -116,9 +116,15 @@ class EscuelaConDirectorView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
+        from . import services as _accounts_services
+
         serializer = EscuelaConDirectorSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
+        # Invitación "configura tu contraseña" (link, best-effort). La
+        # contraseña temporal nunca viaja por correo; el admin puede
+        # compartirla por otra vía si el director la necesita antes.
+        _accounts_services.enviar_invitacion_password(instance['director'])
         return Response(serializer.to_representation(instance), status=status.HTTP_201_CREATED)
 
 

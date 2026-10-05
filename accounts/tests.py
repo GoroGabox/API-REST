@@ -98,6 +98,15 @@ class RegistrarEscuelaDirectorTests(APITestCase):
         self.assertTrue(director.is_active)
         self.assertEqual(director.escuela_id, escuela.id)
 
+        # El director recibe la invitación "configura tu contraseña" (link, no
+        # la contraseña temporal en texto plano).
+        from django.core import mail
+        self.assertEqual(len(mail.outbox), 1)
+        correo = mail.outbox[0]
+        self.assertEqual(correo.to, ["diego@ax.com"])
+        self.assertIn("/change-password?uidb64=", correo.body)
+        self.assertNotIn("Abcdef12!@#", correo.body)
+
     def test_director_no_puede_registrar(self):
         escuela = Escuela.objects.create(nombre="E", direccion="d", email="e@e.com", telefono="1")
         director = make_user("d@d.com", is_director=True, escuela=escuela)
