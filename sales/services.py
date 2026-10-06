@@ -299,11 +299,13 @@ def inscripcion_previa(estudiante, curso):
 
 
 def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None,
-                       contar_seat=False):
+                       contar_seat=False, escuela=None):
     """Crea AccessKey + EstudianteCurso según el origen ('seat' | 'key').
 
-    Un cupo vence con la suscripción de la escuela del estudiante
-    (`basic_access_until`; null = sin vencimiento). Si el estudiante ya tenía
+    Un cupo vence con la suscripción de la escuela que lo otorga
+    (`basic_access_until`; null = sin vencimiento): `escuela` si se indica (p.ej.
+    la de una solicitud, cuando el estudiante aún no está vinculado), si no la
+    del estudiante. Si el estudiante ya tenía
     una inscripción sin acceso vigente (llave revocada/vencida), se le asigna la
     llave nueva en vez de crear otra (unique estudiante+curso). El llamador debe
     rechazar antes el caso con acceso vigente (`inscripcion_previa`).
@@ -314,7 +316,7 @@ def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escue
     """
     with transaction.atomic():
         if resolved_source == "seat":
-            escuela = getattr(estudiante, 'escuela', None)
+            escuela = escuela or getattr(estudiante, 'escuela', None)
             if contar_seat and escuela is not None:
                 Escuela.objects.filter(pk=escuela.pk).update(basic_seats_used=F('basic_seats_used') + 1)
             access_key = AccessKey.objects.create(
@@ -365,7 +367,7 @@ def activar_curso_para_estudiante(*, estudiante, curso, days, source, es_admin, 
         raise SinSaldoError(mensaje_sin_saldo(source, keys_needed))
     decrementar_saldo(escuela_locked, resolved, keys_needed)
     escuela_locked.save()
-    return asignar_por_source(estudiante, curso, days, resolved)
+    return asignar_por_source(estudiante, curso, days, resolved, escuela=escuela_locked)
 
 
 def _aplicar_efectos_a_escuela(escuela_id: int, producto, is_director: bool):

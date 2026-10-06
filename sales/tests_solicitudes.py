@@ -197,3 +197,34 @@ class ListarSolicitudesTests(SolicitudBaseTest):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         rows = r.data.get("results") or r.data
         self.assertEqual(len(rows), 1)
+
+
+class AprobarConCupoVigenciaTests(SolicitudBaseTest):
+    """B17: el cupo otorgado al aprobar vence con la suscripción de la escuela
+    de la solicitud, aunque el estudiante aún no estuviera vinculado."""
+
+    def setUp(self):
+        super().setUp()
+        self.hasta = timezone.now() + timedelta(days=20)
+        Escuela.objects.filter(pk=self.escuela.pk).update(
+            basic_access=True, basic_seats_max=3, basic_seats_used=0, basic_access_until=self.hasta,
+        )
+
+    def _aprobar(self, user, source):
+        sol_id = self.crear_solicitud().data["id"]
+        self.client.force_authenticate(user)
+        r = self.client.post(f"/api/v1/sales/solicitudes/{sol_id}/aprobar/", {"source": source}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        return EstudianteCurso.objects.get(estudiante_id=self.est, curso_id=self.curso).access_key_id
+
+    def test_director_cupo_vence_con_suscripcion(self):
+        ak = self._aprobar(self.director, "seat")
+        self.assertEqual(ak.origen, "seat")
+        self.assertIsNotNone(ak.valid_until)
+        self.assertAlmostEqual(ak.valid_until.timestamp(), self.hasta.timestamp(), delta=1)
+
+    def test_admin_cupo_vence_y_se_contabiliza_en_la_escuela(self):
+        ak = self._aprobar(self.admin, "seat")
+        self.assertAlmostEqual(ak.valid_until.timestamp(), self.hasta.timestamp(), delta=1)
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)

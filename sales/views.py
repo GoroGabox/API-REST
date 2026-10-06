@@ -908,7 +908,10 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
 
         if is_admin(request.user):
             resolved_source = 'seat' if source == 'seat' else 'key'
-            access_key = _asignar_por_source(estudiante, curso, days, resolved_source, contar_seat=True)
+            # El cupo es de la escuela de la solicitud (el estudiante puede no
+            # estar vinculado aún): vence con su suscripción y cuenta en ella.
+            access_key = _asignar_por_source(estudiante, curso, days, resolved_source, contar_seat=True,
+                                             escuela=solicitud.escuela)
         else:
             keys_needed = llaves_para_dias(days)
             with db_transaction.atomic():
@@ -919,7 +922,7 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
                                     status=status.HTTP_400_BAD_REQUEST)
                 _decrementar_saldo(escuela, resolved_source, keys_needed)
                 escuela.save()
-                access_key = _asignar_por_source(estudiante, curso, days, resolved_source)
+                access_key = _asignar_por_source(estudiante, curso, days, resolved_source, escuela=escuela)
 
         # Vincula la escuela si el estudiante no la tenía (flujo escuela+curso).
         if not estudiante.escuela_id:
