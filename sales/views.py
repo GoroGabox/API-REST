@@ -30,6 +30,9 @@ from accounts.permissions import (
 from .services import (
     canjear_access_key,
     CanjeError,
+    generar_codigos,
+    anular_codigo,
+    CodigoError,
     registrar_venta_transbank,
     registrar_venta_unificada,
     registrar_compra_curso_individual,
@@ -514,6 +517,117 @@ class CursosDisponiblesParaUsuarioView(APIView):
         )
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+def _escuela_de_codigos(request):
+    """Escuela sobre la que opera el usuario en /codigos/ (o Response de error)."""
+    user = request.user
+    if is_director(user) and not is_admin(user):
+        if not user.escuela_id:
+            return None, Response({"error": "Tu cuenta no tiene una escuela asociada."}, status=status.HTTP_400_BAD_REQUEST)
+        return user.escuela_id, None
+    if is_admin(user):
+        esc = request.data.get('escuela') if request.method == 'POST' else request.query_params.get('escuela')
+        if not esc:
+            return None, Response({"error": "Indica la escuela."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            return Escuela.objects.get(pk=int(esc)).id, None
+        except (Escuela.DoesNotExist, TypeError, ValueError):
+            return None, Response({"error": "Escuela no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+    return None, Response({"error": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _codigo_row(k, now):
+    ec = next(iter(k.estudiantecurso_set.all()), None)
+    if ec is not None:
+        estado = "canjeado"
+    elif k.status != 'active':
+        estado = "anulado"
+    elif k.valid_until and k.valid_until < now:
+        estado = "vencido"
+    else:
+        estado = "disponible"
+    return {
+        "id": str(k.id),
+        "key": k.key,
+        "dias": k.dias,
+        "llaves": k.llaves,
+        "estado": estado,
+        "creado": k.valid_from if ec is None else None,
+        "vence": k.valid_until if ec is None else None,
+        "canjeado_por": (
+            {"id": ec.estudiante_id_id, "nombre": f"{ec.estudiante_id.nombre} {ec.estudiante_id.apellido}".strip(),
+             "email": ec.estudiante_id.email}
+            if ec else None
+        ),
+        "curso": {"id": ec.curso_id_id, "nombre": ec.curso_id.nombre} if ec else None,
+        "acceso_hasta": k.valid_until if ec else None,
+    }
+
+
+class CodigosView(APIView):
+    """GET/POST /api/v1/sales/codigos/ — códigos canjeables de una escuela.
+
+    POST {cantidad, dias[, escuela (admin)]}: el director convierte llaves de su
+    saldo en códigos (cantidad × ceil(dias/7) llaves); el admin los genera sin
+    descontar. GET lista los códigos con su estado.
+    """
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def get(self, request):
+        escuela_id, err = _escuela_de_codigos(request)
+        if err is not None:
+            return err
+        qs = (
+            AccessKey.objects.filter(escuela_id=escuela_id)
+            .prefetch_related('estudiantecurso_set__estudiante_id', 'estudiantecurso_set__curso_id')
+            .order_by('-valid_from')
+        )
+        now = timezone.now()
+        rows = [_codigo_row(k, now) for k in qs]
+        return Response({"count": len(rows), "results": rows})
+
+    def post(self, request):
+        escuela_id, err = _escuela_de_codigos(request)
+        if err is not None:
+            return err
+        try:
+            codigos = generar_codigos(
+                escuela_id=escuela_id,
+                cantidad=request.data.get('cantidad'),
+                dias=request.data.get('dias'),
+                descontar=not is_admin(request.user),
+            )
+        except CodigoError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_400_BAD_REQUEST)
+        now = timezone.now()
+        return Response(
+            {"codigos": [_codigo_row(k, now) for k in codigos],
+             "basic_key": Escuela.objects.get(pk=escuela_id).basic_key},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CodigoAnularView(APIView):
+    """POST /api/v1/sales/codigos/<uuid>/anular/ — anula un código no canjeado
+    y devuelve sus llaves a la escuela."""
+    permission_classes = [drf_permissions.IsAuthenticated]
+
+    def post(self, request, codigo_id):
+        user = request.user
+        if not (is_admin(user) or is_director(user)):
+            return Response({"error": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+        qs = AccessKey.objects.filter(pk=codigo_id, escuela__isnull=False)
+        if not is_admin(user):
+            qs = qs.filter(escuela_id=user.escuela_id)
+        codigo = qs.first()
+        if codigo is None:
+            return Response({"error": "Código no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            anular_codigo(codigo)
+        except CodigoError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "anulado", "basic_key": Escuela.objects.get(pk=codigo.escuela_id).basic_key})
+
 
 class CanjearLlaveView(APIView):
     """POST /api/v1/sales/canjear_llave/ — estudiante canjea su llave por inscripción.

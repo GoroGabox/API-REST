@@ -128,11 +128,96 @@ def canjear_access_key(estudiante, key_str: str, curso_id: int) -> EstudianteCur
     if EstudianteCurso.objects.filter(estudiante_id=estudiante, curso_id=curso).exists():
         raise CanjeError("Ya estás inscrito en este curso.", 'already_enrolled')
 
+    # Código generado por un director: la vigencia corre desde el canje (antes
+    # valid_until era el vencimiento del código) y, si el estudiante no tiene
+    # escuela, queda vinculado a la emisora (misma regla que aprobar solicitud).
+    if access_key.dias:
+        access_key.valid_from = now
+        access_key.valid_until = now + timedelta(days=access_key.dias)
+        access_key.save(update_fields=['valid_from', 'valid_until'])
+        if access_key.escuela_id and not estudiante.escuela_id:
+            estudiante.escuela_id = access_key.escuela_id
+            estudiante.save(update_fields=['escuela'])
+
     return EstudianteCurso.objects.create(
         estudiante_id=estudiante,
         curso_id=curso,
         access_key_id=access_key,
     )
+
+
+# ============================================================
+# Códigos canjeables (director → estudiante fuera de la plataforma)
+# ============================================================
+CODIGO_VIGENCIA_DIAS = 90   # plazo para canjear un código antes de que venza
+CODIGOS_MAX_POR_LOTE = 100
+_CODIGO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sin 0/O/1/I
+
+
+class CodigoError(Exception):
+    def __init__(self, message, code='invalid'):
+        super().__init__(message)
+        self.code = code
+
+
+def _nuevo_codigo(length=10):
+    import secrets
+    while True:
+        k = "".join(secrets.choice(_CODIGO_ALFABETO) for _ in range(length))
+        if not AccessKey.objects.filter(key=k).exists():
+            return k
+
+
+@transaction.atomic
+def generar_codigos(*, escuela_id, cantidad, dias, descontar=True):
+    """Crea `cantidad` códigos de `dias` días para la escuela.
+
+    Con `descontar` (director) cobra `cantidad × llaves_para_dias(dias)` del
+    saldo de forma atómica; el admin genera sin descontar (`llaves=0`).
+    """
+    try:
+        cantidad, dias = int(cantidad), int(dias)
+    except (TypeError, ValueError):
+        raise CodigoError("cantidad y dias deben ser enteros.")
+    if not 1 <= cantidad <= CODIGOS_MAX_POR_LOTE:
+        raise CodigoError(f"La cantidad debe estar entre 1 y {CODIGOS_MAX_POR_LOTE}.")
+    if dias <= 0 or dias % DIAS_POR_LLAVE:
+        raise CodigoError(f"Los días deben ser múltiplo de {DIAS_POR_LLAVE}.")
+
+    escuela = Escuela.objects.select_for_update().get(pk=escuela_id)
+    llaves_c_u = llaves_para_dias(dias) if descontar else 0
+    total = cantidad * llaves_c_u
+    if escuela.basic_key < total:
+        raise CodigoError(
+            f"No hay llaves suficientes. Requieres {total}, tienes {escuela.basic_key}.", 'sin_saldo',
+        )
+    if total:
+        escuela.basic_key -= total
+        escuela.save(update_fields=['basic_key'])
+
+    vence = timezone.now() + timedelta(days=CODIGO_VIGENCIA_DIAS)
+    return [
+        AccessKey.objects.create(
+            key=_nuevo_codigo(), escuela=escuela, dias=dias, llaves=llaves_c_u,
+            valid_until=vence, origen='key',
+        )
+        for _ in range(cantidad)
+    ]
+
+
+@transaction.atomic
+def anular_codigo(codigo: AccessKey):
+    """Anula un código no canjeado y devuelve sus llaves a la escuela."""
+    codigo = AccessKey.objects.select_for_update().get(pk=codigo.pk)
+    if EstudianteCurso.objects.filter(access_key_id=codigo).exists():
+        raise CodigoError("El código ya fue canjeado.", 'canjeado')
+    if codigo.status != 'active':
+        raise CodigoError("El código ya está anulado.", 'anulado')
+    codigo.status = 'revoked'
+    codigo.save(update_fields=['status'])
+    if codigo.llaves and codigo.escuela_id:
+        Escuela.objects.filter(pk=codigo.escuela_id).update(basic_key=F('basic_key') + codigo.llaves)
+    return codigo
 
 
 

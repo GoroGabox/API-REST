@@ -68,6 +68,15 @@ class AccessKey(models.Model):
     valid_until = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
     origen = models.CharField(max_length=10, choices=ORIGEN_CHOICES, default='key')
+    # Códigos canjeables generados por un director (ver services.generar_codigos):
+    # escuela emisora, días de acceso que otorga al canjearse (la vigencia corre
+    # desde el canje; antes, valid_until es el vencimiento del código) y llaves
+    # descontadas del saldo (se devuelven al anular). Null/0 en las demás llaves.
+    escuela = models.ForeignKey(
+        'schools.Escuela', null=True, blank=True, on_delete=models.SET_NULL, related_name='codigos',
+    )
+    dias = models.PositiveIntegerField(null=True, blank=True)
+    llaves = models.PositiveIntegerField(default=0)
 
     def __str__(self):
         return f"Key {self.key}"
