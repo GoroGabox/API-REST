@@ -564,6 +564,31 @@ class SubscriptionSeatsTests(APITestCase):
         )
         self.assertEqual(r.status_code, 400)
 
+    def _revocar_seat_de(self, est):
+        from sales.models import EstudianteCurso
+        ec = EstudianteCurso.objects.get(estudiante_id=est, curso_id=self.curso)
+        r = self.client.post(
+            "/api/v1/sales/revocar_llave/", {"access_key_id": str(ec.access_key_id_id)}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        return ec
+
+    def test_list_excluye_seats_revocados(self):
+        self._revocar_seat_de(self.est_1)
+        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["count"], 1)
+        self.assertEqual(r.data["results"][0]["estudiante"]["email"], self.est_2.email)
+
+    def test_delete_de_seat_ya_revocado_no_descuenta(self):
+        ec = self._revocar_seat_de(self.est_1)
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)  # solo est_2 ocupa
+        r = self.client.delete(f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec.id}/")
+        self.assertIn(r.status_code, (200, 404), r.data)
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)
+
     def test_delete_inscripcion_de_otra_escuela_404(self):
         # Preparar seat en escuela B usando admin
         self.escuela_b.basic_access = True

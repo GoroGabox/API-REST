@@ -1483,6 +1483,9 @@ class SubscriptionSeatsView(APIView):
             .filter(
                 estudiante_id__escuela_id=school_id,
                 access_key_id__origen="seat",
+                # Un seat revocado ya no ocupa cupo (revocar_llave descontó
+                # seats_used); listarlo invitaba a "liberarlo" otra vez.
+                access_key_id__status="active",
             )
             .select_related("estudiante_id", "curso_id", "access_key_id")
             .order_by("id")
@@ -1539,6 +1542,12 @@ class SubscriptionSeatsView(APIView):
                     {"detail": "Esta inscripción no ocupa un cupo de suscripción; usa el flujo de llaves."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            # Ya revocado: el cupo se devolvió al revocar. Descontar otra vez
+            # liberaría el cupo de otro estudiante (drift de seats_used).
+            if access_key.status != "active":
+                ec.delete()
+                return Response({"status": "already_released"}, status=status.HTTP_200_OK)
 
             escuela = Escuela.objects.select_for_update().get(pk=school_id)
             if escuela.basic_seats_used > 0:
