@@ -347,6 +347,32 @@ def _summary(item: dict[str, Any]) -> str:
     return f"{t.get('clave') or t.get('id') or '?'} · {what}"
 
 
+def _reubicar_texto(plan: dict[str, Any], cambio: dict[str, Any], target: dict[str, Any]) -> dict[str, Any] | None:
+    """Corrección de texto fuente cuya lección ya no existe (la revisión se hizo sobre
+    otra versión del plan: otros cortes → otros ids). El texto no depende de la
+    estructura: si ``buscar`` aparece exactamente UNA vez en todo el plan, se devuelve
+    el target de esa lección. ``None`` si la lección existe o no aplica."""
+    if cambio.get("op") != "texto" or target.get("tipo") == "unidad":
+        return None
+    buscar = str((cambio.get("args") or {}).get("buscar") or "")
+    if not buscar:
+        return None
+    hits = []
+    for u in plan.get("unidades", []):
+        for li, lec in enumerate(u.get("lecciones", []), start=1):
+            if lec.get("id") == target.get("id"):
+                return None
+            n = str(lec.get("texto") or "").count(buscar)
+            if n:
+                hits.append((n, u, li, lec))
+    if not hits:
+        raise ReviewConflict("la lección ya no existe en este plan y el texto a corregir no aparece en ninguna otra")
+    if len(hits) > 1 or hits[0][0] > 1:
+        raise ReviewConflict("la lección ya no existe en este plan y el texto a corregir aparece más de una vez")
+    _n, u, li, lec = hits[0]
+    return {"tipo": "leccion", "id": lec.get("id"), "nombre": lec.get("nombre"), "clave": f"{u.get('orden')}.{li}"}
+
+
 def apply_review(data: dict[str, Any], items: list[dict[str, Any]], *, fase: str) -> dict[str, Any]:
     """Devuelve ``{"data": copia modificada, "aplicadas": [...], "conflictos": [...], "ignoradas": n}``."""
     out = copy.deepcopy(data)
@@ -364,11 +390,17 @@ def apply_review(data: dict[str, Any], items: list[dict[str, Any]], *, fase: str
             ignoradas += 1  # pendientes, rechazadas y comentarios sin cambio
             continue
         try:
+            resumen = _summary(item)
             if fase == "estructura":
-                apply_structure_op(out, item["cambio"], item.get("target") or {})
+                target = item.get("target") or {}
+                nuevo = _reubicar_texto(out, item["cambio"], target)
+                if nuevo is not None:
+                    resumen += f" → reubicada en {nuevo['clave']} «{nuevo['nombre']}»"
+                    target = nuevo
+                apply_structure_op(out, item["cambio"], target)
             else:
                 apply_content_change(out, item["cambio"], item.get("target") or {}, renamed)
-            aplicadas.append({"id": item["id"], "autor": item.get("autor", ""), "resumen": _summary(item)})
+            aplicadas.append({"id": item["id"], "autor": item.get("autor", ""), "resumen": resumen})
         except (ReviewConflict, KeyError, ValueError, TypeError) as exc:
             conflictos.append({"id": item["id"], "autor": item.get("autor", ""),
                                "resumen": _summary(item), "motivo": str(exc)})

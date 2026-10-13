@@ -207,3 +207,34 @@ class ReviewCommandTests(SimpleTestCase):
             self.assertIn('id="bundle"', html)
             self.assertIn(lid, html)
             self.assertIn('"modo": "auditor"', html)
+
+
+class ReubicarTextoTests(SimpleTestCase):
+    """Corrección de texto de una revisión hecha sobre otra versión del plan (otros ids)."""
+
+    def _plan(self):
+        return {"unidades": [{"id": "U-1", "orden": 1, "nombre": "U", "lecciones": [
+            {"id": "L-nueva1", "nombre": "Ciclistas", "paginas": [1, 1], "palabras_fuente": 6,
+             "texto": "Dejar espacio lateral de 1,5 mts al adelantar."},
+            {"id": "L-nueva2", "nombre": "Peatones", "paginas": [2, 2], "palabras_fuente": 4,
+             "texto": "Ceder el paso. Ceder el paso."},
+        ]}]}
+
+    def _item(self, buscar, reemplazar="X"):
+        return {"id": "r1", "autor": "a", "fase": "estructura", "estado": "aceptada",
+                "target": {"tipo": "leccion", "id": "L-vieja", "clave": "5.1"},
+                "cambio": {"op": "texto", "args": {"buscar": buscar, "reemplazar": reemplazar}}}
+
+    def test_relocates_when_text_is_unique(self):
+        from content_pipeline.review.apply import apply_review
+        res = apply_review(self._plan(), [self._item("1,5 mts", "1,5 metros")], fase="estructura")
+        self.assertEqual(res["conflictos"], [])
+        self.assertIn("reubicada en 1.1", res["aplicadas"][0]["resumen"])
+        self.assertIn("1,5 metros", res["data"]["unidades"][0]["lecciones"][0]["texto"])
+
+    def test_conflict_when_missing_or_ambiguous(self):
+        from content_pipeline.review.apply import apply_review
+        res = apply_review(self._plan(), [self._item("no existe"), self._item("Ceder el paso.")], fase="estructura")
+        self.assertEqual(len(res["conflictos"]), 2)
+        self.assertIn("no aparece", res["conflictos"][0]["motivo"])
+        self.assertIn("más de una vez", res["conflictos"][1]["motivo"])

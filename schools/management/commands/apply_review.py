@@ -13,6 +13,7 @@ aparece exactamente una vez, se reporta como conflicto y no se aplica.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -33,6 +34,11 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="No escribe; solo reporta qué aplicaría.")
 
     def handle(self, *args, **opts):
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
         if not opts["dry_run"] and not opts.get("out"):
             raise CommandError("Falta --out (o usá --dry-run).")
         reviews = []
