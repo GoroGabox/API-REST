@@ -28,8 +28,10 @@ def cursos_con_acceso_vigente(user) -> set:
     """Ids de cursos a los que `user` (estudiante) tiene acceso VIGENTE.
 
     Acceso vigente = existe un EstudianteCurso cuya AccessKey está 'active' y
-    dentro de su rango temporal. Los cupos de suscripción (valid_until=None) no
-    expiran; las llaves/compras vencen en su `valid_until`. Es la fuente de
+    dentro de su rango temporal (`valid_until`; null = sin vencimiento). Los
+    cupos de suscripción vencen con la suscripción de la escuela (su
+    `valid_until` es `basic_access_until`); las llaves/compras en su propia
+    fecha. Es la fuente de
     verdad para gatear el contenido premium (lecciones, unidades, ejercicios).
     """
     now = timezone.now()
@@ -256,7 +258,7 @@ def tiene_key(escuela, keys_needed):
 def resolver_source_director(escuela, source, keys_needed):
     """Devuelve 'seat' | 'key' | None según disponibilidad en la escuela.
 
-    Un seat consume 1 cupo (acceso ilimitado en tiempo). Una llave habilita 7
+    Un seat consume 1 cupo (acceso hasta que vence la suscripción). Una llave habilita 7
     días, así que otorgar `days` días vía key cuesta `keys_needed` = ceil(days/7)
     llaves.
     """

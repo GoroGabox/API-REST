@@ -85,7 +85,7 @@ class AccessKey(models.Model):
         now = timezone.now()
         if self.status != 'active':
             return False
-        # Seat: sin fecha de expiración.
+        # Sin vencimiento (p. ej. cupo de una suscripción sin fecha de fin).
         if self.valid_until is None:
             return self.valid_from is None or self.valid_from <= now
         return self.valid_from <= now <= self.valid_until
