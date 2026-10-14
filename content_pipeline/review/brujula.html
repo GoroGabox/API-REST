@@ -648,7 +648,7 @@ function applyOp(p,cambio,target){
     else if(op==="figura_quitar"){L[li].figuras.splice(findFig(L[li],a.figura),1);}
     else if(op==="figura_pie"){const f=L[li].figuras[findFig(L[li],a.figura)];f.pie=String(a.pie||"");if("alt" in a)f.alt=String(a.alt);}
     else if(op==="figura_mover"){const [f]=L[li].figuras.splice(findFig(L[li],a.figura),1);const [dui,dli]=findLesson(p,a.leccion||target.id);
-      f.parrafo=a.parrafo==null?null:parseInt(a.parrafo,10);const D=U[dui].lecciones[dli];D.figuras=D.figuras||[];D.figuras.push(f);
+      f.parrafo=a.parrafo==null?null:parseInt(a.parrafo,10);if(a.parrafo!=null)delete f.en_texto;const D=U[dui].lecciones[dli];D.figuras=D.figuras||[];D.figuras.push(f);
       D.figuras.sort((x,y)=>(x.parrafo==null?1e9:+x.parrafo)-(y.parrafo==null?1e9:+y.parrafo));}
     else if(op==="delete")L.splice(li,1);
     else throw new Error("operación desconocida");
@@ -952,6 +952,7 @@ function lessonAlerts(l,u,band){
   else if(l.palabras_fuente<band.min)a.push(`Fuente corta (menos de ${fmt(band.min)} palabras): considerá unirla con la siguiente.`);
   if(/—\s*parte\s*\d+\s*$/i.test(l.nombre)||(u.lecciones.length>1&&l.nombre.trim()===u.nombre.trim()))a.push("Nombre genérico derivado del capítulo: renombrala según su tema.");
   if(!l.paginas||!l.paginas[0])a.push("Sin páginas asociadas.");
+  else if(l.paginas_afinidad!=null&&l.paginas_afinidad<0.5)a.push("Páginas del libro por confirmar: se alinearon automáticamente con baja afinidad.");
   if(l.visual)a.push((l.visual.nivel==="alta"?"Revisión visual obligatoria: ":"Revisar figuras: ")+l.visual.motivo);
   return a;
 }
@@ -1106,8 +1107,20 @@ function renderPlanUnit(e,unit,ui){
 }
 /* ---------- Figuras del libro (plan: figuras[]; curso: recursos[] + {{figura:ID}}) ---------- */
 const FIG_RE=/\{\{figura:([A-Za-z0-9_-]+)\}\}/g;
-function figSrc(f){return f.url||f.archivo||f.archivo_local||"";}
-function figImg(src,alt){return src?`<img src="${esc(src)}" alt="${esc(alt||"")}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'fig-miss',textContent:'(imagen no disponible en este equipo)'}))">`:`<span class="fig-miss">(sin archivo)</span>`;}
+/* Las figuras se resuelven por NOMBRE de archivo (el hash): primero las embebidas en el
+   ZIP (#figs), luego las de una carpeta cargada a mano, y por último la ruta relativa. */
+const FIGS=(()=>{try{const n=document.getElementById("figs");return n?JSON.parse(n.textContent):{}}catch(e){return {}}})();
+const FIGS_LOCAL={};
+const baseName=p=>String(p||"").split(/[\\/]/).pop();
+function figSrc(f){if(f.url)return f.url;const p=f.archivo||f.archivo_local||"",n=baseName(p);return FIGS[n]||FIGS_LOCAL[n]||p;}
+const FIG_MISS=`<span class="fig-miss">Imagen no disponible. <label class="btn">Cargar carpeta de figuras…<input type="file" class="figdir" webkitdirectory multiple hidden></label></span>`;
+function figMiss(img){const t=document.createElement("template");t.innerHTML=FIG_MISS;img.replaceWith(t.content);}
+function figImg(src,alt){return src?`<img src="${esc(src)}" alt="${esc(alt||"")}" loading="lazy" onerror="figMiss(this)">`:FIG_MISS;}
+document.addEventListener("change",ev=>{
+  const inp=ev.target;if(!inp.classList||!inp.classList.contains("figdir"))return;
+  let n=0;[...inp.files].forEach(f=>{if(/\.(png|jpe?g|gif|webp)$/i.test(f.name)){FIGS_LOCAL[f.name]=URL.createObjectURL(f);n++;}});
+  renderAll();toast(n?`${n} figuras cargadas (hasta recargar la página)`:"Esa carpeta no tiene imágenes");
+});
 function withFigures(html,recursos){
   const by={};(recursos||[]).forEach(r=>{if(r.tipo==="imagen")by[r.clave]=r;});
   return html.replace(FIG_RE,(m,id)=>{const r=by[id];if(!r)return `<span class="fig-miss">[figura ${esc(id)} sin recurso]</span>`;
@@ -1117,7 +1130,7 @@ function figsPanelHTML(l,all,k){
   const fs=l.figuras||[];if(!fs.length)return "";
   const segs=String(l.texto||"").split(/\n\s*\n/).map(x=>x.trim()).filter(Boolean),n=segs.length;
   const can=isAud()||canStruct(),prev=all[k-1]&&all[k-1].l,next=all[k+1]&&all[k+1].l;
-  const where=f=>f.parrafo==null?"Sin ubicar en el texto (asignada por página)":(+f.parrafo<0?"Al inicio de la lección":`Tras el párrafo ${+f.parrafo+1}: «${esc(String(segs[+f.parrafo]||"").slice(0,90))}…»`);
+  const where=f=>f.en_texto===false?"Galería de la lección (no va en el texto; ↑/↓ párrafo la inserta)":f.parrafo==null?"Sin ubicar en el texto (asignada por página o anexo)":(+f.parrafo<0?"Al inicio de la lección":`Tras el párrafo ${+f.parrafo+1}: «${esc(String(segs[+f.parrafo]||"").slice(0,90))}…»`);
   return `<section class="figs"><h2>Figuras del libro <small>${fs.length}</small></h2>${fs.map(f=>{
     const par=f.parrafo==null?"":String(f.parrafo),d=`data-fid="${esc(f.id)}" data-lid="${esc(l.id)}"`;
     return `<figure class="figcard">${figImg(figSrc(f),f.alt||f.pie)}<figcaption><b>${esc(f.pie||"(sin pie)")}</b>

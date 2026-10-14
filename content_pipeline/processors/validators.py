@@ -423,7 +423,8 @@ def validate_generated_course(manifest: dict[str, Any], lessons: list[dict[str, 
         orden = int(unidad.get("orden") or 0)
         if not by_unit.get(orden):
             errores.append(f"U{orden}: sin lecciones.")
-        elif not any(l.get("tipo") == "quiz" for l in by_unit[orden]):
+        elif (not any(l.get("tipo") == "quiz" for l in by_unit[orden])
+              and not all(l.get("anexo") for l in by_unit[orden])):      # un anexo no lleva quiz
             advertencias.append(f"U{orden}: sin quiz de cierre.")
 
     for lesson in lessons:
@@ -453,7 +454,9 @@ def validate_generated_course(manifest: dict[str, Any], lessons: list[dict[str, 
         if lesson.get("fuente_debil") or STUB_MARKER in content:
             stubs.append(label)
             continue
-        missing = [s for s in (*CORE_SECTIONS, "## Fuente") if s not in content]
+        # Un anexo de figuras es un listado: solo se le exige la fuente.
+        exigidas = ("## Fuente",) if lesson.get("anexo") else (*CORE_SECTIONS, "## Fuente")
+        missing = [s for s in exigidas if s not in content]
         if missing:
             errores.append(f"{label}: faltan secciones {', '.join(missing)}.")
         # Figuras: cada {{figura:ID}} debe tener su recurso imagen en la lección.

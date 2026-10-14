@@ -9,6 +9,7 @@ exporta ``review_<codigo>_<autor>.json``, que devuelve al dueño del curso.
 """
 from __future__ import annotations
 
+import base64
 import json
 import zipfile
 from pathlib import Path
@@ -29,7 +30,8 @@ SKELETON_HEAD = (
 LEEME = """BRÚJULA DEL LIBRO — revisión del curso {codigo}
 =============================================
 
-1. Descomprimí esta carpeta y abrí «brujula.html» con doble clic (Chrome, Edge o Firefox).
+1. DESCOMPRIMÍ el ZIP (clic derecho → «Extraer todo») y recién ahí abrí «brujula.html» con doble
+   clic (Chrome, Edge o Firefox). Las figuras del libro van dentro del propio archivo.
    No necesita internet salvo para las tipografías.
 2. Arriba a la derecha escribí tu nombre (queda como autor de tus observaciones).
 3. Fase «Estructura»: revisá unidades y lecciones. Las herramientas (subir, dividir, unir,
@@ -44,22 +46,26 @@ solo llega al responsable cuando exportás y enviás el archivo.
 """
 
 
-def _collect_figures(bundle: dict, opts: dict) -> dict[str, Path]:
-    """Archivos de figuras a incluir en el ZIP ({ruta en el zip: archivo local}).
+_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
 
-    Las rutas del plan (``figuras[].archivo``) y del curso (``recursos[].archivo_local``)
-    son relativas a su JSON; en el ZIP quedan en ``figuras/<nombre>`` y la ruta del
-    bundle se reescribe a esa ubicación (la Brújula las abre junto a ``brujula.html``).
+
+def _collect_figures(bundle: dict, opts: dict) -> dict[str, str]:
+    """Figuras del plan/curso EMBEBIDAS: ``{nombre de archivo: data URI}``.
+
+    Van dentro del HTML (no como archivos sueltos) para que la Brújula las muestre
+    siempre: abierta desde el ZIP sin descomprimir, movida de carpeta o con un plan
+    guardado antes. La Brújula las resuelve por NOMBRE de archivo (el hash de la figura),
+    así que no importa la ruta que traiga el plan. Las rutas del plan
+    (``figuras[].archivo``) y del curso (``recursos[].archivo_local``) son relativas a su JSON.
     """
-    files: dict[str, Path] = {}
+    figs: dict[str, str] = {}
 
-    def add(base: Path, ref: str) -> str:
+    def add(base: Path, ref: str) -> None:
         path = Path(ref) if Path(ref).is_absolute() else base / ref
-        if not path.exists():
-            return ref
-        arc = f"figuras/{path.name}"
-        files[arc] = path
-        return arc
+        mime = _MIME.get(path.suffix.lower())
+        if path.name in figs or not mime or not path.exists():
+            return
+        figs[path.name] = f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
     if bundle.get("plan") and opts.get("plan"):
         base = Path(opts["plan"]).parent
@@ -67,14 +73,14 @@ def _collect_figures(bundle: dict, opts: dict) -> dict[str, Path]:
             for lec in u.get("lecciones") or []:
                 for f in lec.get("figuras") or []:
                     if f.get("archivo"):
-                        f["archivo"] = add(base, f["archivo"])
+                        add(base, f["archivo"])
     if bundle.get("course") and opts.get("course"):
         base = Path(opts["course"]).parent
         for lec in bundle["course"].get("lessons") or []:
             for r in lec.get("recursos") or []:
                 if r.get("archivo_local") and not r.get("url"):
-                    r["archivo_local"] = add(base, r["archivo_local"])
-    return files
+                    add(base, r["archivo_local"])
+    return figs
 
 
 class Command(BaseCommand):
@@ -113,6 +119,8 @@ class Command(BaseCommand):
         payload = json.dumps(bundle, ensure_ascii=False).replace("</", "<\\/")
         page = TEMPLATE.read_text(encoding="utf-8")
         tag = f'<script type="application/json" id="bundle">{payload}</script>\n'
+        if figuras:  # aparte del bundle: el plan se guarda en localStorage y las imágenes no caben ahí
+            tag += f'<script type="application/json" id="figs">{json.dumps(figuras)}</script>\n'
         idx = page.find("<script>")
         page = page[:idx] + tag + page[idx:] if idx >= 0 else page + tag
         html = SKELETON_HEAD + page + "\n</body></html>\n"
@@ -122,8 +130,6 @@ class Command(BaseCommand):
         with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("brujula.html", html)
             zf.writestr("LEEME.txt", LEEME.format(codigo=codigo, codigo_l=codigo.lower()))
-            for arcname, path in figuras.items():
-                zf.write(path, arcname)
         n_l = sum(len(u.get("lecciones", [])) for u in (bundle.get("plan") or {}).get("unidades", []))
         n_c = len((bundle.get("course") or {}).get("lessons", []))
         self.stdout.write(self.style.SUCCESS(

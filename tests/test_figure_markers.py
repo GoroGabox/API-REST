@@ -196,5 +196,8 @@ class PlanFiguresAndBrujulaTests(SimpleTestCase):
         with zipfile.ZipFile(zip_p) as z:
             names = z.namelist()
             html = z.read("brujula.html").decode("utf-8")
-        self.assertIn("figuras/" + Path(fig["archivo"]).name, names)
-        self.assertIn('"archivo": "figuras/' + Path(fig["archivo"]).name, html)
+        # Las figuras van EMBEBIDAS en el HTML (por nombre de archivo), no como archivos sueltos.
+        self.assertEqual(sorted(names), ["LEEME.txt", "brujula.html"])
+        self.assertIn('<script type="application/json" id="figs">', html)
+        self.assertIn('"' + Path(fig["archivo"]).name + '": "data:image/png;base64,', html)
+        self.assertIn("FIGS[n]||FIGS_LOCAL[n]", html)                         # la Brújula resuelve por nombre

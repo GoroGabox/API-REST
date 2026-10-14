@@ -255,6 +255,8 @@ def apply_structure_op(plan: dict[str, Any], cambio: dict[str, Any], target: dic
             dui, dli = _find_lesson(plan, str(args.get("leccion") or tid))
             par = args.get("parrafo")
             fig["parrafo"] = None if par is None else int(par)
+            if par is not None:
+                fig.pop("en_texto", None)       # ubicarla en un párrafo la saca de la galería
             destino = units[dui]["lecciones"][dli].setdefault("figuras", [])
             destino.append(fig)
             destino.sort(key=lambda f: (10 ** 9 if f.get("parrafo") is None else int(f["parrafo"])))

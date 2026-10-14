@@ -43,10 +43,9 @@ data/output/*/*
 /curso_*.json
 /prueba*.json
 /ejercicios_*.json
-/out/*.json
-/out/*.zip
-# Figuras extraídas junto al plan/curso y medios publicados en local (publish_media --storage local)
-/out/figuras_*/
+# out/ completo: planes, cursos, revisiones, brújulas y figuras, organizados por curso
+/out/
+# Medios publicados en local (publish_media --storage local)
 /autotestAPI/media/
 
 # IDE

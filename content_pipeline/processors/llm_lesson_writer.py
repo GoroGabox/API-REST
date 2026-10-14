@@ -798,6 +798,17 @@ def write_quiz_from_plan(
     return {"questions": questions, "passing_score": 75}, meta, True
 
 
+def anexo_body(title: str, figuras: list[dict[str, Any]], fuente_md: str) -> str:
+    """Contenido de una lección ANEXO: el listado de sus figuras (cada una con su pie).
+
+    Determinista (sin LLM): el anexo no enseña con prosa, cataloga las figuras del libro
+    (p. ej. todas las señales de tránsito). El cliente muestra el pie como leyenda.
+    """
+    marcas = "\n\n".join("{{figura:" + f["id"] + "}}" for f in figuras if f.get("id"))
+    return (f"# {title}\n\n## Desarrollo\n\nListado de las {len(figuras)} figuras del libro para este tema.\n\n"
+            f"{marcas}\n\n## Fuente\n{fuente_md}\n")
+
+
 def generate_lessons_from_plan(
     plan: dict[str, Any],
     *,
@@ -832,19 +843,29 @@ def generate_lessons_from_plan(
             tope = int(lec.get("palabras_objetivo") or 900)
             _min_p, max_p = lesson_length(len(texto.split()), tope)
             fuente_md = f"{source_name}, páginas {pgs[0]}-{pgs[1]}."
-            body, redactada = write_lesson_from_source_meta(
-                title=title, tema=title, unidad_nombre=unidad_nombre,
-                source_text=texto, palabras=tope, fuente_md=fuente_md,
-                client=client, model=model, orientacion=orientacion, visual=lec.get("visual"),
-                figuras=lec.get("figuras"),
-            )
             figuras = lec.get("figuras") or []
-            body, marcadores = sanitize_markers(body, figuras)
+            # `en_texto: false` = figura de galería: va en los recursos de la lección pero el
+            # redactor no la recibe ni se inserta en el texto.
+            en_texto = [f for f in figuras if f.get("en_texto") is not False]
+            es_anexo = bool(lec.get("anexo"))
+            if es_anexo:
+                # Anexo de figuras (p. ej. todas las señales): contenido determinista, sin LLM.
+                body, redactada = anexo_body(title, en_texto, fuente_md), True
+            else:
+                body, redactada = write_lesson_from_source_meta(
+                    title=title, tema=title, unidad_nombre=unidad_nombre,
+                    source_text=texto, palabras=tope, fuente_md=fuente_md,
+                    client=client, model=model, orientacion=orientacion, visual=lec.get("visual"),
+                    figuras=en_texto,
+                )
+            body, marcadores = sanitize_markers(body, en_texto)
             recursos = []
             for k, f in enumerate(figuras, start=1):
                 rec = figura_recurso(f, orden=k)
                 if f["id"] in marcadores["auto"]:
                     rec["meta"]["insertada"] = "auto"   # el redactor no la ubicó: revisar
+                if f.get("en_texto") is False:
+                    rec["meta"]["galeria"] = True
                 recursos.append(rec)
             yield {
                 "unidad_orden": orden,
@@ -872,15 +893,19 @@ def generate_lessons_from_plan(
                 "fuente_debil": not redactada,
                 "plan_id": lec.get("id") or lesson_id(texto),  # vínculo estable con el plan (revisión humana)
                 # Fuente mayormente gráfica: revisar la lección contra el libro (no bloquea).
-                "revision_visual": lec.get("visual"),
+                "revision_visual": None if es_anexo else lec.get("visual"),
+                "anexo": es_anexo,                      # sin redacción ni quiz; no se audita
                 "recursos": recursos,                   # figuras (archivo_local; publish_media las sube)
                 "figuras_meta": {k: v for k, v in marcadores.items() if v} or None,
                 "_source_text": texto,  # para la auditoría de fidelidad (no se persiste)
             }
             position += 1
 
+        evaluables = [lec for lec in lecciones if not lec.get("anexo")]
+        if not evaluables:
+            continue                                # unidad solo de anexos: sin quiz
         quiz, quiz_meta, quiz_ok = write_quiz_from_plan(
-            unidad_nombre=unidad_nombre, lecciones=lecciones, client=client, model=model)
+            unidad_nombre=unidad_nombre, lecciones=evaluables, client=client, model=model)
         yield {
             "unidad_orden": orden,
             "unidad_nombre": unidad_nombre,

@@ -409,6 +409,8 @@ class Command(BaseCommand):
         orientacion = orientation_for(codigo, opts.get("orientacion"))
 
         plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
+        # Plan alineado con el libro (attach_figures): se cita esa fuente y sus páginas.
+        source_name = opts["source_name"] or (plan.get("curso") or {}).get("fuente_nombre") or source_name
         use_llm = LLMClient.is_available()
         client = LLMClient() if use_llm else None
         lesson_model = opts.get("lesson_model") or draft_model()  # redacción = Haiku por defecto
@@ -474,10 +476,13 @@ class Command(BaseCommand):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         # Figuras del plan: sus archivos son relativos al plan → relativos al JSON del curso.
         if rebase_archivos(lessons, plan_path.parent, out_path.parent):
-            n_fig = sum(1 for l in lessons for r in l.get("recursos") or [] if r.get("rol") == "figura")
-            n_auto = sum(1 for l in lessons for r in l.get("recursos") or [] if (r.get("meta") or {}).get("insertada"))
-            self.stdout.write(f"Figuras: {n_fig} insertadas en el texto ({n_auto} ubicadas automáticamente). "
-                              "Publicalas con publish_media antes de importar.")
+            figs = [(l, r) for l in lessons for r in l.get("recursos") or [] if r.get("rol") == "figura"]
+            n_anexo = sum(1 for l, _r in figs if l.get("anexo"))
+            n_gal = sum(1 for _l, r in figs if (r.get("meta") or {}).get("galeria"))
+            n_auto = sum(1 for _l, r in figs if (r.get("meta") or {}).get("insertada"))
+            self.stdout.write(
+                f"Figuras: {len(figs) - n_anexo - n_gal} dentro del texto ({n_auto} ubicadas automáticamente) · "
+                f"{n_gal} en galería · {n_anexo} en anexos. Publicalas con publish_media antes de importar.")
         write_json(out_path, payload)
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"Curso generado desde plan: {len(lessons)} lecciones → {out_path}"))

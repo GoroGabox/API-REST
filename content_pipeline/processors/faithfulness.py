@@ -47,7 +47,8 @@ ANCHOR_MIN = 0.28
 # prefijos (km/h antes que km; mg/l antes que mg; g/l antes que g).
 _UNIT_PATTERNS: list[tuple[str, str]] = [
     ("%", r"%|por\s*ciento"),
-    ("km/h", r"km\s*/\s*h|km\s+por\s+hora|kil[oó]metros?\s+por\s+hora|kph"),
+    # "k/h" y "kms/h": abreviaturas habituales en guías escritas a mano ("80k/h").
+    ("km/h", r"kms?\s*/\s*h|k\s*/\s*h|km\s+por\s+hora|kil[oó]metros?\s+por\s+hora|kph"),
     ("g/l", r"g(?:r|ramos?)?\.?\s*/\s*(?:l|lt|litro)\b|gramos?\s+(?:de\s+alcohol\s+)?por\s+litro"),
     ("mg/l", r"mg\s*/\s*(?:l|dl|100\s*ml)\b|miligramos?\s+por\s+(?:litro|decilitro)"),
     ("mg", r"mg|miligramos?"),
@@ -273,7 +274,7 @@ def audit_lessons_from_plan(
     anclaje_bajo: list[dict[str, Any]] = []
     auditadas = 0
     for lesson in lessons:
-        if lesson.get("tipo") != "texto":
+        if lesson.get("tipo") != "texto" or lesson.get("anexo"):   # el anexo de figuras no tiene prosa
             continue
         src = str(lesson.get("_source_text", ""))
         if not src:
@@ -295,7 +296,7 @@ def build_lesson_sources_from_plan(
 ) -> list[tuple[dict[str, Any], str]]:
     """Pares (lección, texto fuente) para el juez, desde lecciones con ``_source_text``."""
     return [(l, str(l.get("_source_text", "")))
-            for l in lessons if l.get("tipo") == "texto" and str(l.get("_source_text", "")).strip()]
+            for l in lessons if l.get("tipo") == "texto" and not l.get("anexo") and str(l.get("_source_text", "")).strip()]
 
 
 def audit_generated_json(lessons: list[dict[str, Any]]) -> dict[str, Any]:
@@ -336,6 +337,9 @@ COVERAGE_MIN = 0.6
 # El juez ve la fuente y la lección completas (antes se cortaban a 8.000 caracteres
 # y el final de las lecciones largas quedaba sin auditar).
 _JUDGE_SOURCE_CHARS = 30_000
+# Presupuesto de salida del juez (holgado: el razonamiento del modelo también consume) y su tope al reintentar.
+_JUDGE_MAX_TOKENS = 8_000
+_JUDGE_MAX_TOKENS_TOPE = 16_000
 
 JUDGE_SYSTEM = """\
 Eres un auditor de fidelidad de contenido educativo para licencias de conducir en
@@ -427,20 +431,35 @@ def _clean_list(value: Any) -> list[str]:
     return [str(c).strip() for c in (value or []) if str(c).strip()]
 
 
-def _judge_one(content: str, source: str, *, client, model: str) -> dict[str, Any]:
-    from content_pipeline.llm.client import parse_json_object
+def _json_del_juez(client, *, system: str, user: str, model: str, max_tokens: int) -> dict[str, Any]:
+    """JSON de la respuesta del juez, con un reintento con el doble de presupuesto.
 
-    raw = client.complete(
-        system=JUDGE_SYSTEM,
+    Los modelos con razonamiento gastan parte de ``max_tokens`` antes de escribir: con
+    poco margen la respuesta llega vacía o cortada ("no contiene un objeto JSON") y la
+    lección quedaba sin juzgar. Solo se cobra lo que el modelo usa.
+    """
+    from content_pipeline.llm.client import LLMError, parse_json_object
+
+    for intento in range(2):
+        raw = client.complete(system=system, user=user, max_tokens=max_tokens, model=model, temperature=0.0)
+        try:
+            return parse_json_object(raw)
+        except LLMError:
+            if intento:
+                raise
+            max_tokens = min(_JUDGE_MAX_TOKENS_TOPE, max_tokens * 2)
+    raise AssertionError("inalcanzable")
+
+
+def _judge_one(content: str, source: str, *, client, model: str) -> dict[str, Any]:
+    data = _json_del_juez(
+        client, system=JUDGE_SYSTEM,
         user=JUDGE_USER.format(
             fuente=shorten_text(source, _JUDGE_SOURCE_CHARS),
             leccion=shorten_text(content, _JUDGE_SOURCE_CHARS),
         ),
-        max_tokens=1_500,
-        model=model,
-        temperature=0.0,
+        model=model, max_tokens=_JUDGE_MAX_TOKENS,
     )
-    data = parse_json_object(raw)
 
     def _score(key: str) -> float | None:
         try:
@@ -564,12 +583,10 @@ def _quiz_items_text(questions: list[dict[str, Any]]) -> str:
 
 def _flagged_quiz_items(questions: list[dict[str, Any]], *, client, model: str) -> dict[int, str]:
     """Índices (0-based) de preguntas con un problema CONCRETO → motivo."""
-    from content_pipeline.llm.client import parse_json_object
-
-    raw = client.complete(system=QUIZ_JUDGE_SYSTEM, user=_quiz_items_text(questions),
-                          max_tokens=300 + 160 * len(questions), model=model, temperature=0.0)
+    data = _json_del_juez(client, system=QUIZ_JUDGE_SYSTEM, user=_quiz_items_text(questions), model=model,
+                          max_tokens=_JUDGE_MAX_TOKENS // 2 + 160 * len(questions))
     out: dict[int, str] = {}
-    for it in parse_json_object(raw).get("items") or []:
+    for it in data.get("items") or []:
         if not isinstance(it, dict) or it.get("ok") is not False:
             continue
         problema = str(it.get("problema") or "").strip()

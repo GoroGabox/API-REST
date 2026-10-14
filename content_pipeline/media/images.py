@@ -539,9 +539,10 @@ _DESC_SYSTEM = (
 def describe_figures_llm(items: list[tuple[Figura, str]], *, client: Any, model: str,
                          ) -> dict[str, dict[str, Any]]:
     """{hash: {relevante, pie, alt, motivo}} por figura. Figuras que fallan no aparecen."""
-    from content_pipeline.llm.client import parse_json_object
+    from content_pipeline.llm.client import LLMError, parse_json_object
 
     out: dict[str, dict[str, Any]] = {}
+    fallos = 0
     for fig, leccion in items:
         contexto = " · ".join(t for t in (fig.ancla_antes[-300:], fig.pie_libro, fig.ancla_despues[:300]) if t)
         user = [
@@ -552,6 +553,14 @@ def describe_figures_llm(items: list[tuple[Figura, str]], *, client: Any, model:
         try:
             raw = client.complete(system=_DESC_SYSTEM, user=user, max_tokens=1500, model=model,
                                   temperature=0.0)
+        except Exception as exc:  # noqa: BLE001
+            # Sin ninguna respuesta todavía y varios fallos seguidos: la IA no está disponible
+            # (clave inválida, cuota, red). Se corta en vez de "describir" 300 figuras en vacío.
+            fallos += 1
+            if not out and fallos >= 3:
+                raise LLMError(f"la IA de visión no responde: {exc}") from exc
+            continue
+        try:
             data = parse_json_object(raw)
         except Exception:  # noqa: BLE001 — best-effort: la figura se conserva sin descripción IA
             continue
