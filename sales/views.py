@@ -1,3 +1,6 @@
+import json
+import logging
+
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from django.utils import timezone
@@ -50,6 +53,8 @@ from .services import (
     mensaje_sin_saldo as _mensaje_sin_saldo,
     asignar_por_source as _asignar_por_source,
 )
+
+logger = logging.getLogger(__name__)
 from accounts.notifications import notificar
 
 
@@ -1298,12 +1303,26 @@ class PaymentStrategy(ABC):
     def confirm_transaction(self, request_data) -> dict:
         pass
 
+class TransbankUpstreamError(Exception):
+    """Transbank (o algo delante) respondió algo inutilizable."""
+
+
 class TransbankPaymentStrategy(PaymentStrategy):
     def create_transaction(self, amount, buy_order, session_id):
         options = _build_webpay_options()
         tx = Transaction(options)
         return_url = _frontend_return_url()
-        response = tx.create(buy_order, session_id, amount, return_url)
+        try:
+            response = tx.create(buy_order, session_id, amount, return_url)
+        except json.JSONDecodeError as e:
+            # El SDK hace json.loads del body: si Transbank (o un firewall/proxy
+            # delante) responde HTML, el error crudo no dice nada. e.doc = body.
+            logger.error("Transbank create devolvió no-JSON (host=%s): %r",
+                         getattr(options, "integration_type", "?"), (e.doc or "")[:500])
+            raise TransbankUpstreamError(
+                "Transbank respondió algo que no es JSON (posible bloqueo de red/firewall). "
+                "Revisar logs del servidor."
+            ) from e
 
         return {
             "url": response["url"],
@@ -1414,6 +1433,8 @@ class UnifiedSaleInitiationView(APIView):
             return Response(payment_data, status=status.HTTP_200_OK)
         except NotImplementedError as e:
             return Response({"error": str(e)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        except TransbankUpstreamError as e:
+            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
