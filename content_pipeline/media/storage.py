@@ -1,17 +1,17 @@
-"""Destino de los medios generados (audios e imágenes): disco local o bucket S3-compatible.
+"""Destino de los medios generados (audios, figuras, PDFs): disco local o bucket S3-compatible.
 
-Railway tiene filesystem efímero, así que en producción los .mp3 y las figuras van a
-un bucket (Cloudflare R2 o AWS S3) con URL pública. En local basta MEDIA_ROOT +
-runserver. Como TTS/email, se elige por configuración. Audios e imágenes comparten
-bucket y credenciales; solo cambia la carpeta/prefijo (``kind``).
+Railway tiene filesystem efímero, así que en producción los medios van a un bucket
+(Cloudflare R2 o AWS S3) con URL pública. En local basta MEDIA_ROOT + runserver. Como
+TTS/email, se elige por configuración. Todos los tipos comparten bucket y credenciales;
+solo cambia la carpeta/prefijo (``kind``).
 
-Config (settings o entorno):
-    AUDIO_STORAGE               -> 'local' (default) | 's3'
-    AUDIO_S3_BUCKET             -> nombre del bucket
-    AUDIO_S3_ENDPOINT_URL       -> R2: https://<account>.r2.cloudflarestorage.com (vacío en AWS)
-    AUDIO_S3_REGION             -> 'auto' en R2; región en AWS
-    AUDIO_S3_ACCESS_KEY_ID / AUDIO_S3_SECRET_ACCESS_KEY
-    AUDIO_S3_PUBLIC_BASE_URL    -> URL pública del bucket (R2: dominio r2.dev o propio)
+Config (settings o entorno; los nombres viejos AUDIO_STORAGE / AUDIO_S3_* valen como alias):
+    MEDIA_STORAGE               -> 'local' (default) | 's3'
+    MEDIA_S3_BUCKET             -> nombre del bucket
+    MEDIA_S3_ENDPOINT_URL       -> R2: https://<account>.r2.cloudflarestorage.com (vacío en AWS)
+    MEDIA_S3_REGION             -> 'auto' en R2; región en AWS
+    MEDIA_S3_ACCESS_KEY_ID / MEDIA_S3_SECRET_ACCESS_KEY
+    MEDIA_S3_PUBLIC_BASE_URL    -> URL pública del bucket (R2: dominio propio o r2.dev)
     AUDIO_S3_PREFIX             -> 'course_audio/' (default)
     IMAGES_S3_PREFIX            -> 'course_images/' (default)
     DOCS_S3_PREFIX              -> 'course_docs/' (default; PDFs de páginas del libro)
@@ -29,6 +29,23 @@ _PREFIX_CONF = {"audio": "AUDIO_S3_PREFIX", "images": "IMAGES_S3_PREFIX", "docs"
 _CONTENT_TYPES = {".mp3": "audio/mpeg", ".png": "image/png", ".jpg": "image/jpeg",
                   ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
                   ".pdf": "application/pdf"}
+
+
+def _media_conf(name: str, default: str = "") -> str:
+    """``MEDIA_<name>`` con ``AUDIO_<name>`` como alias (nombre previo, cuando solo había audios)."""
+    return _conf(f"MEDIA_{name}") or _conf(f"AUDIO_{name}") or default
+
+
+def _endpoint_sin_bucket(endpoint: str, bucket: str) -> str:
+    """Quita un ``/<bucket>`` final del endpoint.
+
+    El panel de R2 muestra la URL de la API S3 con el bucket al final; boto3 lo vuelve a
+    agregar y las claves quedarían como ``<bucket>/<prefijo>/…`` (404 en la URL pública).
+    """
+    endpoint = (endpoint or "").rstrip("/")
+    if bucket and endpoint.endswith("/" + bucket):
+        endpoint = endpoint[: -len(bucket) - 1]
+    return endpoint
 
 
 def _content_type(filename: str) -> str:
@@ -87,32 +104,32 @@ class S3Storage:
 
     def __init__(self, *, client=None, bucket: str | None = None, public_base_url: str | None = None,
                  prefix: str | None = None, kind: str = "audio"):
-        self.bucket = bucket or _conf("AUDIO_S3_BUCKET")
-        public = public_base_url or _conf("AUDIO_S3_PUBLIC_BASE_URL")
+        self.bucket = bucket or _media_conf("S3_BUCKET")
+        public = public_base_url or _media_conf("S3_PUBLIC_BASE_URL")
         if prefix is None:
             prefix = _conf(_PREFIX_CONF.get(kind, "AUDIO_S3_PREFIX"), _SUBDIRS.get(kind, "course_audio") + "/")
         if not self.bucket:
-            raise StorageError("Falta AUDIO_S3_BUCKET.")
+            raise StorageError("Falta MEDIA_S3_BUCKET.")
         if not public:
-            raise StorageError("Falta AUDIO_S3_PUBLIC_BASE_URL (URL pública del bucket).")
+            raise StorageError("Falta MEDIA_S3_PUBLIC_BASE_URL (URL pública del bucket).")
         self.public_base_url = _with_slash(public)
         self.prefix = _with_slash(prefix) if prefix else ""
-        self.client = client or self._build_client()
+        self.client = client or self._build_client(self.bucket)
 
     @staticmethod
-    def _build_client():
+    def _build_client(bucket: str):
         try:
             import boto3
         except ImportError as exc:  # pragma: no cover - depende del entorno
             raise StorageError("Falta boto3 para subir al bucket: pip install boto3") from exc
-        key_id = _conf("AUDIO_S3_ACCESS_KEY_ID")
-        secret = _conf("AUDIO_S3_SECRET_ACCESS_KEY")
+        key_id = _media_conf("S3_ACCESS_KEY_ID")
+        secret = _media_conf("S3_SECRET_ACCESS_KEY")
         if not key_id or not secret:
-            raise StorageError("Faltan AUDIO_S3_ACCESS_KEY_ID / AUDIO_S3_SECRET_ACCESS_KEY.")
+            raise StorageError("Faltan MEDIA_S3_ACCESS_KEY_ID / MEDIA_S3_SECRET_ACCESS_KEY.")
         return boto3.client(
             "s3",
-            endpoint_url=_conf("AUDIO_S3_ENDPOINT_URL") or None,
-            region_name=_conf("AUDIO_S3_REGION") or None,
+            endpoint_url=_endpoint_sin_bucket(_media_conf("S3_ENDPOINT_URL"), bucket) or None,
+            region_name=_media_conf("S3_REGION") or None,
             aws_access_key_id=key_id,
             aws_secret_access_key=secret,
         )
@@ -152,7 +169,7 @@ class S3Storage:
 
 def get_storage(name: str | None = None, *, kind: str = "audio", **opts) -> AudioStorage:
     """Storage para ``kind`` = 'audio' | 'images' | 'docs'. `opts` (media_dir/base_url) solo aplican al local."""
-    name = (name or _conf("AUDIO_STORAGE", "local") or "local").lower()
+    name = (name or _media_conf("STORAGE", "local")).lower()
     if name == "local":
         return LocalStorage(subdir=_SUBDIRS.get(kind, "course_audio"), **opts)
     if name == "s3":

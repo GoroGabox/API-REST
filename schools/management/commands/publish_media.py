@@ -52,7 +52,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--file", required=True, help="JSON del curso.")
         parser.add_argument("--out", required=True, help="JSON de salida con las URLs.")
-        parser.add_argument("--storage", default=None, help="local | s3 (def. AUDIO_STORAGE).")
+        parser.add_argument("--storage", default=None, help="local | s3 (def. MEDIA_STORAGE).")
         parser.add_argument("--media-dir", default=None, help="Storage local: carpeta raíz (se agrega el subdirectorio del tipo).")
         parser.add_argument("--base-url", default=None, help="Storage local: URL base (se agrega el subdirectorio del tipo).")
         parser.add_argument("--paginas-libro", action="store_true",

@@ -19,6 +19,9 @@ PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
 
+# Medios siempre en disco local: un .env con MEDIA_STORAGE=s3 no debe subir al bucket real.
+MEDIA_STORAGE = 'local'
+
 # Throttling desactivado en tests: la suite hace muchas llamadas repetidas
 # (p. ej. probar códigos 2FA inválidos) y debe ser determinista, no recibir 429.
 # Se conservan las keys de scope con rate None (desactiva sin romper la

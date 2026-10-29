@@ -78,7 +78,7 @@ class Command(BaseCommand):
                             help="Proveedor TTS: elevenlabs | openai (default: TTS_PROVIDER).")
         parser.add_argument("--voice", default=None, help="Override del id de voz del proveedor.")
         parser.add_argument("--storage", default=None,
-                            help="Destino de los audios: local | s3 (default: AUDIO_STORAGE o local).")
+                            help="Destino de los audios: local | s3 (default: MEDIA_STORAGE o local).")
         parser.add_argument("--tipos", default="texto",
                             help="Tipos de lección a locutar, separados por coma (default: texto).")
         parser.add_argument("--media-dir", default=None,

@@ -222,16 +222,25 @@ OPENAI_TTS_MODEL = os.environ.get('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
 OPENAI_TTS_VOICE = os.environ.get('OPENAI_TTS_VOICE', 'coral')
 OPENAI_TTS_INSTRUCTIONS = os.environ.get('OPENAI_TTS_INSTRUCTIONS', '')
 
-# Destino de los .mp3: 'local' (MEDIA_ROOT) o 's3' (bucket S3/R2 con URL pública;
-# Railway tiene FS efímero). Solo lo usa `generate_media` en local.
-AUDIO_STORAGE = os.environ.get('AUDIO_STORAGE', 'local')
-AUDIO_S3_BUCKET = os.environ.get('AUDIO_S3_BUCKET', '')
-AUDIO_S3_ENDPOINT_URL = os.environ.get('AUDIO_S3_ENDPOINT_URL', '')  # R2: https://<account>.r2.cloudflarestorage.com
-AUDIO_S3_REGION = os.environ.get('AUDIO_S3_REGION', '')  # R2: 'auto'
-AUDIO_S3_ACCESS_KEY_ID = os.environ.get('AUDIO_S3_ACCESS_KEY_ID', '')
-AUDIO_S3_SECRET_ACCESS_KEY = os.environ.get('AUDIO_S3_SECRET_ACCESS_KEY', '')
-AUDIO_S3_PUBLIC_BASE_URL = os.environ.get('AUDIO_S3_PUBLIC_BASE_URL', '')
+# Medios de cursos (audios, figuras, PDFs de páginas): 'local' (MEDIA_ROOT) o 's3'
+# (bucket S3/R2 con URL pública; Railway tiene FS efímero). Solo los usan los comandos
+# locales `generate_media` / `publish_media`; el backend desplegado solo guarda las URLs.
+# Los nombres viejos AUDIO_STORAGE / AUDIO_S3_* se aceptan como alias.
+def _media_env(name, default=''):
+    return os.environ.get(f'MEDIA_{name}') or os.environ.get(f'AUDIO_{name}') or default
+
+
+MEDIA_STORAGE = _media_env('STORAGE', 'local')
+MEDIA_S3_BUCKET = _media_env('S3_BUCKET')
+MEDIA_S3_ENDPOINT_URL = _media_env('S3_ENDPOINT_URL')  # R2: https://<account>.r2.cloudflarestorage.com
+MEDIA_S3_REGION = _media_env('S3_REGION')  # R2: 'auto'
+MEDIA_S3_ACCESS_KEY_ID = _media_env('S3_ACCESS_KEY_ID')
+MEDIA_S3_SECRET_ACCESS_KEY = _media_env('S3_SECRET_ACCESS_KEY')
+MEDIA_S3_PUBLIC_BASE_URL = _media_env('S3_PUBLIC_BASE_URL')
+# Carpeta (prefijo) por tipo de medio dentro del bucket.
 AUDIO_S3_PREFIX = os.environ.get('AUDIO_S3_PREFIX', 'course_audio/')
+IMAGES_S3_PREFIX = os.environ.get('IMAGES_S3_PREFIX', 'course_images/')
+DOCS_S3_PREFIX = os.environ.get('DOCS_S3_PREFIX', 'course_docs/')
 
 # ============================================================================
 # Email — configuración por env (provider-agnóstico).
