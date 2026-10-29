@@ -103,7 +103,14 @@ def sanitize_markers(body: str, figuras: list[dict[str, Any]] | None) -> tuple[s
 
 
 def strip_markers(text: str, figuras: list[dict[str, Any]] | None = None, *, modo: str = "quitar") -> str:
-    """Sin marcadores (``quitar``) o como ``[Figura: pie]`` (``pie``, para el juez)."""
+    """Sin marcadores (``quitar``) o como ``[Figura: pie]`` (``pie``, para el juez).
+
+    También quita la sintaxis de recuadros y tablas (``content_blocks.strip_components``):
+    es la entrada del guion TTS, el juez y la auditoría de cifras/anclaje.
+    """
+    from content_pipeline.processors.content_blocks import strip_components
+
+    text = strip_components(str(text or ""))
     if modo == "pie":
         pies = {f.get("id") or f.get("clave"): (f.get("pie") or (f.get("meta") or {}).get("pie") or "")
                 for f in figuras or []}

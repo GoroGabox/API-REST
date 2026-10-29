@@ -186,6 +186,33 @@
   .reading ul{margin:0 0 1.05em;padding-left:1.2em}
   .reading li{margin:.25em 0}
   .reading ::selection{background:color-mix(in srgb,var(--edit) 25%,transparent)}
+  /* Componentes de contenido (docs/contenido_lecciones.md): recuadros por prioridad y tablas */
+  .co{--co:#6b7480;--co-bg:color-mix(in srgb,var(--co) 11%,var(--page));margin:0 0 1.05em;padding:12px 16px 2px 16px;border-left:5px solid var(--co);border-radius:0 14px 14px 0;background:var(--co-bg)}
+  .co-norma{--co:#c0392b} .co-atencion{--co:#b7791f} .co-debes_saber{--co:#005776} .co-consejo{--co:#2e7d57}
+  .co-dato{--co:#c9b48f;--co-bg:#f7efde} .co-x{--co:#9aa2ab}
+  .co-h{display:flex;align-items:center;gap:8px;font-family:var(--f-ui);font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--co);margin-bottom:6px}
+  .co-dato .co-h{color:var(--ink-2)}
+  .co-i{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:999px;background:color-mix(in srgb,var(--co) 22%,transparent);font-size:12px;letter-spacing:0}
+  .co-t{text-transform:none;letter-spacing:0;font-size:13px;color:var(--ink)}
+  .reading blockquote{margin:0 0 1.05em;padding:2px 0 2px 14px;border-left:3px solid var(--line-2);color:var(--ink-2)}
+  .tbl{margin:0 0 1.2em;overflow-x:auto}
+  .tbl-t{font-family:var(--f-ui);font-size:13px;font-weight:600;color:var(--ink-2);margin-bottom:6px}
+  .tbl table{border-collapse:collapse;font-family:var(--f-ui);font-size:14px;line-height:1.45;min-width:60%}
+  .tbl th,.tbl td{border:1px solid #d8c7a8;padding:6px 10px;text-align:left;vertical-align:top}
+  .tbl th{background:#f7efde;font-weight:600}
+  .tbl tr:nth-child(even) td{background:color-mix(in srgb,#f7efde 40%,var(--page))}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]) .co-norma{--co:#e57368} :root:not([data-theme="light"]) .co-atencion{--co:#e6b45e}
+    :root:not([data-theme="light"]) .co-debes_saber{--co:#5bb2d6} :root:not([data-theme="light"]) .co-consejo{--co:#5ec48f}
+    :root:not([data-theme="light"]) .co-dato{--co-bg:#3a3226}
+    :root:not([data-theme="light"]) .tbl th,:root:not([data-theme="light"]) .tbl td{border-color:#26323c}
+    :root:not([data-theme="light"]) .tbl th,:root:not([data-theme="light"]) .tbl tr:nth-child(even) td{background:#1e2730}
+  }
+  :root[data-theme="dark"] .co-norma{--co:#e57368} :root[data-theme="dark"] .co-atencion{--co:#e6b45e}
+  :root[data-theme="dark"] .co-debes_saber{--co:#5bb2d6} :root[data-theme="dark"] .co-consejo{--co:#5ec48f}
+  :root[data-theme="dark"] .co-dato{--co-bg:#3a3226}
+  :root[data-theme="dark"] .tbl th,:root[data-theme="dark"] .tbl td{border-color:#26323c}
+  :root[data-theme="dark"] .tbl th,:root[data-theme="dark"] .tbl tr:nth-child(even) td{background:#1e2730}
   .anno-tip{font-family:var(--f-ui);font-size:12px;color:var(--faint);margin:0 0 var(--s4)}
   .source{margin:0 0 var(--s6);border-radius:var(--r);background:var(--desk);padding:var(--s4) var(--s5)}
   .source summary{cursor:pointer;font-size:12.5px;color:var(--muted);font-weight:500}
@@ -425,6 +452,145 @@ function toast(msg,action){
 }
 function esc(s){return String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]))}
 const bold=s=>s.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+/* contenido_md:inicio — copia exacta de content_pipeline/review/contenido_md.js (lo verifica un test) */
+/* contenido_md: parser del contrato de contenido de lecciones (docs/contenido_lecciones.md).
+ * Port 1:1 de content_pipeline/processors/content_blocks.py (parse_blocks, parse_inline).
+ * Fuente única en JS: la Brújula lo lleva embebido entre los marcadores contenido_md:inicio/fin
+ * (un test verifica que sea idéntico) y la webapp y la app Expo lo copian.
+ * Debe dar exactamente los bloques/tokens de content_pipeline/review/fixtures_contenido.json.
+ */
+const ContenidoMd = (() => {
+  const TIPOS = { NORMA: "Norma y sanción", ATENCION: "Atención", DEBES_SABER: "Debes saber", DATO: "Dato", CONSEJO: "Consejo" };
+  const FIG = /^\{\{\s*figura\s*:\s*([A-Za-z0-9_-]+)\s*\}\}$/;
+  const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const HR = /^(?:-{3,}|\*{3,}|_{3,})$/;
+  const FENCE = /^```/;
+  const QUOTE = /^>\s?(.*)$/;
+  const CALLOUT = /^\[!([A-Za-z_]+)\]\s*(.*)$/;
+  const UL = /^[-*+]\s+(.*)$/;
+  const OL = /^\d+[.)]\s+(.*)$/;
+  const TABLE_TITLE = /^Tabla:\s*(.+)$/;
+  const SEP_CELL = /^:?-+:?$/;
+
+  const splitRow = (line) => {
+    let s = line.trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+    return s.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+  };
+  const isRow = (line) => line.trim().startsWith("|");
+  const isSep = (line) => {
+    if (!isRow(line)) return false;
+    const cells = splitRow(line);
+    return cells.length > 0 && cells.every((c) => SEP_CELL.test(c.replace(/ /g, "")));
+  };
+  const align = (cell) => {
+    const c = cell.replace(/ /g, "");
+    if (c.startsWith(":") && c.endsWith(":")) return "center";
+    if (c.endsWith(":")) return "right";
+    if (c.startsWith(":")) return "left";
+    return null;
+  };
+  const startsTable = (lines, i) => i + 1 < lines.length && isRow(lines[i]) && isSep(lines[i + 1]);
+  const startsBlock = (lines, i) => {
+    const s = lines[i].trim();
+    return !s || FIG.test(s) || HEADING.test(s) || HR.test(s) || FENCE.test(s) || s.startsWith(">")
+      || UL.test(s) || OL.test(s) || startsTable(lines, i) || (TABLE_TITLE.test(s) && startsTable(lines, i + 1));
+  };
+
+  function parseBlocks(md, enRecuadro = false) {
+    const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
+    const blocks = [];
+    let i = 0;
+    const n = lines.length;
+    while (i < n) {
+      const s = lines[i].trim();
+      let m;
+      if (!s) { i++; continue; }
+      if (FENCE.test(s)) {
+        let j = i + 1;
+        while (j < n && !FENCE.test(lines[j].trim())) j++;
+        blocks.push({ t: "code", text: lines.slice(i + 1, j).join("\n") });
+        i = j + 1;
+        continue;
+      }
+      if ((m = FIG.exec(s))) { blocks.push({ t: "figura", id: m[1] }); i++; continue; }
+      if ((m = HEADING.exec(s))) { blocks.push({ t: "heading", level: m[1].length, text: m[2] }); i++; continue; }
+      if (HR.test(s)) { blocks.push({ t: "hr" }); i++; continue; }
+      if (s.startsWith(">")) {
+        const body = [];
+        while (i < n && lines[i].trim().startsWith(">")) { body.push(QUOTE.exec(lines[i].trim())[1]); i++; }
+        m = enRecuadro ? null : CALLOUT.exec(body[0].trim());
+        if (m) {
+          blocks.push({ t: "callout", tipo: m[1].toUpperCase(), titulo: m[2].trim() || null,
+            blocks: parseBlocks(body.slice(1).join("\n"), true) });
+        } else {
+          blocks.push({ t: "quote", blocks: parseBlocks(body.join("\n"), true) });
+        }
+        continue;
+      }
+      let titulo = null;
+      if ((m = TABLE_TITLE.exec(s)) && startsTable(lines, i + 1)) { titulo = m[1].trim(); i++; }
+      if (startsTable(lines, i)) {
+        const header = splitRow(lines[i]);
+        const al = splitRow(lines[i + 1]).map(align);
+        const rows = [];
+        i += 2;
+        while (i < n && isRow(lines[i])) { rows.push(splitRow(lines[i])); i++; }
+        blocks.push({ t: "table", titulo, align: al, header, rows });
+        continue;
+      }
+      if (UL.test(s) || OL.test(s)) {
+        const ordered = OL.test(s);
+        const itemRe = ordered ? OL : UL;
+        const items = [];
+        while (i < n) {
+          const raw = lines[i];
+          const st = raw.trim();
+          if ((m = itemRe.exec(st))) items.push(m[1].trim());
+          else if (st && (raw[0] === " " || raw[0] === "\t") && items.length && !startsBlock(lines, i)) items[items.length - 1] += " " + st;
+          else break;
+          i++;
+        }
+        blocks.push({ t: "list", ordered, items });
+        continue;
+      }
+      const para = [s];
+      i++;
+      while (i < n && !startsBlock(lines, i)) { para.push(lines[i].trim()); i++; }
+      blocks.push({ t: "paragraph", text: para.join(" ") });
+    }
+    return blocks;
+  }
+
+  const INLINE = new RegExp(
+    "`(?<code>[^`]+)`"
+    + "|\\[(?<ltext>[^\\]]+)\\]\\((?<href>https?://[^)\\s]+)\\)"
+    + "|\\*\\*(?<strong>.+?)\\*\\*|__(?<strong2>.+?)__"
+    + "|\\*(?<em>[^*\\s][^*]*?)\\*|(?<![\\p{L}\\p{N}_])_(?<em2>[^_\\s][^_]*?)_(?![\\p{L}\\p{N}_])",
+    "gu");
+
+  function parseInline(text) {
+    const s = String(text || "");
+    const out = [];
+    let pos = 0;
+    for (const m of s.matchAll(INLINE)) {
+      const g = m.groups;
+      if (m.index > pos) out.push({ t: "text", v: s.slice(pos, m.index) });
+      if (g.code !== undefined) out.push({ t: "code", v: g.code });
+      else if (g.href !== undefined) out.push({ t: "link", v: g.ltext, href: g.href });
+      else if ((g.strong ?? g.strong2) !== undefined) out.push({ t: "strong", v: g.strong ?? g.strong2 });
+      else out.push({ t: "em", v: g.em ?? g.em2 });
+      pos = m.index + m[0].length;
+    }
+    if (pos < s.length) out.push({ t: "text", v: s.slice(pos) });
+    return out;
+  }
+
+  return { TIPOS, parseBlocks, parseInline };
+})();
+if (typeof module !== "undefined") module.exports = ContenidoMd;
+/* contenido_md:fin */
 const words=s=>String(s||"").split(/\s+/).filter(Boolean).length;
 const fmt=n=>Number(n||0).toLocaleString("es-CL");
 function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(16)}
@@ -849,14 +1015,50 @@ function renderField(c,raw,mode){
     flush();return out.join("");
   }
   let ul=false,first=true;const close=()=>{if(ul){out.push("</ul>");ul=false}};
-  L.forEach(({t,o})=>{
+  const emit=(t,o)=>{   /* una línea de Markdown (título, viñeta o párrafo) con sus offsets en el texto crudo */
     const tt=t.trim();if(!tt){close();return;}
-    if(first){first=false;if(/^#\s/.test(tt))return;}  /* el título ya está en la cabecera de la página */
     const lead=t.length-t.trimStart().length;let m;
-    if(m=tt.match(/^(#{1,6})\s+/)){close();const lv=m[1].length<=1?"h2":m[1].length===2?"h2":"h3";out.push(`<${lv}>${span(o+lead+m[0].length,o+t.trimEnd().length,bold)}</${lv}>`);}
+    if(m=tt.match(/^(#{1,6})\s+/)){close();const lv=m[1].length<=2?"h2":"h3";out.push(`<${lv}>${span(o+lead+m[0].length,o+t.trimEnd().length,bold)}</${lv}>`);}
     else if(m=tt.match(/^[-*]\s+/)){if(!ul){out.push("<ul>");ul=true;}out.push(`<li>${span(o+lead+m[0].length,o+t.trimEnd().length,bold)}</li>`);}
     else{close();out.push(`<p>${span(o+lead,o+t.trimEnd().length,bold)}</p>`);}
-  });
+  };
+  const isRow=t=>t.trim().startsWith("|");
+  const isSep=t=>isRow(t)&&/^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(t.trim());
+  const cells=(t,o)=>{   /* celdas con offsets (una barra escapada \| no corta) */
+    const cuts=[];for(let k=0;k<t.length;k++)if(t[k]==="|"&&t[k-1]!=="\\")cuts.push(k);
+    const segs=[];let a=0;cuts.forEach(k=>{segs.push([a,k]);a=k+1;});segs.push([a,t.length]);
+    if(t.trim().startsWith("|"))segs.shift();
+    if(t.trimEnd().endsWith("|")&&!t.trimEnd().endsWith("\\|"))segs.pop();
+    return segs.map(([s,e])=>{while(s<e&&/\s/.test(t[s]))s++;while(e>s&&/\s/.test(t[e-1]))e--;return [o+s,o+e];});
+  };
+  const alignOf=c=>{c=c.replace(/\s/g,"");return c.startsWith(":")&&c.endsWith(":")?"center":c.endsWith(":")?"right":"left";};
+  for(let i=0;i<L.length;i++){
+    const {t,o}=L[i],tt=t.trim();
+    if(!tt){close();continue;}
+    if(first){first=false;if(/^#\s/.test(tt))continue;}  /* el título ya está en la cabecera de la página */
+    if(tt.startsWith(">")){   /* recuadro (> [!TIPO]) o cita */
+      close();let j=i;const body=[];
+      while(j<L.length&&L[j].t.trim().startsWith(">")){const x=L[j],pre=x.t.match(/^\s*>\s?/)[0];body.push({t:x.t.slice(pre.length),o:x.o+pre.length});j++;}
+      const cm=body[0].t.trim().match(/^\[!([A-Za-z_]+)\]\s*(.*)$/);
+      if(cm){
+        const tipo=cm[1].toUpperCase(),rot=ContenidoMd.TIPOS[tipo],b0=body[0],ts=b0.o+b0.t.trimEnd().length-cm[2].length;
+        out.push(`<div class="co co-${rot?tipo.toLowerCase():"x"}"><div class="co-h"><span class="co-i">${{NORMA:"§",ATENCION:"!",DEBES_SABER:"★",DATO:"#",CONSEJO:"✓"}[tipo]||"?"}</span>${rot?esc(rot):"Tipo desconocido: "+esc(tipo)}${cm[2].trim()?` · <span class="co-t">${span(ts,ts+cm[2].trimEnd().length,bold)}</span>`:""}</div><div class="co-b">`);
+        body.slice(1).forEach(x=>emit(x.t,x.o));close();out.push("</div></div>");
+      }else{out.push("<blockquote>");body.forEach(x=>emit(x.t,x.o));close();out.push("</blockquote>");}
+      i=j-1;continue;
+    }
+    const tm=tt.match(/^Tabla:\s*(.+)$/),h=tm&&L[i+1]&&L[i+2]&&isRow(L[i+1].t)&&isSep(L[i+2].t)?i+1:(isRow(t)&&L[i+1]&&isSep(L[i+1].t)?i:-1);
+    if(h>=0){   /* tabla GFM, con título opcional «Tabla: …» */
+      close();let html='<div class="tbl">';
+      if(h>i){const lead=t.length-t.trimStart().length,ts=o+lead+tt.length-tm[1].length;html+=`<div class="tbl-t">${span(ts,ts+tm[1].length,bold)}</div>`;}
+      const al=L[h+1].t.split(/(?<!\\)\|/).map(x=>x.trim()).filter((x,k,arr)=>!(x===""&&(k===0||k===arr.length-1))).map(alignOf);
+      const row=(x,tag)=>"<tr>"+cells(x.t,x.o).map(([s,e],k)=>`<${tag} style="text-align:${al[k]||"left"}">${span(s,e,bold)}</${tag}>`).join("")+"</tr>";
+      html+="<table><thead>"+row(L[h],"th")+"</thead><tbody>";
+      let j=h+2;while(j<L.length&&isRow(L[j].t)){html+=row(L[j],"td");j++;}
+      out.push(html+"</tbody></table></div>");i=j-1;continue;
+    }
+    emit(t,o);
+  }
   close();return out.join("");
 }
 /* selección del lector → rango exacto en el texto crudo */
@@ -894,6 +1096,7 @@ function showSelbar(){
   if(!plan)tools.push(["error","Error","var(--c-err)"],["fuente","Pedir fuente","var(--c-src)"]);
   let html=tools.map(([k,t,c])=>`<button data-tool="${k}"><span class="sw" style="background:${c}"></span>${t}</button>`).join("");
   if(plan&&canStruct())html+=`<span class="sep"></span><button data-tool="cortar">✂ Dividir aquí</button>`;
+  if(!plan&&p.c.campo==="contenido")html+=`<span class="sep"></span><button data-tool="recuadro">▣ Convertir en recuadro…</button>`;
   bar.innerHTML=html;bar.hidden=false;
   bar.style.left=(p.rect.left+p.rect.width/2+scrollX)+"px";
   bar.style.top=(p.rect.top+scrollY-10)+"px";
@@ -908,8 +1111,29 @@ function targetForCtx(c){
   if(l.plan_id)t.id=l.plan_id;if(c.q!=null)t.q=c.q;return t;
 }
 function anclajeFor(p){const a={campo:p.c.campo,cita:p.cita,occ:occBefore(p.raw,p.cita,p.s)};if(p.c.q!=null)a.q=p.c.q;if(p.c.i!=null)a.i=p.c.i;return a;}
+/* «Convertir en recuadro»: envuelve las líneas seleccionadas con > [!TIPO] (corrección buscar/reemplazar) */
+function recuadroPicker(){
+  const bar=el("selbar");
+  bar.innerHTML=Object.entries(ContenidoMd.TIPOS).map(([k,t])=>`<button data-tool="recuadro:${k}"><span class="sw co-${k.toLowerCase()}" style="background:var(--co)"></span>${esc(t)}</button>`).join("");
+  bar.hidden=false;
+}
+function convertirEnRecuadro(p,tipo){
+  const raw=p.raw,s2=raw.lastIndexOf("\n",p.s-1)+1,e0=raw.indexOf("\n",p.e-1),e2=e0<0?raw.length:e0;
+  const lineas=raw.slice(s2,e2).split("\n");
+  if(lineas.some(x=>/^\s*(>|\||#)/.test(x))){toast("Seleccioná párrafos o viñetas (no títulos, citas ni tablas)");return;}
+  const antes=s2>0&&raw[s2-2]!=="\n"?"\n":"",despues=e2<raw.length&&raw[e2+1]!=="\n"?"\n":"";
+  const envuelto=antes+`> [!${tipo}]\n`+lineas.map(x=>x.trim()?"> "+x.trim():">").join("\n")+despues;
+  const [S,E2]=expandUnique(raw,s2,e2),buscar=raw.slice(S,E2),reemplazar=raw.slice(S,s2)+envuelto+raw.slice(e2,E2);
+  const item=newItem("contenido",targetForCtx(p.c),{tipo:"sugerencia",severidad:"menor",
+    motivo:`Convertir en recuadro «${ContenidoMd.TIPOS[tipo]}»`,cita:null,anclaje:anclajeFor(p)});
+  item.cambio={campo:"contenido",buscar,reemplazar};
+  commit(item,isAud()?"Sugerencia registrada":"Recuadro aplicado");
+}
 function useTool(tool){
-  const p=state.pending;el("selbar").hidden=true;if(!p)return;
+  const p=state.pending;
+  if(tool==="recuadro"){if(p)recuadroPicker();return;}
+  el("selbar").hidden=true;if(!p)return;
+  if(tool.startsWith("recuadro:")){if(!requireAutor())return;getSelection().removeAllRanges();convertirEnRecuadro(p,tool.split(":")[1]);return;}
   if(!requireAutor())return;
   getSelection().removeAllRanges();
   const fase=p.c.src==="plan"?"estructura":"contenido";

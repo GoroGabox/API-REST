@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from content_pipeline.processors.content_blocks import validate_components
 from content_pipeline.processors.figure_markers import figure_ids
 
 
@@ -464,6 +465,10 @@ def validate_generated_course(manifest: dict[str, Any], lessons: list[dict[str, 
         huerfanos = sorted({fid for fid in figure_ids(content) if fid not in claves})
         if huerfanos:
             errores.append(f"{label}: marcador(es) de figura sin recurso: {', '.join(huerfanos)}.")
+        # Recuadros y tablas (docs/contenido_lecciones.md): sintaxis inválida bloquea el import.
+        comp_err, comp_adv = validate_components(content)
+        errores.extend(f"{label}: {e}" for e in comp_err)
+        advertencias.extend(f"{label}: {a}" for a in comp_adv)
         auto = [r.get("clave") for r in lesson.get("recursos") or [] if (r.get("meta") or {}).get("insertada") == "auto"]
         if auto:
             advertencias.append(f"{label}: {len(auto)} figura(s) ubicadas automáticamente al final del Desarrollo "

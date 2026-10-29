@@ -1,0 +1,454 @@
+{
+  "version": 1,
+  "descripcion": "Casos del contrato de contenido de lecciones (docs/contenido_lecciones.md). Generados con content_pipeline/processors/content_blocks.py; cada renderizador (webapp, app Expo, Brújula) debe producir los mismos bloques y tokens.",
+  "bloques": [
+    {
+      "nombre": "parrafo_multilinea",
+      "md": "Primera línea\nsigue el párrafo.\n\nOtro párrafo.",
+      "esperado": [
+        {
+          "t": "paragraph",
+          "text": "Primera línea sigue el párrafo."
+        },
+        {
+          "t": "paragraph",
+          "text": "Otro párrafo."
+        }
+      ]
+    },
+    {
+      "nombre": "titulos",
+      "md": "# Título\n\n## Desarrollo\n\n### Subtítulo\nTexto.",
+      "esperado": [
+        {
+          "t": "heading",
+          "level": 1,
+          "text": "Título"
+        },
+        {
+          "t": "heading",
+          "level": 2,
+          "text": "Desarrollo"
+        },
+        {
+          "t": "heading",
+          "level": 3,
+          "text": "Subtítulo"
+        },
+        {
+          "t": "paragraph",
+          "text": "Texto."
+        }
+      ]
+    },
+    {
+      "nombre": "listas",
+      "md": "- uno\n- dos\n  continúa\n\n1. primero\n2) segundo",
+      "esperado": [
+        {
+          "t": "list",
+          "ordered": false,
+          "items": [
+            "uno",
+            "dos continúa"
+          ]
+        },
+        {
+          "t": "list",
+          "ordered": true,
+          "items": [
+            "primero",
+            "segundo"
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "recuadro_simple",
+      "md": "> [!DEBES_SABER]\n> Toda infracción gravísima conlleva multa de 1,5 a 3 UTM.",
+      "esperado": [
+        {
+          "t": "callout",
+          "tipo": "DEBES_SABER",
+          "titulo": null,
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Toda infracción gravísima conlleva multa de 1,5 a 3 UTM."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "recuadro_titulo_y_lista",
+      "md": "> [!NORMA] Ley Emilia\n> Sanciona con cárcel efectiva.\n>\n> - Reincidencia.\n> - Licencia cancelada.",
+      "esperado": [
+        {
+          "t": "callout",
+          "tipo": "NORMA",
+          "titulo": "Ley Emilia",
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Sanciona con cárcel efectiva."
+            },
+            {
+              "t": "list",
+              "ordered": false,
+              "items": [
+                "Reincidencia.",
+                "Licencia cancelada."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "recuadro_minusculas",
+      "md": "> [!consejo]\n> Mira lejos.",
+      "esperado": [
+        {
+          "t": "callout",
+          "tipo": "CONSEJO",
+          "titulo": null,
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Mira lejos."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "recuadro_tipo_desconocido",
+      "md": "> [!RARO]\n> Texto.",
+      "esperado": [
+        {
+          "t": "callout",
+          "tipo": "RARO",
+          "titulo": null,
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Texto."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "cita_normal",
+      "md": "> Una cita sin etiqueta.\n> Sigue.",
+      "esperado": [
+        {
+          "t": "quote",
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Una cita sin etiqueta. Sigue."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "tabla_con_titulo",
+      "md": "Tabla: Estadísticas en Chile\n| Indicador | Valor |\n|---|---:|\n| Siniestros al año | 82.000 |\n| Fallecidos | 1.600 |",
+      "esperado": [
+        {
+          "t": "table",
+          "titulo": "Estadísticas en Chile",
+          "align": [
+            null,
+            "right"
+          ],
+          "header": [
+            "Indicador",
+            "Valor"
+          ],
+          "rows": [
+            [
+              "Siniestros al año",
+              "82.000"
+            ],
+            [
+              "Fallecidos",
+              "1.600"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "tabla_alineaciones_y_barra",
+      "md": "| A | B | C |\n|:---|:---:|---|\n| x \\| y | **z** | 1 |",
+      "esperado": [
+        {
+          "t": "table",
+          "titulo": null,
+          "align": [
+            "left",
+            "center",
+            null
+          ],
+          "header": [
+            "A",
+            "B",
+            "C"
+          ],
+          "rows": [
+            [
+              "x | y",
+              "**z**",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "tabla_separador_corto",
+      "md": "Texto previo\n| A | B |\n|:-|-:|\n| 1 | 2 |",
+      "esperado": [
+        {
+          "t": "paragraph",
+          "text": "Texto previo"
+        },
+        {
+          "t": "table",
+          "titulo": null,
+          "align": [
+            "left",
+            "right"
+          ],
+          "header": [
+            "A",
+            "B"
+          ],
+          "rows": [
+            [
+              "1",
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "nombre": "tabla_sin_barras_externas",
+      "md": "Col 1 | Col 2\n--- | ---\nno es tabla",
+      "esperado": [
+        {
+          "t": "paragraph",
+          "text": "Col 1 | Col 2 --- | --- no es tabla"
+        }
+      ]
+    },
+    {
+      "nombre": "figura",
+      "md": "Texto.\n\n{{figura:F-abc123}}\n\nMás texto.",
+      "esperado": [
+        {
+          "t": "paragraph",
+          "text": "Texto."
+        },
+        {
+          "t": "figura",
+          "id": "F-abc123"
+        },
+        {
+          "t": "paragraph",
+          "text": "Más texto."
+        }
+      ]
+    },
+    {
+      "nombre": "codigo_y_separador",
+      "md": "```\nliteral **no**\n```\n\n---\n\nFin.",
+      "esperado": [
+        {
+          "t": "code",
+          "text": "literal **no**"
+        },
+        {
+          "t": "hr"
+        },
+        {
+          "t": "paragraph",
+          "text": "Fin."
+        }
+      ]
+    },
+    {
+      "nombre": "leccion_completa",
+      "md": "# Suspensión de licencia\n\n## Desarrollo\n\nLa licencia se suspende en estos casos:\n\nTabla: Suspensión de licencia\n| Infracción | Suspensión |\n|---|---|\n| Bajo la influencia del alcohol | 3 meses |\n| Estado de ebriedad | 2 años |\n\n> [!ATENCION]\n> Estos períodos aumentan en caso de reincidencia.\n\n## Puntos clave\n\n- Las sanciones aumentan por reincidencia.\n",
+      "esperado": [
+        {
+          "t": "heading",
+          "level": 1,
+          "text": "Suspensión de licencia"
+        },
+        {
+          "t": "heading",
+          "level": 2,
+          "text": "Desarrollo"
+        },
+        {
+          "t": "paragraph",
+          "text": "La licencia se suspende en estos casos:"
+        },
+        {
+          "t": "table",
+          "titulo": "Suspensión de licencia",
+          "align": [
+            null,
+            null
+          ],
+          "header": [
+            "Infracción",
+            "Suspensión"
+          ],
+          "rows": [
+            [
+              "Bajo la influencia del alcohol",
+              "3 meses"
+            ],
+            [
+              "Estado de ebriedad",
+              "2 años"
+            ]
+          ]
+        },
+        {
+          "t": "callout",
+          "tipo": "ATENCION",
+          "titulo": null,
+          "blocks": [
+            {
+              "t": "paragraph",
+              "text": "Estos períodos aumentan en caso de reincidencia."
+            }
+          ]
+        },
+        {
+          "t": "heading",
+          "level": 2,
+          "text": "Puntos clave"
+        },
+        {
+          "t": "list",
+          "ordered": false,
+          "items": [
+            "Las sanciones aumentan por reincidencia."
+          ]
+        }
+      ]
+    }
+  ],
+  "linea": [
+    {
+      "nombre": "negrita_cursiva",
+      "texto": "Hola **negrita**, __otra__, *cursiva* y _también_.",
+      "esperado": [
+        {
+          "t": "text",
+          "v": "Hola "
+        },
+        {
+          "t": "strong",
+          "v": "negrita"
+        },
+        {
+          "t": "text",
+          "v": ", "
+        },
+        {
+          "t": "strong",
+          "v": "otra"
+        },
+        {
+          "t": "text",
+          "v": ", "
+        },
+        {
+          "t": "em",
+          "v": "cursiva"
+        },
+        {
+          "t": "text",
+          "v": " y "
+        },
+        {
+          "t": "em",
+          "v": "también"
+        },
+        {
+          "t": "text",
+          "v": "."
+        }
+      ]
+    },
+    {
+      "nombre": "codigo_y_enlace",
+      "texto": "Usa `ABS` y visita [CONASET](https://www.conaset.cl).",
+      "esperado": [
+        {
+          "t": "text",
+          "v": "Usa "
+        },
+        {
+          "t": "code",
+          "v": "ABS"
+        },
+        {
+          "t": "text",
+          "v": " y visita "
+        },
+        {
+          "t": "link",
+          "v": "CONASET",
+          "href": "https://www.conaset.cl"
+        },
+        {
+          "t": "text",
+          "v": "."
+        }
+      ]
+    },
+    {
+      "nombre": "guion_bajo_en_palabra",
+      "texto": "snake_case_var no es cursiva.",
+      "esperado": [
+        {
+          "t": "text",
+          "v": "snake_case_var no es cursiva."
+        }
+      ]
+    },
+    {
+      "nombre": "enlace_no_http",
+      "texto": "[local](/ruta) queda como texto.",
+      "esperado": [
+        {
+          "t": "text",
+          "v": "[local](/ruta) queda como texto."
+        }
+      ]
+    }
+  ],
+  "texto_plano": [
+    {
+      "nombre": "recuadro",
+      "md": "> [!NORMA] Ley Emilia\n> Cárcel efectiva.",
+      "esperado": "Ley Emilia\nCárcel efectiva."
+    },
+    {
+      "nombre": "tabla",
+      "md": "Tabla: Datos\n| Indicador | Valor |\n|---|---|\n| Siniestros | 82.000 |",
+      "esperado": "Datos.\nIndicador: Siniestros; Valor: 82.000."
+    }
+  ]
+}

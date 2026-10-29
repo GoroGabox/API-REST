@@ -501,6 +501,28 @@ Reglas:
   vez. Puedes remitir a ella, pero solo con lo que dicen el extracto y su pie.
 - Extensión: entre {min_palabras} y {max_palabras} palabras.
 
+Componentes (opcionales, solo en Desarrollo, Introducción, Aplicación práctica y
+Ejemplo aplicado; úsalos únicamente con contenido del extracto, hasta 3 recuadros):
+- Recuadro: una cita cuya primera línea es la etiqueta del tipo; cada línea del
+  cuerpo empieza con "> ". No anides recuadros ni pongas tablas dentro.
+  > [!DEBES_SABER]
+  > Dato central que el estudiante debe recordar.
+  Tipos:
+  · NORMA: obligación legal, prohibición, multa o suspensión.
+  · ATENCION: riesgo o advertencia de seguridad.
+  · DEBES_SABER: dato central evaluable; los recuadros "DEBES SABER" del extracto.
+  · DATO: cifra, estadística o definición destacada.
+  · CONSEJO: recomendación práctica.
+- Tabla: solo si el extracto trae datos tabulares (sanciones por caso, estadísticas,
+  distancias por velocidad). Título opcional "Tabla: …" en la línea anterior; hasta
+  6 columnas; reproduce las cifras exactas.
+  Tabla: Suspensión de licencia
+  | Infracción | Suspensión |
+  |---|---|
+  | Conducción bajo la influencia del alcohol | 3 meses |
+No uses componentes para decorar: si el extracto no destaca o tabula el dato, va
+como texto normal.
+
 Formato Markdown, en este orden. Las secciones marcadas (opcional) inclúyelas SOLO
 si el extracto da material concreto para ellas; si no, omítelas por completo (sin
 encabezado). Escribe los encabezados sin la palabra "(opcional)".
