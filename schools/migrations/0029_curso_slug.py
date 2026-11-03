@@ -27,16 +27,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # 1) columna sin restricción, 2) poblar, 3) única y obligatoria.
+        # 1) columna sin restricción, 2) poblar. La restricción única va en
+        # 0030: en Postgres, alterar la tabla en la misma transacción que la
+        # actualiza falla con "pending trigger events".
         migrations.AddField(
             model_name="curso",
             name="slug",
             field=models.SlugField(max_length=80, null=True, blank=True),
         ),
         migrations.RunPython(poblar_slugs, migrations.RunPython.noop),
-        migrations.AlterField(
-            model_name="curso",
-            name="slug",
-            field=models.SlugField(max_length=80, unique=True, blank=True),
-        ),
     ]
