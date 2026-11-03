@@ -18,7 +18,7 @@ import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
-from .models import Escuela, Curso, Leccion, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso
+from .models import Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso
 from .serializers import (
     EscuelaSerializer,
     CursoSerializer,
@@ -1175,6 +1175,92 @@ class RecursoViewSet(viewsets.ModelViewSet):
             )
 
         return qs.none()
+
+    @action(detail=False, methods=['get'], url_path='senales')
+    def senales(self, request):
+        """Galería de señales de tránsito para la Biblioteca.
+
+        Son las figuras del anexo de señales ya publicadas en el bucket
+        (``LeccionRecurso`` imagen/figura con ``meta.mapeo='anexo'`` en una lección o
+        unidad de señales). Material público (CONASET): cualquier autenticado las ve,
+        sin exigir acceso al curso. Sin duplicados por ``meta.hash``.
+        """
+        from django.db.models import Q
+        qs = (
+            LeccionRecurso.objects
+            .filter(tipo='imagen', rol='figura', meta__mapeo='anexo')
+            .filter(Q(leccion__nombre__icontains='señal') | Q(leccion__unidad__nombre__icontains='señal'))
+            .order_by('leccion_id', 'orden', 'id')
+        )
+        vistos = set()
+        out = []
+        for r in qs:
+            meta = r.meta or {}
+            firma = meta.get('hash') or r.url
+            if firma in vistos:
+                continue
+            vistos.add(firma)
+            out.append({
+                'clave': r.clave,
+                'url': r.url,
+                'titulo': meta.get('pie') or r.titulo or '',
+                'alt': meta.get('alt') or meta.get('pie') or r.titulo or '',
+                'ancho': meta.get('ancho'),
+                'alto': meta.get('alto'),
+            })
+        return Response(out)
+
+    @action(detail=False, methods=['post'], url_path='upload',
+            parser_classes=[MultiPartParser, FormParser], permission_classes=[IsAdmin])
+    def upload(self, request):
+        """Sube un PDF de la Biblioteca al storage de documentos y crea el ``Recurso``.
+
+        multipart: ``archivo`` (.pdf, máx. ``BIBLIOTECA_PDF_MAX_BYTES``) + campos del
+        recurso (titulo, descripcion, categoria, curso, requires_owned_course).
+        ``url``, ``size_bytes`` y ``paginas`` se completan aquí.
+        """
+        import uuid
+        from content_pipeline.media.storage import StorageError, get_storage
+
+        archivo = request.FILES.get('archivo')
+        if not archivo:
+            return Response({'detail': "Falta el archivo ('archivo')."}, status=status.HTTP_400_BAD_REQUEST)
+        if not archivo.name.lower().endswith('.pdf'):
+            return Response({'detail': 'Solo se aceptan archivos PDF.'}, status=status.HTTP_400_BAD_REQUEST)
+        if archivo.size > BIBLIOTECA_PDF_MAX_BYTES:
+            return Response({'detail': 'El PDF supera los 30 MB.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        data = archivo.read()
+        if not data.startswith(b'%PDF'):
+            return Response({'detail': 'El archivo no es un PDF válido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        paginas = None
+        try:
+            import fitz
+            with fitz.open(stream=data, filetype='pdf') as doc:
+                paginas = doc.page_count
+        except Exception:
+            paginas = None  # el recurso igual sirve; solo no mostramos el conteo
+
+        campos = {k: request.data.get(k) for k in ('titulo', 'descripcion', 'categoria', 'curso', 'requires_owned_course')
+                  if request.data.get(k) not in (None, '')}
+        campos.setdefault('titulo', Path(archivo.name).stem[:200])
+        campos['tipo'] = 'pdf'
+        campos['url'] = 'https://placeholder.invalid/pendiente.pdf'  # se reemplaza tras subir
+        serializer = self.get_serializer(data=campos)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            url = get_storage(kind='docs').save(f'biblioteca/{uuid.uuid4().hex}.pdf', data)
+        except StorageError as exc:
+            return Response({'detail': f'No se pudo subir el archivo: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        recurso = serializer.save(url=url, size_bytes=len(data), paginas=paginas)
+        return Response(self.get_serializer(recurso).data, status=status.HTTP_201_CREATED)
+
+
+# Biblioteca: tope del PDF que sube el admin (el frontend valida antes).
+BIBLIOTECA_PDF_MAX_BYTES = 30 * 1024 * 1024  # 30 MB
 
 
 # Topes de subida (defensa del disco temporal ante llamadas directas a la API;
