@@ -730,3 +730,34 @@ class CategoriaDisponibleTematicaTests(APITestCase):
         from accounts.services import SIZES
         from schools.models import PREGUNTAS_SESION_TEMATICA
         self.assertEqual(SIZES["categoria"], PREGUNTAS_SESION_TEMATICA)
+
+
+class CursoSlugTests(APITestCase):
+    """Slug estable para /explore/<slug>: se genera del nombre y el detalle
+    responde por slug y por id (enlaces viejos)."""
+
+    def test_slug_se_genera_y_desambigua(self):
+        from schools.models import Curso
+
+        a = Curso.objects.create(nombre="Curso Profesional Clase A4", descripcion="x")
+        b = Curso.objects.create(nombre="Curso Profesional Clase A4", descripcion="y")
+        self.assertEqual(a.slug, "curso-profesional-clase-a4")
+        self.assertEqual(b.slug, "curso-profesional-clase-a4-2")
+
+    def test_slug_no_ocupa_rutas_reservadas(self):
+        from schools.models import Curso
+
+        c = Curso.objects.create(nombre="Plan", descripcion="x")
+        self.assertEqual(c.slug, "curso-plan")
+
+    def test_detalle_por_slug_y_por_id(self):
+        from schools.models import Curso
+
+        c = Curso.objects.create(nombre="Curso Clase B", descripcion="x")
+        r1 = self.client.get(f"/api/v1/schools/courses/{c.slug}/")
+        r2 = self.client.get(f"/api/v1/schools/courses/{c.id}/")
+        self.assertEqual(r1.status_code, status.HTTP_200_OK)
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertEqual(r1.data["id"], c.id)
+        self.assertEqual(r2.data["slug"], "curso-clase-b")
+        self.assertEqual(self.client.get("/api/v1/schools/courses/no-existe/").status_code, status.HTTP_404_NOT_FOUND)

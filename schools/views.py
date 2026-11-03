@@ -698,6 +698,14 @@ class CursoViewSet(viewsets.ModelViewSet):
     filterset_fields = ['is_profesional']
     permission_classes = [PublicReadOrAdmin]
 
+    def get_object(self):
+        """Detalle por id (admin, enlaces viejos) o por slug (/explore/<slug>)."""
+        valor = str(self.kwargs.get(self.lookup_url_kwarg or self.lookup_field, ""))
+        if not valor.isdigit():
+            self.lookup_field = "slug"
+            self.kwargs["slug"] = valor
+        return super().get_object()
+
     @action(detail=True, methods=['get'], url_path='units')
     def units(self, request, pk=None):
         """GET /api/v1/schools/courses/<id>/units/ — unidades del curso con sus lecciones.

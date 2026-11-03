@@ -60,9 +60,37 @@ class Escuela(models.Model):
     def __str__(self):
         return self.nombre
 
+# Rutas fijas bajo /courses/ que un slug no puede ocupar (ver schools/urls.py).
+_SLUGS_RESERVADOS = {"generate", "plan", "import"}
+
+
+def slug_unico_curso(nombre, excluir_pk=None):
+    """Slug estable para la URL pública del curso (/explore/<slug>).
+
+    Sale del nombre ("Curso Profesional Clase A4" → "curso-profesional-clase-a4")
+    y se desambigua con -2, -3… El front enlaza por slug para que la URL no
+    dependa del id, que cambia entre bases (local vs producción).
+    """
+    from django.utils.text import slugify
+
+    base = slugify(nombre or "")[:70] or "curso"
+    if base in _SLUGS_RESERVADOS or base.isdigit():
+        base = f"curso-{base}"
+    slug, n = base, 2
+    qs = Curso.objects.all()
+    if excluir_pk is not None:
+        qs = qs.exclude(pk=excluir_pk)
+    while qs.filter(slug=slug).exists():
+        slug, n = f"{base}-{n}", n + 1
+    return slug
+
+
 class Curso(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)
+    # URL pública del curso. Se genera del nombre al crear si viene vacío;
+    # editable por el admin, pero cambiarlo rompe los enlaces ya publicados.
+    slug = models.SlugField(max_length=80, unique=True, blank=True)
     codigo = models.CharField(max_length=10, null=True)
     descripcion = models.TextField()
     # El precio vive en PlanCurso (fuente única): el plan de 7 días es el valor
@@ -76,6 +104,11 @@ class Curso(models.Model):
 
     def __str__(self):
         return self.nombre
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slug_unico_curso(self.nombre, excluir_pk=self.pk)
+        super().save(*args, **kwargs)
 
 
 class PlanCurso(models.Model):
