@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
+from .views_admin import AdminCalidadView, AdminEstadoView, AdminResumenView
 from .views import (
     MyTokenObtainPairView,
     UsuarioListView,
@@ -92,6 +93,10 @@ urlpatterns = [
     # Perfil + gamificación
     path("me/", MeView.as_view(), name="me_profile"),
     path("me/stats/", MeStatsView.as_view(), name="me_stats"),
+    # Panel de admin (solo lectura): Resumen, Estado del sistema, Calidad del contenido.
+    path("admin/resumen/", AdminResumenView.as_view(), name="admin_resumen"),
+    path("admin/estado/", AdminEstadoView.as_view(), name="admin_estado"),
+    path("admin/calidad/", AdminCalidadView.as_view(), name="admin_calidad"),
     path("me/temas/", MisTemasView.as_view(), name="me_temas"),
     path("me/achievements/", MeAchievementsView.as_view(), name="me_achievements"),
 
