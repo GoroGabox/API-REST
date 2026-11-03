@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models import Prefetch, Count
 from django.http import StreamingHttpResponse, HttpResponse
+import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
@@ -747,11 +748,34 @@ class PlanCursoViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOnlyOrAdmin]
 
 
+class CursoIdOSlugFilter(django_filters.FilterSet):
+    """`?curso=` acepta el id o el slug del curso (/explore/<slug> en el front)."""
+    curso = django_filters.CharFilter(method='filtrar_curso')
+
+    def filtrar_curso(self, queryset, name, value):
+        value = str(value).strip()
+        if value.isdigit():
+            return queryset.filter(curso_id=int(value))
+        return queryset.filter(curso__slug=value)
+
+
+class LeccionFilter(CursoIdOSlugFilter):
+    class Meta:
+        model = Leccion
+        fields = ['curso', 'unidad', 'posicion', 'tipo']
+
+
+class UnidadFilter(CursoIdOSlugFilter):
+    class Meta:
+        model = Unidad
+        fields = ['curso']
+
+
 class LeccionViewSet(viewsets.ModelViewSet):
     queryset = Leccion.objects.all()
     serializer_class = LeccionSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['curso', 'unidad', 'posicion', 'tipo']
+    filterset_class = LeccionFilter
     permission_classes = [ReadOnlyOrAdmin]
     pagination_class = None
 
@@ -793,7 +817,7 @@ class UnidadViewSet(viewsets.ModelViewSet):
     queryset = Unidad.objects.all()
     serializer_class = UnidadSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['curso']
+    filterset_class = UnidadFilter
     permission_classes = [ReadOnlyOrAdmin]
 
     def get_queryset(self):

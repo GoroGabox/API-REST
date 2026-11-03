@@ -88,6 +88,19 @@ class ContentAccessGatingTests(TestCase):
         r = self._lessons(self.expired)
         self.assertEqual(len(_as_list(r)), 0)
 
+    def test_filtro_curso_acepta_slug(self):
+        c = APIClient()
+        c.force_authenticate(self.owner)
+        r = c.get(f"/api/v1/schools/lessons/?curso={self.curso.slug}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([l["id"] for l in _as_list(r)], [self.leccion.id])
+        self.assertEqual(_as_list(r)[0]["contenido"], "PREMIUM")
+        r = c.get("/api/v1/schools/lessons/?curso=no-existe")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(_as_list(r), [])
+        r = c.get(f"/api/v1/schools/units/?curso={self.curso.slug}")
+        self.assertEqual(r.status_code, 200)
+
     def test_admin_y_director_ven_lecciones(self):
         self.assertEqual(len(_as_list(self._lessons(self.admin))), 1)
         self.assertEqual(len(_as_list(self._lessons(self.director))), 1)
