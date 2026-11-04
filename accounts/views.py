@@ -579,6 +579,17 @@ class EstudianteLeccionViewSet(viewsets.ModelViewSet):
 from . import services as accounts_services
 
 
+def _categoria_de_prueba(tipo, categoria_id):
+    """Categoría de la Sesión Temática para registrarla en la Prueba (analítica)."""
+    if tipo != 'categoria' or not categoria_id:
+        return None
+    from schools.models import Categoria as _Categoria
+    try:
+        return _Categoria.objects.filter(pk=int(categoria_id)).first()
+    except (TypeError, ValueError):
+        return None
+
+
 class GenerarPruebaView(APIView):
     """
     POST /api/pruebas/generar
@@ -667,6 +678,7 @@ class GenerarPruebaView(APIView):
             tipo=tipo.lower().strip(),
             modalidad=modalidad,
             curso=curso,
+            categoria=_categoria_de_prueba(tipo_norm, categoria_id),
         )
 
         return Response({
@@ -1140,6 +1152,19 @@ class ExamenFinalElegibilidadView(APIView):
         return Response(accounts_services.elegibilidad_examen_final(request.user, curso))
 
 
+class MisExamenesFinalesView(APIView):
+    """GET /api/v1/accounts/me/final-exams/
+
+    Un ítem por curso inscrito con la elegibilidad de su examen final (misma
+    forma que `me/courses/<id>/final-exam/` + `curso_id/curso_nombre/curso_slug`).
+    Alimenta el modo "Prueba final {curso} real" del Gimnasio.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(accounts_services.examenes_finales_de(request.user))
+
+
 class MisTemasView(APIView):
     """GET /api/v1/accounts/me/temas/
 
@@ -1266,10 +1291,16 @@ class ProgresoEstudiantesView(APIView):
         for est_pk, curso_pk, leccion_pk in vistas_qs:
             vistas_por_estudiante_curso[(est_pk, curso_pk)].add(leccion_pk)
 
-        # Pruebas totales / aprobadas en una sola consulta agregada.
+        # Solo el examen final del curso mide progreso: la práctica del
+        # Gimnasio se registra pero no cuenta aquí.
         from django.db.models import Count, Q
+        finales_qs = Prueba.objects.examenes_finales().filter(
+            estudiante_id__in=estudiante_ids, completada_en__isnull=False,
+        )
+        if curso_id_int is not None:
+            finales_qs = finales_qs.filter(curso_id=curso_id_int)
         pruebas_agg = (
-            Prueba.objects.filter(estudiante_id__in=estudiante_ids)
+            finales_qs
             .values("estudiante_id")
             .annotate(total=Count("id"), aprobadas=Count("id", filter=Q(aprobado=True)))
         )
@@ -1293,8 +1324,8 @@ class ProgresoEstudiantesView(APIView):
                 "nombre": f"{est.nombre} {est.apellido}",
                 "clasesVistas": progreso_pct,
                 "aprobacionPruebas": aprobacion_pct,
+                "intentosExamenFinal": total_p,
+                "examenFinalAprobado": aprobadas > 0,
             })
 
         return Response(respuesta, status=status.HTTP_200_OK)
-
-        return Response(respuesta)

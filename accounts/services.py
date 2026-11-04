@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from schools.models import Categoria, Ejercicio, PREGUNTAS_SESION_TEMATICA
-from .models import Certificado, Prueba, PruebaEjercicio
+from .models import Certificado, Prueba, PruebaEjercicio, q_examen_final
 
 
 # Umbral de aprobación (en %). El examen final de un curso exige más que una
@@ -188,6 +188,7 @@ def crear_prueba_con_ejercicios(
     tipo: str = 'rapida',
     modalidad: str = 'practica',
     curso=None,
+    categoria=None,
 ):
     """Crea una Prueba persistida con sus PruebaEjercicio asociados.
 
@@ -199,6 +200,8 @@ def crear_prueba_con_ejercicios(
         tipo=tipo,
         modalidad=modalidad,
         curso=curso,
+        categoria=categoria,
+        creada_en=timezone.now(),
     )
     items = [
         PruebaEjercicio(prueba=prueba, ejercicio=e, respuesta_estudiante="")
@@ -505,12 +508,8 @@ def elegibilidad_examen_final(user, curso) -> dict:
 
     # Última entrega del examen final (informativo, no restringe reintentos).
     ultima = (
-        Prueba.objects
-        .filter(
-            estudiante=user, curso=curso,
-            tipo='completa', modalidad='evaluacion',
-            completada_en__isnull=False,
-        )
+        Prueba.objects.examenes_finales()
+        .filter(estudiante=user, curso=curso, completada_en__isnull=False)
         .order_by('-completada_en')
         .first()
     )
@@ -536,7 +535,8 @@ def niveles_por_tema(user) -> dict:
     el tema recomendado. Nunca expone porcentajes ni conteos al cliente.
 
     - Considera sus últimas `NIVEL_VENTANA` respuestas corregidas por tema
-      (pruebas entregadas: Gimnasio y examen final).
+      SOLO de exámenes finales entregados: la práctica del Gimnasio no mide
+      progreso. Hasta rendir un final todos los temas quedan en `None`.
     - Con menos de `NIVEL_MIN_RESPUESTAS` respuestas el nivel es `None`.
     - Recomendado: el tema con menos aciertos bajo `NIVEL_DOMINADO_PCT`; si no
       hay ninguno, el primer tema sin practicar; si domina todo, `None`.
@@ -564,6 +564,7 @@ def niveles_por_tema(user) -> dict:
     respuestas = (
         PruebaEjercicio.objects
         .filter(
+            q_examen_final('prueba__'),
             prueba__estudiante=user,
             prueba__completada_en__isnull=False,
             correcta__isnull=False,
@@ -646,3 +647,158 @@ def enviar_invitacion_password(user):
         fail_silently=True,
     )
     return link
+
+
+# ============================================================
+# Exámenes finales del estudiante (modo "Prueba final {curso} real")
+# ============================================================
+
+def examenes_finales_de(user) -> list:
+    """Un ítem por curso inscrito con su elegibilidad para el examen final.
+
+    Reusa `elegibilidad_examen_final`; es lo que el Gimnasio muestra como
+    "Prueba final {curso} real" (bloqueada hasta ver todas las lecciones).
+    """
+    from sales.models import EstudianteCurso
+
+    vistos, items = set(), []
+    inscripciones = (
+        EstudianteCurso.objects
+        .filter(estudiante_id=user)
+        .select_related('curso_id')
+        .order_by('curso_id__nombre')
+    )
+    for ec in inscripciones:
+        curso = ec.curso_id
+        if curso is None or curso.id in vistos:
+            continue
+        vistos.add(curso.id)
+        items.append({
+            'curso_id': curso.id,
+            'curso_nombre': curso.nombre,
+            'curso_slug': curso.slug,
+            **elegibilidad_examen_final(user, curso),
+        })
+    return items
+
+
+# ============================================================
+# Analítica de pruebas (director / admin) — filas planas
+# ============================================================
+
+COLUMNAS_ANALITICA_PRUEBAS = [
+    'prueba_id', 'estudiante_id', 'estudiante_nombre', 'escuela_id', 'escuela_nombre',
+    'curso_id', 'curso_nombre', 'categoria_id', 'categoria_nombre', 'tipo', 'modalidad',
+    'es_examen_final', 'cuenta_progreso', 'fecha', 'creada_en', 'completada_en',
+    'duracion_seg', 'total_preguntas', 'total_correctas', 'score', 'aprobado',
+]
+
+COLUMNAS_ANALITICA_RESPUESTAS = [
+    'prueba_id', 'estudiante_id', 'escuela_id', 'curso_id', 'tipo', 'modalidad',
+    'es_examen_final', 'ejercicio_id', 'categoria_id', 'categoria_nombre', 'leccion_id',
+    'respuesta_estudiante', 'correcta', 'completada_en',
+]
+
+
+def filtrar_pruebas_analitica(qs, *, desde=None, hasta=None, escuela_id=None, curso_id=None,
+                              estudiante_id=None, ambito='todas', entregadas=True, prefijo=''):
+    """Aplica los filtros de la analítica a un queryset de Prueba (prefijo '')
+    o de PruebaEjercicio (prefijo 'prueba__')."""
+    f = {}
+    if desde:
+        f[f'{prefijo}fecha__gte'] = desde
+    if hasta:
+        f[f'{prefijo}fecha__lte'] = hasta
+    if escuela_id:
+        f[f'{prefijo}estudiante__escuela_id'] = escuela_id
+    if curso_id:
+        f[f'{prefijo}curso_id'] = curso_id
+    if estudiante_id:
+        f[f'{prefijo}estudiante_id'] = estudiante_id
+    if entregadas:
+        f[f'{prefijo}completada_en__isnull'] = False
+    qs = qs.filter(**f)
+    if ambito == 'final':
+        qs = qs.filter(q_examen_final(prefijo))
+    elif ambito == 'practica':
+        qs = qs.exclude(q_examen_final(prefijo))
+    return qs
+
+
+def _es_final(tipo, modalidad, curso_id) -> bool:
+    return tipo == 'completa' and modalidad == 'evaluacion' and curso_id is not None
+
+
+def _iso(v):
+    return v.isoformat() if v is not None else None
+
+
+def filas_analitica_pruebas(qs):
+    """Generador de dicts planos (una fila por prueba), sin N+1."""
+    from django.db.models import Count
+    qs = (
+        qs.annotate(n_preguntas=Count('items'))
+        .values(
+            'id', 'estudiante_id', 'estudiante__nombre', 'estudiante__apellido',
+            'estudiante__escuela_id', 'estudiante__escuela__nombre',
+            'curso_id', 'curso__nombre', 'categoria_id', 'categoria__nombre',
+            'tipo', 'modalidad', 'fecha', 'creada_en', 'completada_en',
+            'n_preguntas', 'total_correctas', 'score', 'aprobado',
+        )
+        .order_by('-fecha', '-id')
+    )
+    for r in qs.iterator(chunk_size=500):
+        final = _es_final(r['tipo'], r['modalidad'], r['curso_id'])
+        dur = None
+        if r['creada_en'] and r['completada_en']:
+            dur = int((r['completada_en'] - r['creada_en']).total_seconds())
+        yield {
+            'prueba_id': r['id'],
+            'estudiante_id': r['estudiante_id'],
+            'estudiante_nombre': f"{r['estudiante__nombre'] or ''} {r['estudiante__apellido'] or ''}".strip(),
+            'escuela_id': r['estudiante__escuela_id'],
+            'escuela_nombre': r['estudiante__escuela__nombre'],
+            'curso_id': r['curso_id'],
+            'curso_nombre': r['curso__nombre'],
+            'categoria_id': r['categoria_id'],
+            'categoria_nombre': r['categoria__nombre'],
+            'tipo': r['tipo'],
+            'modalidad': r['modalidad'],
+            'es_examen_final': final,
+            'cuenta_progreso': final,
+            'fecha': _iso(r['fecha']),
+            'creada_en': _iso(r['creada_en']),
+            'completada_en': _iso(r['completada_en']),
+            'duracion_seg': dur,
+            'total_preguntas': r['n_preguntas'],
+            'total_correctas': r['total_correctas'],
+            'score': float(r['score']) if r['score'] is not None else None,
+            'aprobado': r['aprobado'],
+        }
+
+
+def filas_analitica_respuestas(qs):
+    """Generador de dicts planos (una fila por respuesta / PruebaEjercicio)."""
+    qs = qs.values(
+        'prueba_id', 'prueba__estudiante_id', 'prueba__estudiante__escuela_id',
+        'prueba__curso_id', 'prueba__tipo', 'prueba__modalidad',
+        'ejercicio_id', 'ejercicio__categoria_id', 'ejercicio__categoria__nombre',
+        'ejercicio__leccion_id', 'respuesta_estudiante', 'correcta', 'prueba__completada_en',
+    ).order_by('-prueba_id', 'id')
+    for r in qs.iterator(chunk_size=1000):
+        yield {
+            'prueba_id': r['prueba_id'],
+            'estudiante_id': r['prueba__estudiante_id'],
+            'escuela_id': r['prueba__estudiante__escuela_id'],
+            'curso_id': r['prueba__curso_id'],
+            'tipo': r['prueba__tipo'],
+            'modalidad': r['prueba__modalidad'],
+            'es_examen_final': _es_final(r['prueba__tipo'], r['prueba__modalidad'], r['prueba__curso_id']),
+            'ejercicio_id': r['ejercicio_id'],
+            'categoria_id': r['ejercicio__categoria_id'],
+            'categoria_nombre': r['ejercicio__categoria__nombre'],
+            'leccion_id': r['ejercicio__leccion_id'],
+            'respuesta_estudiante': r['respuesta_estudiante'],
+            'correcta': r['correcta'],
+            'completada_en': _iso(r['prueba__completada_en']),
+        }

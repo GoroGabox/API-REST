@@ -71,7 +71,7 @@ class AdminResumenView(APIView):
             EstudianteCurso.objects.filter(access_key_id__status="active")
             .filter(Q(access_key_id__valid_until__isnull=True) | Q(access_key_id__valid_until__gte=now))
         )
-        finales = Prueba.objects.filter(modalidad="evaluacion", fecha__gte=desde.date())
+        finales = Prueba.objects.examenes_finales().filter(fecha__gte=desde.date(), completada_en__isnull=False)
 
         ultimas = []
         for v in pagadas.select_related("producto", "curso", "usuario", "escuela").order_by("-fecha_venta")[:10]:

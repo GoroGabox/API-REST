@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -256,7 +257,16 @@ class ProgresoEstudianteDetalleTests(APITestCase):
         EstudianteLeccion.objects.create(
             estudiante=self.est_a, leccion=self.l1, curso=self.curso,
         )
-        Prueba.objects.create(estudiante=self.est_a, curso=self.curso, tipo="rapida", aprobado=True, score=80)
+        # Práctica con curso: se registra pero NO cuenta como progreso.
+        Prueba.objects.create(
+            estudiante=self.est_a, curso=self.curso, tipo="rapida", aprobado=True, score=80,
+            completada_en=timezone.now(),
+        )
+        # Examen final del curso: es lo único que se lista en `pruebas`.
+        Prueba.objects.create(
+            estudiante=self.est_a, curso=self.curso, tipo="completa", modalidad="evaluacion",
+            aprobado=False, score=60, completada_en=timezone.now(),
+        )
 
     def _get(self):
         return self.client.get(
@@ -273,6 +283,8 @@ class ProgresoEstudianteDetalleTests(APITestCase):
         self.assertEqual(curso_info["lecciones_total"], 2)
         self.assertEqual(curso_info["lecciones_completadas"], 1)
         self.assertEqual(len(curso_info["pruebas"]), 1)
+        self.assertEqual(curso_info["pruebas"][0]["tipo"], "completa")
+        self.assertEqual(curso_info["practica"]["total"], 1)
 
     def test_director_otra_escuela_403(self):
         self.client.force_authenticate(self.dir_b)

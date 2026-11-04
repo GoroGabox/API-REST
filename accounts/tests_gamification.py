@@ -300,10 +300,17 @@ class NivelesPorTemaTest(TestCase):
         # Tema sin preguntas suficientes: nunca se lista.
         self.corta = Categoria.objects.create(nombre="Corta")
         self.corta_ejs = [make_ejercicio(categoria=self.corta) for _ in range(3)]
+        self.curso_final = make_curso("Curso niveles")
 
-    def _responder(self, ejercicios, correctas, hace_min=0):
+    def _responder(self, ejercicios, correctas, hace_min=0, final=True):
+        """Por defecto responde en un examen final (lo único que mide nivel)."""
         from accounts.models import PruebaEjercicio
-        p = Prueba.objects.create(estudiante=self.u, tipo="categoria", modalidad="practica")
+        if final:
+            p = Prueba.objects.create(
+                estudiante=self.u, curso=self.curso_final, tipo="completa", modalidad="evaluacion",
+            )
+        else:
+            p = Prueba.objects.create(estudiante=self.u, tipo="categoria", modalidad="practica")
         p.completada_en = timezone.now() - timedelta(minutes=hace_min)
         p.save(update_fields=["completada_en"])
         for i, e in enumerate(ejercicios):
@@ -327,6 +334,15 @@ class NivelesPorTemaTest(TestCase):
         self.assertIsNone(niveles[D[0].id])
         self.assertNotIn(self.corta.id, niveles)
         self.assertEqual(reco, {"categoria_id": A[0].id, "motivo": "mas_dificil"})
+
+    def test_practica_no_cuenta_para_el_nivel(self):
+        cat, ejs = self.cats["A"]
+        self._responder(ejs[:10], 0, final=False)  # práctica: 0% pero no cuenta
+        niveles, reco = self._niveles()
+        self.assertIsNone(niveles[cat.id])
+        self._responder(ejs[:5], 5)                # examen final: 100%
+        niveles, _ = self._niveles()
+        self.assertEqual(niveles[cat.id], "dominado")
 
     def test_ventana_de_respuestas_recientes(self):
         cat, ejs = self.cats["A"]

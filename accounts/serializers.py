@@ -270,12 +270,15 @@ class CertificadoPublicoSerializer(serializers.ModelSerializer):
 
 
 class PruebaDetalleSerializer(serializers.ModelSerializer):
-    """Resumen para historial."""
+    """Resumen para historial. `es_examen_final` = cuenta para el progreso."""
+    es_examen_final = serializers.BooleanField(read_only=True)
+    curso_nombre = serializers.CharField(source='curso.nombre', read_only=True, default=None)
+
     class Meta:
         model = Prueba
         fields = [
-            'id', 'tipo', 'modalidad', 'curso', 'fecha', 'completada_en',
-            'total_correctas', 'score', 'aprobado',
+            'id', 'tipo', 'modalidad', 'curso', 'curso_nombre', 'categoria', 'fecha',
+            'completada_en', 'total_correctas', 'score', 'aprobado', 'es_examen_final',
         ]
 
 

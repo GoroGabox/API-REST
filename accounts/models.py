@@ -4,7 +4,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import Group
-from schools.models import Escuela, Curso, Ejercicio, Leccion
+from schools.models import Escuela, Curso, Ejercicio, Leccion, Categoria
 
 
 class UserManager(BaseUserManager):
@@ -234,6 +234,26 @@ class EstudianteLeccion(models.Model):
     def __str__(self):
         return f"{self.estudiante} - {self.leccion}"
 
+# Examen final del curso: la ÚNICA prueba que cuenta para el progreso del
+# estudiante (lo demás —Calentamiento, Temática, Simulacro— es práctica: se
+# registra igual, pero no mide avance). `prefijo` permite usarlo desde
+# PruebaEjercicio (`'prueba__'`).
+def q_examen_final(prefijo: str = '') -> models.Q:
+    return models.Q(**{
+        f'{prefijo}tipo': 'completa',
+        f'{prefijo}modalidad': 'evaluacion',
+        f'{prefijo}curso__isnull': False,
+    })
+
+
+class PruebaQuerySet(models.QuerySet):
+    def examenes_finales(self):
+        return self.filter(q_examen_final())
+
+    def practica(self):
+        return self.exclude(q_examen_final())
+
+
 class Prueba(models.Model):
     TIPO_CHOICES = [
         ('completa', 'Completa'),
@@ -255,18 +275,33 @@ class Prueba(models.Model):
     tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='rapida')
     modalidad = models.CharField(max_length=20, choices=MODALIDAD_CHOICES, default='practica')
 
+    # Tema de la Sesión Temática (tipo='categoria'); null en los demás modos.
+    categoria = models.ForeignKey(
+        Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='pruebas',
+    )
+
     fecha = models.DateField(auto_now_add=True)
+    # Inicio exacto (analítica: duración = completada_en - creada_en). Null en
+    # pruebas anteriores a este campo.
+    creada_en = models.DateTimeField(null=True, blank=True)
     completada_en = models.DateTimeField(null=True, blank=True)
 
     total_correctas = models.IntegerField(default=0)
     score = models.DecimalField(max_digits=5, decimal_places=2, default=0)  # 0..100
     aprobado = models.BooleanField(default=False)
 
+    objects = PruebaQuerySet.as_manager()
+
     class Meta:
         ordering = ['-fecha', '-id']
 
     def __str__(self):
         return f'#{self.id} {self.estudiante}'
+
+    @property
+    def es_examen_final(self) -> bool:
+        """Examen final del curso: cuenta para el progreso (ver `q_examen_final`)."""
+        return self.tipo == 'completa' and self.modalidad == 'evaluacion' and self.curso_id is not None
 
 
 class PruebaEjercicio(models.Model):

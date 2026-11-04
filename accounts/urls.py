@@ -2,6 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views_admin import AdminCalidadView, AdminEstadoView, AdminResumenView
+from .views_analitica import AnaliticaPruebasView, AnaliticaRespuestasView
 from .views import (
     MyTokenObtainPairView,
     UsuarioListView,
@@ -30,6 +31,7 @@ from .views import (
     MisPruebasDetalleView,
     MisCertificadosView,
     ExamenFinalElegibilidadView,
+    MisExamenesFinalesView,
     VerifyCertificadoView,
     MeView,
     MeStatsView,
@@ -89,6 +91,9 @@ urlpatterns = [
 
     # Examen final: estado / elegibilidad (puede rendir, plazo, curso completado)
     path("me/courses/<int:curso_id>/final-exam/", ExamenFinalElegibilidadView.as_view(), name="examen_final_elegibilidad"),
+    path("me/final-exams/", MisExamenesFinalesView.as_view(), name="mis_examenes_finales"),
+    path("analitica/pruebas/", AnaliticaPruebasView.as_view(), name="analitica_pruebas"),
+    path("analitica/respuestas/", AnaliticaRespuestasView.as_view(), name="analitica_respuestas"),
 
     # Perfil + gamificación
     path("me/", MeView.as_view(), name="me_profile"),

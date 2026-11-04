@@ -220,9 +220,18 @@ class ProgresoEstudianteDetalleView(APIView):
         fecha_leccion = {(c, l): t for (c, l, t) in completadas}
         set_completadas = set((c, l) for (c, l, _) in completadas)
 
+        # Solo el examen final del curso mide progreso; la práctica del
+        # Gimnasio se informa aparte (conteo) y no cuenta como avance.
         pruebas_por_curso = {}
-        for p in Prueba.objects.filter(estudiante=estudiante, curso_id__in=curso_ids):
+        for p in Prueba.objects.examenes_finales().filter(estudiante=estudiante, curso_id__in=curso_ids):
             pruebas_por_curso.setdefault(p.curso_id, []).append(p)
+        from django.db.models import Count, Max
+        practica_por_curso = {
+            r["curso_id"]: r
+            for r in Prueba.objects.practica()
+            .filter(estudiante=estudiante, curso_id__in=curso_ids, completada_en__isnull=False)
+            .values("curso_id").annotate(total=Count("id"), ultima=Max("completada_en"))
+        }
 
         certs_por_curso = {
             c.curso_id: c
@@ -276,6 +285,10 @@ class ProgresoEstudianteDetalleView(APIView):
                 "lecciones_completadas": lecciones_completadas,
                 "lecciones_detalle": lecciones_detalle,
                 "pruebas": pruebas,
+                "practica": {
+                    "total": practica_por_curso.get(curso.id, {}).get("total", 0),
+                    "ultima_fecha": practica_por_curso.get(curso.id, {}).get("ultima"),
+                },
                 "certificado": certificado,
             })
 
