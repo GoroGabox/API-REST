@@ -53,6 +53,31 @@ def tiene_acceso_a_curso(user, curso_id) -> bool:
     return cid in cursos_con_acceso_vigente(user)
 
 
+def vencimiento_acceso(user, curso_id):
+    """(tiene_acceso, valid_until | None) del acceso vigente de `user` al curso.
+
+    Mismo criterio que `cursos_con_acceso_vigente`; `valid_until` None = sin
+    vencimiento (p. ej. cupo de suscripción sin fecha de fin). Lo usa el modo
+    offline para acotar la licencia de descarga al fin del acceso.
+    """
+    try:
+        cid = int(curso_id)
+    except (TypeError, ValueError):
+        return False, None
+    now = timezone.now()
+    ec = (
+        EstudianteCurso.objects
+        .select_related('access_key_id')
+        .filter(estudiante_id=user, curso_id=cid, access_key_id__status='active')
+        .filter(Q(access_key_id__valid_from__isnull=True) | Q(access_key_id__valid_from__lte=now))
+        .filter(Q(access_key_id__valid_until__isnull=True) | Q(access_key_id__valid_until__gte=now))
+        .first()
+    )
+    if ec is None:
+        return False, None
+    return True, ec.access_key_id.valid_until
+
+
 def precio_plan(curso: Curso, dias) -> int | None:
     """Precio autoritativo (CLP entero) del plan activo (curso, dias).
 

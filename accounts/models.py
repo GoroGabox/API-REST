@@ -216,6 +216,9 @@ class EstudianteLeccion(models.Model):
         null=True,
         blank=True,
     )
+    # Momento en que el estudiante la completó según el cliente (p. ej. sin conexión,
+    # sincronizado después). Null en registros previos o si el cliente no lo envía.
+    completada_en = models.DateTimeField(null=True, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -345,6 +345,12 @@ class EstudianteLeccionSerializer(serializers.ModelSerializer):
         model = EstudianteLeccion
         fields = '__all__'
 
+    def validate_completada_en(self, value):
+        # Hora del cliente: nunca en el futuro (reloj adelantado).
+        from django.utils import timezone
+        now = timezone.now()
+        return min(value, now) if value else value
+
 
 class EscuelaConDirectorSerializer(serializers.Serializer):
     """Crea Escuela + Director en un solo flujo atómico (solo admin)."""

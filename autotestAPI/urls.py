@@ -22,6 +22,7 @@ urlpatterns = [
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/sales/', include('sales.urls')),
     path('api/v1/schools/', include('schools.urls')),
+    path('api/v1/offline/', include('offline.urls')),
 ]
 
 # En desarrollo, servir los archivos subidos/generados (audio de cursos, etc.).

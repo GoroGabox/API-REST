@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import serializers
 from .models import (
     Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
@@ -83,10 +84,26 @@ class LeccionSerializer(serializers.ModelSerializer):
         ]
 
 
+def _url_media(url):
+    """URL de un medio de lección tal como se entrega al cliente.
+
+    Con ``MEDIA_FIRMAR_URLS`` (bucket privado) se firma con vencimiento; si no, va tal cual.
+    """
+    if not getattr(settings, 'MEDIA_FIRMAR_URLS', False):
+        return url
+    from content_pipeline.media.storage import url_firmada
+    return url_firmada(url, expira_seg=6 * 3600)
+
+
 class LeccionRecursoSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeccionRecurso
         fields = ['id', 'tipo', 'rol', 'clave', 'url', 'orden', 'titulo', 'meta']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['url'] = _url_media(data.get('url'))
+        return data
 
 
 class LeccionDetalleSerializer(serializers.ModelSerializer):
@@ -105,7 +122,7 @@ class LeccionDetalleSerializer(serializers.ModelSerializer):
         meta_int = lambda m, k: int(m.get(k) or 0)  # noqa: E731
         return [
             {
-                'id': r.id, 'clave': r.clave, 'url': r.url, 'orden': r.orden,
+                'id': r.id, 'clave': r.clave, 'url': _url_media(r.url), 'orden': r.orden,
                 'pagina': (r.meta or {}).get('pagina'),
                 'pie': (r.meta or {}).get('pie') or '', 'alt': (r.meta or {}).get('alt') or '',
                 'ancho': meta_int(r.meta or {}, 'ancho'), 'alto': meta_int(r.meta or {}, 'alto'),
@@ -120,6 +137,12 @@ class LeccionDetalleSerializer(serializers.ModelSerializer):
             'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'contenido', 'transcripcion',
             'duracion_min', 'url_video', 'url_audio', 'url_pdf', 'recursos', 'imagenes',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for campo in ('url_video', 'url_audio', 'url_pdf'):
+            data[campo] = _url_media(data.get(campo))
+        return data
 
 
 class UnidadSerializer(serializers.ModelSerializer):

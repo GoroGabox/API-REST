@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'accounts',
     'schools',
     'sales',
+    'offline',
 ]
 
 MIDDLEWARE = [
@@ -241,6 +242,13 @@ MEDIA_S3_PUBLIC_BASE_URL = _media_env('S3_PUBLIC_BASE_URL')
 AUDIO_S3_PREFIX = os.environ.get('AUDIO_S3_PREFIX', 'course_audio/')
 IMAGES_S3_PREFIX = os.environ.get('IMAGES_S3_PREFIX', 'course_images/')
 DOCS_S3_PREFIX = os.environ.get('DOCS_S3_PREFIX', 'course_docs/')
+# True cuando el bucket es privado: las URLs de recursos de lección se firman al servirlas.
+MEDIA_FIRMAR_URLS = os.environ.get('MEDIA_FIRMAR_URLS', 'False') == 'True'
+
+# Modo offline (app móvil): firma Ed25519 de licencias y llave maestra de las CEK.
+# 32 bytes en base64 cada una (`manage.py offline_llaves --nuevas`). Vacías → derivadas de SECRET_KEY.
+OFFLINE_SIGNING_KEY = os.environ.get('OFFLINE_SIGNING_KEY', '')
+OFFLINE_MASTER_KEY = os.environ.get('OFFLINE_MASTER_KEY', '')
 
 # ============================================================================
 # Email — configuración por env (provider-agnóstico).

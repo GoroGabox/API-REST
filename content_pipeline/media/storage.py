@@ -180,3 +180,40 @@ def get_storage(name: str | None = None, *, kind: str = "audio", **opts) -> Audi
 def get_audio_storage(name: str | None = None, **opts) -> AudioStorage:
     """Compatibilidad: storage de audios."""
     return get_storage(name, kind="audio", **opts)
+
+
+# --- URLs firmadas (lectura con vencimiento) --------------------------------------------
+
+_presign_client = None
+
+
+def url_firmada(url: str, *, expira_seg: int = 900, client=None) -> str:
+    """URL de lectura con vencimiento para un medio del bucket.
+
+    Si el medio vive en el bucket (``MEDIA_STORAGE='s3'`` y la URL empieza con
+    ``MEDIA_S3_PUBLIC_BASE_URL``) devuelve una URL presigned de ``GetObject`` que
+    vence en ``expira_seg``; así el bucket puede ser privado. Cualquier otra URL
+    (local, externa, vacía) se devuelve igual. Ante un error de firma también se
+    devuelve la original: no debe romper la lectura de una lección.
+    """
+    global _presign_client
+    if not url or _media_conf("STORAGE", "local").lower() != "s3":
+        return url
+    base = _media_conf("S3_PUBLIC_BASE_URL")
+    bucket = _media_conf("S3_BUCKET")
+    if not base or not bucket:
+        return url
+    base = _with_slash(base)
+    if not url.startswith(base):
+        return url
+    key = url[len(base):].split("?", 1)[0]
+    try:
+        if client is None:
+            if _presign_client is None:
+                _presign_client = S3Storage._build_client(bucket)
+            client = _presign_client
+        return client.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=int(expira_seg),
+        )
+    except Exception:  # pragma: no cover - depende de credenciales/red
+        return url
