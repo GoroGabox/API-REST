@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -7,11 +8,19 @@ from django.db import transaction
 from django.db.models import F, Q
 
 from schools.models import Escuela, Curso, PlanCurso
-from .models import AccessKey, EstudianteCurso, Producto, Venta, TransbankTransaction
+from .models import (
+    AccessKey, EstudianteCurso, IntentoPago, MovimientoLlaves, Producto, Venta, TransbankTransaction,
+)
 from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order
 
 # Días de acceso que habilita 1 llave. Otorgar N días cuesta ceil(N/7) llaves.
 DIAS_POR_LLAVE = 7
+def registrar_movimiento_llaves(escuela_id, cantidad, motivo):
+    """Deja constancia de llaves gastadas (<0) o devueltas (>0) por una escuela."""
+    if escuela_id and cantidad:
+        MovimientoLlaves.objects.create(escuela_id=escuela_id, cantidad=cantidad, motivo=motivo)
+
+
 def llaves_para_dias(dias) -> int:
     """Nº de llaves que cuesta habilitar `dias` de acceso (1 llave = 7 días).
 
@@ -221,6 +230,7 @@ def generar_codigos(*, escuela_id, cantidad, dias, descontar=True):
     if total:
         escuela.basic_key -= total
         escuela.save(update_fields=['basic_key'])
+        registrar_movimiento_llaves(escuela.pk, -total, 'codigos')
 
     vence = timezone.now() + timedelta(days=CODIGO_VIGENCIA_DIAS)
     return [
@@ -244,6 +254,7 @@ def anular_codigo(codigo: AccessKey):
     codigo.save(update_fields=['status'])
     if codigo.llaves and codigo.escuela_id:
         Escuela.objects.filter(pk=codigo.escuela_id).update(basic_key=F('basic_key') + codigo.llaves)
+        registrar_movimiento_llaves(codigo.escuela_id, codigo.llaves, 'anulacion')
     return codigo
 
 
@@ -304,6 +315,7 @@ def decrementar_saldo(escuela, resolved_source, keys_needed):
         escuela.basic_seats_used += 1
     else:  # key
         escuela.basic_key -= keys_needed
+        registrar_movimiento_llaves(escuela.pk, -keys_needed, 'activacion')
 
 
 def mensaje_sin_saldo(source, keys_needed=1):
@@ -450,6 +462,8 @@ def registrar_venta_transbank(*, user, producto, escuela, result, token_ws, fech
         pay_system="WEBPAY",
         payment_status=result['status'],
         fecha_venta=fecha_venta,
+        item_type='producto',
+        buy_order=result.get('buy_order'),
     )
     TransbankTransaction.objects.create(
         sale=venta,
@@ -565,6 +579,9 @@ def registrar_compra_curso_individual(*, user, method, result, fecha_venta=None,
         pay_system=method.upper(),
         payment_status=result['status'],
         fecha_venta=fecha_venta,
+        item_type='curso',
+        dias=dias,
+        buy_order=buy_order or None,
     )
     if method == 'transbank':
         extra = result['extra_data']
@@ -591,6 +608,8 @@ def registrar_venta_unificada(*, user, producto, escuela, method, result, fecha_
         pay_system=method.upper(),
         payment_status=result["status"],
         fecha_venta=fecha_venta,
+        item_type="producto",
+        buy_order=(result.get("extra_data") or {}).get("buy_order") or result.get("buy_order"),
     )
     if method == "transbank":
         extra = result["extra_data"]
@@ -607,3 +626,60 @@ def registrar_venta_unificada(*, user, producto, escuela, method, result, fecha_
         escuela.pk if escuela else None, producto, user.is_director
     )
     return venta
+
+
+# ============================================================
+# Intentos de pago (conversión) — ver sales.models.IntentoPago
+# ============================================================
+logger = logging.getLogger(__name__)
+
+# Un intento iniciado sin confirmar tras este plazo se considera abandonado.
+INTENTO_ABANDONO = timedelta(hours=2)
+
+
+def registrar_intento_pago(*, usuario, buy_order, token, item_type, monto, pay_system):
+    """Registra el inicio de un pago. Nunca interrumpe el pago si falla."""
+    try:
+        item_id, _ = extract_ids_from_buy_order(buy_order)
+        es_curso = item_type == 'curso'
+        curso = Curso.objects.filter(pk=item_id).first() if es_curso and item_id else None
+        producto = Producto.objects.filter(pk=item_id).first() if not es_curso and item_id else None
+        return IntentoPago.objects.create(
+            buy_order=buy_order,
+            token=token,
+            usuario=usuario,
+            escuela=getattr(usuario, 'escuela', None),
+            item_type='curso' if es_curso else 'producto',
+            producto=producto,
+            curso=curso,
+            dias=extract_dias_from_buy_order(buy_order) if es_curso else None,
+            monto=int(round(float(monto or 0))),
+            pay_system=(pay_system or '').upper(),
+        )
+    except Exception:  # pragma: no cover - el registro es best-effort
+        logger.exception("No se pudo registrar el intento de pago %s", buy_order)
+        return None
+
+
+def resolver_intento_pago(token, *, estado, codigo=None, venta=None):
+    """Cierra el intento iniciado de ese token (autorizado o rechazado)."""
+    if not token:
+        return 0
+    try:
+        return IntentoPago.objects.filter(token=token, estado='iniciado').update(
+            estado=estado,
+            codigo_respuesta=(str(codigo)[:50] if codigo is not None else None),
+            venta=venta,
+            resuelto_en=timezone.now(),
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("No se pudo resolver el intento de pago %s", token)
+        return 0
+
+
+def estado_intento(intento, now=None):
+    """Estado para mostrar: un 'iniciado' viejo se reporta como 'abandonado'."""
+    now = now or timezone.now()
+    if intento.estado == 'iniciado' and intento.creado_en <= now - INTENTO_ABANDONO:
+        return 'abandonado'
+    return intento.estado

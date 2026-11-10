@@ -13,12 +13,26 @@ class ProductoSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class VentaSerializer(serializers.ModelSerializer):
+    # `producto`/`usuario` siguen siendo strings (contrato de los historiales del
+    # director y del estudiante); lo demás es para el análisis comercial.
     producto = serializers.StringRelatedField()
     usuario = serializers.StringRelatedField()
+    escuela = serializers.SerializerMethodField()
+    curso = serializers.SerializerMethodField()
 
     class Meta:
         model = Venta
-        fields = ['id', 'producto', 'usuario', 'fecha_venta', 'monto_pagado', 'pay_system', 'payment_status']
+        fields = [
+            'id', 'producto', 'producto_id', 'curso', 'escuela', 'usuario', 'usuario_id',
+            'fecha_venta', 'monto_pagado', 'pay_system', 'payment_status',
+            'item_type', 'dias', 'buy_order',
+        ]
+
+    def get_escuela(self, obj):
+        return {'id': obj.escuela_id, 'nombre': obj.escuela.nombre} if obj.escuela_id else None
+
+    def get_curso(self, obj):
+        return {'id': obj.curso_id, 'nombre': obj.curso.nombre} if obj.curso_id else None
 
 class AccessKeySerializer(serializers.ModelSerializer):
     class Meta:

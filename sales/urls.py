@@ -21,6 +21,8 @@ from .views import (
     SolicitudAccesoViewSet,
 )
 
+from . import views_admin
+
 router = DefaultRouter()
 router.register(r'productos', ProductoViewSet)
 router.register(r'ventas', VentaViewSet)
@@ -30,6 +32,15 @@ router.register(r'estudiante-cursos-detail', EstudianteCursoDetailViewSet, basen
 router.register(r'solicitudes', SolicitudAccesoViewSet, basename='solicitud-acceso')
 
 urlpatterns = [
+    # Sección Comercial del panel de admin.
+    path('admin/panorama/', views_admin.PanoramaView.as_view(), name='admin_panorama'),
+    path('admin/ventas/', views_admin.VentasAdminView.as_view(), name='admin_ventas'),
+    path('admin/ventas/<int:venta_id>/', views_admin.VentaAdminDetalleView.as_view(), name='admin_venta_detalle'),
+    path('admin/intentos/', views_admin.IntentosAdminView.as_view(), name='admin_intentos'),
+    path('admin/precios/evolucion/', views_admin.PrecioEvolucionView.as_view(), name='admin_precio_evolucion'),
+    path('admin/precios/historial/', views_admin.PrecioHistorialView.as_view(), name='admin_precio_historial'),
+    path('admin/cartera/<str:segmento>/', views_admin.CarteraView.as_view(), name='admin_cartera'),
+    path('admin/oportunidades/', views_admin.OportunidadesView.as_view(), name='admin_oportunidades'),
     path('webpay_init/', SaleInitiationViewSet.as_view(), name='webpay_init_view'),
     path('webpay_confirm/', PaymentConfirmationView.as_view(), name='webpay_confirm_view'),
     path('pay_init/', UnifiedSaleInitiationView.as_view(), name='pay_init_view'),

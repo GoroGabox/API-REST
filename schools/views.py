@@ -19,6 +19,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.permissions import IsAdmin, ReadOnlyOrAdmin, PublicReadOrAdmin, is_admin, is_director, is_estudiante
 from .models import Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso
+from autotestAPI.auditoria import como_usuario
 from .serializers import (
     EscuelaSerializer,
     CursoSerializer,
@@ -759,6 +760,15 @@ class PlanCursoViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['curso', 'dias', 'activo']
     permission_classes = [ReadOnlyOrAdmin]
+
+    # El historial de precios (sales.CambioPrecio, por señal) registra quién cambió.
+    def perform_create(self, serializer):
+        with como_usuario(self.request.user):
+            serializer.save()
+
+    def perform_update(self, serializer):
+        with como_usuario(self.request.user):
+            serializer.save()
 
 
 class CursoIdOSlugFilter(django_filters.FilterSet):

@@ -16,13 +16,12 @@ from rest_framework.views import APIView
 
 from accounts.models import Certificado, Prueba, Usuario
 from accounts.permissions import IsAdmin
+from sales.constants import ESTADOS_PAGADOS
 from sales.models import EstudianteCurso, SolicitudAcceso, Venta
 from schools.models import (
     PREGUNTAS_SESION_TEMATICA, Categoria, Curso, Ejercicio, Escuela, Leccion, LeccionRecurso,
 )
 
-# Transbank deja 'AUTHORIZED'; flujos internos/tests usan 'approved'.
-ESTADOS_PAGADOS = ("AUTHORIZED", "authorized", "approved", "APPROVED", "paid")
 PLACEHOLDER_URL = "http://placeholder.url"
 SALDO_BAJO = 5  # llaves
 

@@ -29,6 +29,9 @@ class Producto(models.Model):
     def __str__(self):
         return self.nombre
 
+ITEM_TYPES = [('curso', 'Curso'), ('producto', 'Producto')]
+
+
 ### 🛒 Venta ###
 class Venta(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
@@ -43,6 +46,12 @@ class Venta(models.Model):
     monto_pagado = models.DecimalField(max_digits=10, decimal_places=2)
     pay_system = models.CharField(max_length=20)
     payment_status = models.CharField(max_length=20, default='pending')
+    # Datos de la compra para el análisis comercial (antes solo vivían dentro
+    # del buy_order de TransbankTransaction). `item_type`: 'curso' (B2C) o
+    # 'producto' (B2B: llaves/suscripción); `dias`: plan del curso (7/14/35).
+    item_type = models.CharField(max_length=10, choices=ITEM_TYPES, null=True, blank=True)
+    dias = models.PositiveIntegerField(null=True, blank=True)
+    buy_order = models.CharField(max_length=255, null=True, blank=True, db_index=True)
 
     def __str__(self):
         item = self.producto.nombre if self.producto else (self.curso.nombre if self.curso else "—")
@@ -169,4 +178,98 @@ class TransbankTransaction(models.Model):
     amount = models.FloatField(null=True)  # Monto pagado
 
     def __str__(self):
-        return f'Transacción {self.id} - Venta {self.sale.id}'    
+        return f'Transacción {self.id} - Venta {self.sale.id}'
+
+
+class IntentoPago(models.Model):
+    """Un intento de pago (pay_init → pay_confirm), pagado o no.
+
+    Separado de `Venta` (que solo guarda lo cobrado) para medir la conversión
+    del pago sin ensuciar el historial de compras de directores y estudiantes.
+    Un intento `iniciado` que nunca se confirmó se considera abandonado al
+    consultarlo (ver `sales.services.estado_intento`); no hay tarea programada.
+    """
+    ESTADOS = [
+        ('iniciado', 'Iniciado'),
+        ('autorizado', 'Autorizado'),
+        ('rechazado', 'Rechazado'),
+    ]
+
+    buy_order = models.CharField(max_length=255, db_index=True)
+    token = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    usuario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True)
+    escuela = models.ForeignKey(Escuela, on_delete=models.SET_NULL, null=True, blank=True)
+    item_type = models.CharField(max_length=10, choices=ITEM_TYPES)
+    producto = models.ForeignKey(Producto, on_delete=models.SET_NULL, null=True, blank=True)
+    curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True)
+    dias = models.PositiveIntegerField(null=True, blank=True)
+    monto = models.PositiveIntegerField()
+    pay_system = models.CharField(max_length=20)
+    estado = models.CharField(max_length=12, choices=ESTADOS, default='iniciado', db_index=True)
+    codigo_respuesta = models.CharField(max_length=50, null=True, blank=True)
+    venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='intentos')
+    creado_en = models.DateTimeField(auto_now_add=True, db_index=True)
+    resuelto_en = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return f"Intento {self.id} [{self.estado}] {self.buy_order}"
+
+
+class CambioPrecio(models.Model):
+    """Historial de precios de `schools.PlanCurso` y `sales.Producto`.
+
+    Se registra por señales (`sales/signals.py`) cuando cambia un campo de
+    precio; la migración 0027 guardó el estado inicial de cada ítem. `nombre`
+    es una foto del nombre del ítem al momento del cambio.
+    """
+    TIPOS = [('plan_curso', 'Plan de curso'), ('producto', 'Producto')]
+
+    tipo = models.CharField(max_length=12, choices=TIPOS)
+    objeto_id = models.PositiveIntegerField()
+    nombre = models.CharField(max_length=200)
+    curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True)
+    dias = models.PositiveIntegerField(null=True, blank=True)
+    precio_anterior = models.PositiveIntegerField(null=True, blank=True)
+    precio_nuevo = models.PositiveIntegerField(null=True, blank=True)
+    referencia_anterior = models.PositiveIntegerField(null=True, blank=True)
+    referencia_nueva = models.PositiveIntegerField(null=True, blank=True)
+    descuento_anterior = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    descuento_nuevo = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    activo = models.BooleanField(default=True)
+    usuario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ['-fecha']
+        indexes = [models.Index(fields=['tipo', 'objeto_id', 'fecha'])]
+
+    def __str__(self):
+        return f"{self.nombre}: {self.precio_anterior} → {self.precio_nuevo}"
+
+class MovimientoLlaves(models.Model):
+    """Uso de llaves del saldo de una escuela (consumo para el análisis comercial).
+
+    `cantidad` negativa = llaves gastadas (activar/extender alumnos, generar
+    códigos); positiva = devueltas (anular un código). Las compras viven en
+    `Venta` y los ajustes manuales del admin no se registran aquí.
+    """
+    MOTIVOS = [
+        ('activacion', 'Activación'),
+        ('extension', 'Extensión'),
+        ('codigos', 'Códigos'),
+        ('anulacion', 'Anulación de código'),
+    ]
+
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='movimientos_llaves')
+    cantidad = models.IntegerField()
+    motivo = models.CharField(max_length=12, choices=MOTIVOS)
+    fecha = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return f"{self.escuela_id}: {self.cantidad:+d} ({self.motivo})"

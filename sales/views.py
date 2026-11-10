@@ -14,6 +14,7 @@ from transbank.common.integration_commerce_codes import IntegrationCommerceCodes
 from transbank.common.integration_api_keys import IntegrationApiKeys
 from transbank.common.integration_type import IntegrationType
 from rest_framework.views import APIView
+from autotestAPI.auditoria import como_usuario
 from django.db import IntegrityError, transaction as db_transaction
 from django.http import HttpResponse
 from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order, parse_accounting_date
@@ -39,6 +40,9 @@ from .services import (
     registrar_venta_transbank,
     registrar_venta_unificada,
     registrar_compra_curso_individual,
+    registrar_intento_pago,
+    registrar_movimiento_llaves,
+    resolver_intento_pago,
     CompraCursoError,
     precio_final_producto,
     precio_plan,
@@ -258,6 +262,15 @@ class ProductoViewSet(viewsets.ModelViewSet):
     filterset_fields = ['cant_basic_key', 'basic_access']
     permission_classes = [ReadOnlyOrAdmin]
 
+    # El historial de precios (CambioPrecio, por señal) registra quién cambió.
+    def perform_create(self, serializer):
+        with como_usuario(self.request.user):
+            serializer.save()
+
+    def perform_update(self, serializer):
+        with como_usuario(self.request.user):
+            serializer.save()
+
 
 def _generar_comprobante_pdf(venta):
     """Genera un PDF de comprobante de pago (sin validez tributaria)."""
@@ -355,12 +368,13 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        base = Venta.objects.select_related('producto', 'curso', 'escuela', 'usuario')
         if is_admin(user):
-            return Venta.objects.all()
+            return base
         if is_director(user):
-            return Venta.objects.filter(escuela_id=user.escuela_id)
+            return base.filter(escuela_id=user.escuela_id)
         if is_estudiante(user):
-            return Venta.objects.filter(usuario=user)
+            return base.filter(usuario=user)
         return Venta.objects.none()
 
     @action(detail=True, methods=["get"])
@@ -1083,6 +1097,7 @@ class ExtenderLlaveView(APIView):
                     )
                 escuela_locked.basic_key -= keys_needed
                 escuela_locked.save()
+                registrar_movimiento_llaves(escuela_locked.pk, -keys_needed, 'extension')
 
             now = timezone.now()
             if access_key.valid_until and access_key.valid_until >= now:
@@ -1209,6 +1224,14 @@ class SaleInitiationViewSet(APIView):
 
         try:
             response = tx.create(buy_order, session_id, amount, return_url)
+            registrar_intento_pago(
+                usuario=_comprador(request, student_id),
+                buy_order=buy_order,
+                token=response['token'],
+                item_type='producto',
+                monto=amount,
+                pay_system='WEBPAY',
+            )
             return Response({'url': response['url'], 'token': response['token']}, status=status.HTTP_200_OK)
         except TransbankError as e:
             error_message = str(e)
@@ -1249,9 +1272,11 @@ class PaymentConfirmationView(APIView):
         try:
             result = tx.commit(token_ws)
         except TransbankError as e:
+            resolver_intento_pago(token_ws, estado='rechazado', codigo='error_transbank')
             return Response({"success": False, "message": f"Error en la transacción: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
         if result['status'] != 'AUTHORIZED':
+            resolver_intento_pago(token_ws, estado='rechazado', codigo=result.get('response_code', result['status']))
             return Response({"success": False, "details": "Pago no autorizado."}, status=status.HTTP_401_UNAUTHORIZED)
 
         err, user, producto = _resolver_compra_producto(request, result.get('buy_order'), result.get('amount'))
@@ -1260,7 +1285,7 @@ class PaymentConfirmationView(APIView):
         escuela = user.escuela  # nullable; FK ya resuelve
 
         try:
-            registrar_venta_transbank(
+            venta = registrar_venta_transbank(
                 user=user,
                 producto=producto,
                 escuela=escuela,
@@ -1277,6 +1302,7 @@ class PaymentConfirmationView(APIView):
                 'details': f'Error al guardar la venta o la transaccion: {str(e)}'
             }, status=500)
 
+        resolver_intento_pago(token_ws, estado='autorizado', codigo=result['status'], venta=venta)
         return Response({"success": True, "details": "Venta creada con éxito.", "data": result}, status=status.HTTP_201_CREATED)
 
     def validate_payment_request(self, data):
@@ -1343,6 +1369,7 @@ class TransbankPaymentStrategy(PaymentStrategy):
         try:
             result = tx.commit(token)
         except TransbankError as e:
+            resolver_intento_pago(token, estado='rechazado', codigo='error_transbank')
             return {"success": False, "message": f"Error en la transacción: {e}"}
 
         if result["status"] == "AUTHORIZED":
@@ -1360,6 +1387,10 @@ class TransbankPaymentStrategy(PaymentStrategy):
                 }
             }
         else:
+            resolver_intento_pago(
+                token, estado='rechazado',
+                codigo=result.get("response_code", result.get("status")),
+            )
             return {
                 "success": False,
                 "message": "Pago no autorizado."
@@ -1430,6 +1461,14 @@ class UnifiedSaleInitiationView(APIView):
 
             strategy = self.get_payment_strategy(method)
             payment_data = strategy.create_transaction(amount, buy_order, session_id)
+            registrar_intento_pago(
+                usuario=_comprador(request, student_id),
+                buy_order=buy_order,
+                token=payment_data.get("token"),
+                item_type=item_type,
+                monto=amount,
+                pay_system=method,
+            )
             return Response(payment_data, status=status.HTTP_200_OK)
         except NotImplementedError as e:
             return Response({"error": str(e)}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -1493,8 +1532,9 @@ class UnifiedPaymentConfirmationView(APIView):
                 # Compra individual de curso: otorga acceso 7 días al comprador.
                 # El curso y el monto se derivan del buy_order autoritativo de
                 # Transbank dentro del servicio (no del cliente).
+                token = (result.get("extra_data") or {}).get("token")
                 try:
-                    registrar_compra_curso_individual(
+                    venta = registrar_compra_curso_individual(
                         user=request.user,
                         method=method,
                         result=result,
@@ -1508,7 +1548,9 @@ class UnifiedPaymentConfirmationView(APIView):
                         if e.code in ("already_enrolled", "managed_by_school")
                         else status.HTTP_400_BAD_REQUEST
                     )
+                    resolver_intento_pago(token, estado='rechazado', codigo=e.code)
                     return Response({"success": False, "details": str(e), "code": e.code}, status=http)
+                resolver_intento_pago(token, estado='autorizado', codigo=result.get("status"), venta=venta)
                 return Response({"success": True, "details": "Curso adquirido.", "data": result}, status=status.HTTP_201_CREATED)
 
             err, user, producto = _resolver_compra_producto(
@@ -1518,7 +1560,7 @@ class UnifiedPaymentConfirmationView(APIView):
                 return err
 
             try:
-                registrar_venta_unificada(
+                venta = registrar_venta_unificada(
                     user=user,
                     producto=producto,
                     escuela=user.escuela,
@@ -1530,6 +1572,10 @@ class UnifiedPaymentConfirmationView(APIView):
                 return Response({"success": False, "details": "Esta transacción ya fue procesada."},
                                 status=status.HTTP_200_OK)
 
+            resolver_intento_pago(
+                (result.get("extra_data") or {}).get("token"),
+                estado='autorizado', codigo=result.get("status"), venta=venta,
+            )
             return Response({"success": True, "details": "Venta completada.", "data": result}, status=status.HTTP_201_CREATED)
 
         except Exception as e:
