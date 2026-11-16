@@ -57,7 +57,13 @@ def nombre_usuario(u):
     return f"{u.nombre} {u.apellido}".strip() or u.email
 
 
+PERIODO_TXT = {1: "mensual", 6: "semestral", 12: "anual"}
+
+
 def item_de(v):
+    if v.plan_suscripcion_id:
+        txt = f"Plan {v.plan_suscripcion.nombre} {PERIODO_TXT.get(v.periodo_meses, '')}".strip()
+        return f"{txt} (subida)" if v.item_type == "subida" else txt
     return v.producto.nombre if v.producto_id else (v.curso.nombre if v.curso_id else "—")
 
 
@@ -215,12 +221,73 @@ def panorama(desde, hasta):
         "top_paquetes": top("producto", "producto__nombre"),
         "mezcla_planes": mezcla,
         "intentos": resumen_intentos(desde, hasta),
+        "suscripciones": kpis_suscripciones(desde, hasta),
+    }
+
+
+def kpis_suscripciones(desde, hasta, now=None):
+    """Salud de las suscripciones: activas, MRR, renovación, cambios, ingresos por tier.
+
+    - MRR: suma del precio de lista mensualizado del plan de cada suscripción
+      con acceso (vigente o en gracia).
+    - Renovación: de los períodos que terminaron en el rango (hasta hoy),
+      cuántas suscripciones siguieron (su fin actual es posterior).
+    """
+    from .models import PeriodoSuscripcion, Suscripcion
+    now = now or timezone.now()
+    activas = []
+    estados = Counter()
+    for sus in Suscripcion.objects.select_related("plan"):
+        e = sus.estado(now)
+        estados[e] += 1
+        if e in ("vigente", "gracia"):
+            activas.append(sus)
+    mrr = sum(round(s.plan.precio(s.periodo_meses) / s.periodo_meses) for s in activas)
+    por_tier = Counter(s.plan.tier for s in activas)
+
+    tope = min(hasta, now)
+    terminados = (
+        PeriodoSuscripcion.objects.filter(fin__gte=desde, fin__lt=tope, motivo__in=("alta", "renovacion"))
+        .select_related("suscripcion")
+    )
+    vistos, renovadas = set(), 0
+    for p in terminados:
+        if p.suscripcion_id in vistos:
+            continue
+        vistos.add(p.suscripcion_id)
+        if p.suscripcion.fin > p.fin + timedelta(days=1):
+            renovadas += 1
+    renovacion = round(renovadas * 100 / len(vistos)) if vistos else None
+
+    cambios = Counter(
+        PeriodoSuscripcion.objects.filter(creado__gte=desde, creado__lt=hasta, motivo__in=("subida", "bajada"))
+        .values_list("motivo", flat=True)
+    )
+    ingresos = {
+        r["plan_suscripcion__tier"]: _int(r["m"])
+        for r in pagadas().filter(fecha_venta__gte=desde, fecha_venta__lt=hasta, plan_suscripcion__isnull=False)
+        .values("plan_suscripcion__tier").annotate(m=Sum("monto_pagado"))
+    }
+    return {
+        "activas": len(activas),
+        "por_tier": {"esencial": por_tier.get("esencial", 0), "pro": por_tier.get("pro", 0)},
+        "en_gracia": estados.get("gracia", 0),
+        "suspendidas": estados.get("suspendida", 0),
+        "mrr": mrr,
+        "renovacion": renovacion,
+        "churn": (100 - renovacion) if renovacion is not None else None,
+        "por_renovar": len(vistos),
+        "subidas": cambios.get("subida", 0),
+        "bajadas": cambios.get("bajada", 0),
+        "ingresos_por_tier": {"esencial": ingresos.get("esencial", 0), "pro": ingresos.get("pro", 0)},
     }
 
 
 # --- Ventas ------------------------------------------------------------------
 def filtrar_ventas(params, base=None):
-    qs = (base if base is not None else pagadas()).select_related("producto", "curso", "escuela", "usuario")
+    qs = (base if base is not None else pagadas()).select_related(
+        "producto", "curso", "escuela", "usuario", "plan_suscripcion",
+    )
     g = params.get
     if g("desde"):
         qs = qs.filter(fecha_venta__gte=g("desde"))
@@ -231,7 +298,7 @@ def filtrar_ventas(params, base=None):
         qs = qs.filter(item_type="curso")
     elif canal == "b2b":
         qs = qs.exclude(item_type="curso")
-    for campo in ("producto", "curso", "escuela", "usuario", "dias"):
+    for campo in ("producto", "curso", "escuela", "usuario", "dias", "plan_suscripcion"):
         if g(campo):
             qs = qs.filter(**{f"{campo}_id" if campo != "dias" else "dias": g(campo)})
     if g("monto_min"):
@@ -266,6 +333,10 @@ def fila_venta(v):
         "producto_id": v.producto_id,
         "curso_id": v.curso_id,
         "dias": v.dias,
+        "plan_suscripcion_id": v.plan_suscripcion_id,
+        "periodo_meses": v.periodo_meses,
+        "item_type": v.item_type,
+        "folio_factura": v.folio_factura,
         "monto": _int(v.monto_pagado),
         "pay_system": v.pay_system,
         "payment_status": v.payment_status,
@@ -340,6 +411,14 @@ def evolucion_precio(tipo, objeto_id, desde, hasta):
         nombre = f"{plan.curso.nombre} · {plan.dias} días"
         ventas = pagadas().filter(curso_id=plan.curso_id, dias=plan.dias)
         actual = plan.precio
+    elif tipo == "plan_suscripcion":
+        from .models import PlanSuscripcion
+        plan = PlanSuscripcion.objects.filter(pk=objeto_id).first()
+        if plan is None:
+            return None
+        nombre = f"Plan {plan.nombre} · mensual"
+        ventas = pagadas().filter(plan_suscripcion_id=objeto_id)
+        actual = plan.precio_mensual
     else:
         prod = Producto.objects.filter(pk=objeto_id).first()
         if prod is None:
@@ -447,6 +526,13 @@ def cartera_escuelas(now=None):
     for d in Usuario.objects.filter(is_director=True, escuela__isnull=False).only("escuela", "email", "telefono", "nombre", "apellido"):
         directores[d.escuela_id].append(d)
 
+    from .models import CupoSuscripcion, Suscripcion
+    suscripciones = {s.escuela_id: s for s in Suscripcion.objects.select_related("plan")}
+    cupos_usados = dict(
+        CupoSuscripcion.objects.filter(liberado_en__isnull=True).values("suscripcion")
+        .annotate(n=Count("id")).values_list("suscripcion", "n")
+    )
+
     filas = []
     for e in Escuela.objects.all().order_by("nombre"):
         vs = compras.get(e.id, [])
@@ -476,14 +562,27 @@ def cartera_escuelas(now=None):
             "ultimo_uso": ultimo_uso[e.id].isoformat() if e.id in ultimo_uso else None,
             "alumnos_activos": activos.get(e.id, 0),
             "examen_final": {"rendidos": fin["rendidos"], "aprobados": fin["aprobados"]} if fin else None,
-            "suscripcion": {
-                "activa": suscripcion_vigente(e, now),
-                "cupos_usados": e.basic_seats_used,
-                "cupos_max": e.basic_seats_max,
-                "hasta": e.basic_access_until.isoformat() if e.basic_access_until else None,
-            },
+            "suscripcion": _sus_cartera(suscripciones.get(e.id), cupos_usados, now),
         })
     return filas
+
+
+def _sus_cartera(sus, cupos_usados, now):
+    if sus is None:
+        return {"activa": False, "estado": None, "plan": None, "tier": None, "cupos_usados": 0, "cupos_max": 0,
+                "hasta": None, "no_renovara": False}
+    estado = sus.estado(now)
+    return {
+        "activa": estado in ("vigente", "gracia"),
+        "estado": estado,
+        "plan": sus.plan.nombre,
+        "tier": sus.plan.tier,
+        "periodo_meses": sus.periodo_meses,
+        "cupos_usados": cupos_usados.get(sus.id, 0),
+        "cupos_max": sus.plan.cupos,
+        "hasta": sus.fin.isoformat(),
+        "no_renovara": sus.no_renovara,
+    }
 
 
 def cartera_estudiantes(params=None, now=None):
@@ -638,22 +737,34 @@ def oportunidades(now=None):
         "casos": sorted(casos, key=lambda c: c["valor"] or 0, reverse=True),
     })
 
-    # 4. Candidatas a suscripción.
+    # 4. Candidatas a suscripción: muchos alumnos por llave, o un gasto en llaves
+    # que ya iguala o supera al plan que los cubriría.
+    from .models import PlanSuscripcion
+    planes_sus = list(PlanSuscripcion.objects.filter(activo=True, tier="esencial").order_by("cupos"))
     casos = []
     for e in escuelas:
-        if not e["suscripcion"]["activa"] and e["alumnos_activos"] >= ALUMNOS_PARA_SUSCRIPCION:
+        if e["suscripcion"]["activa"]:
+            continue
+        gasto_mes = round(e["consumo_semanal"] * 52 / 12 * _precio_llave_ref(packs)) if packs else 0
+        plan = next((p for p in planes_sus if p.cupos >= max(e["alumnos_activos"], 1)), None)
+        conviene = plan is not None and gasto_mes >= plan.precio_mensual
+        if e["alumnos_activos"] >= ALUMNOS_PARA_SUSCRIPCION or conviene:
             casos.append(_caso(
                 e["id"], e["nombre"], e["email"], e["telefono"],
-                f"{e['alumnos_activos']} alumnos con acceso vigente, sin suscripción.",
-                "Ofrecer una suscripción con cupos reasignables.",
-                valor=e["alumnos_activos"],
+                f"{e['alumnos_activos']} alumnos con acceso vigente; gasta ~${gasto_mes:,} al mes en llaves.".replace(",", "."),
+                (f"Ofrecer el plan {plan.nombre} (${plan.precio_mensual:,}/mes) con cupos reasignables.".replace(",", ".")
+                 if plan else "Ofrecer una suscripción con cupos reasignables."),
+                valor=plan.precio_mensual if plan else e["alumnos_activos"],
             ))
     reglas.append({
         "clave": "candidata_suscripcion", "segmento": "escuela",
         "titulo": "Candidatas a suscripción",
-        "descripcion": f"Escuelas sin suscripción con {ALUMNOS_PARA_SUSCRIPCION} o más alumnos activos.",
+        "descripcion": (f"Escuelas sin suscripción con {ALUMNOS_PARA_SUSCRIPCION} o más alumnos activos, "
+                        "o que gastan en llaves lo mismo que costaría un plan."),
         "casos": sorted(casos, key=lambda c: c["valor"] or 0, reverse=True),
     })
+
+    reglas.extend(_reglas_suscripcion(escuelas, now))
 
     planes = defaultdict(dict)
     for p in PlanCurso.objects.filter(activo=True):
@@ -751,3 +862,74 @@ def oportunidades(now=None):
     })
 
     return reglas
+
+
+DIAS_RENOVAR = 14         # suscripción vigente que vence en N días
+CUPOS_LLENOS_PCT = 90     # % de cupos en uso para sugerir subir de plan
+
+
+def _precio_llave_ref(packs):
+    """Precio por llave de referencia: el del pack más barato por llave."""
+    precios = [precio_final(p.valor_neto, p.descuento) / p.cant_basic_key for p in packs if p.cant_basic_key]
+    return min(precios) if precios else 0
+
+
+def _reglas_suscripcion(escuelas, now):
+    from .models import PlanSuscripcion, Suscripcion
+    datos = {e["id"]: e for e in escuelas}
+    planes = list(PlanSuscripcion.objects.filter(activo=True).order_by("cupos"))
+    por_vencer, gracia, llenos = [], [], []
+    for sus in Suscripcion.objects.select_related("plan", "escuela"):
+        e = datos.get(sus.escuela_id)
+        if not e:
+            continue
+        estado = sus.estado(now)
+        precio = sus.plan.precio(sus.periodo_meses)
+        if estado == "vigente" and sus.fin <= now + timedelta(days=DIAS_RENOVAR) and not sus.cambio_en:
+            dias = max((sus.fin - now).days, 0)
+            por_vencer.append(_caso(
+                e["id"], e["nombre"], e["email"], e["telefono"],
+                f"Su plan {sus.plan.nombre} vence en {dias} días"
+                + (" y marcó que no renovará" + (f": «{sus.motivo_no_renovar}»" if sus.motivo_no_renovar else "") + "."
+                   if sus.no_renovara else "."),
+                f"Recordar la renovación ({PERIODO_TXT.get(sus.periodo_meses, '')}, ${precio:,}).".replace(",", "."),
+                valor=precio,
+            ))
+        elif estado in ("gracia", "suspendida"):
+            gracia.append(_caso(
+                e["id"], e["nombre"], e["email"], e["telefono"],
+                ("En gracia: sus alumnos pierden el acceso pronto." if estado == "gracia"
+                 else "Suspendida: sus alumnos con cupo ya no pueden estudiar."),
+                f"Ofrecer renovar el plan {sus.plan.nombre} (${precio:,}).".replace(",", "."),
+                valor=precio,
+            ))
+        usados = e["suscripcion"]["cupos_usados"]
+        if estado == "vigente" and sus.plan.cupos and usados * 100 >= CUPOS_LLENOS_PCT * sus.plan.cupos:
+            mayor = next((p for p in planes if p.tier == sus.plan.tier and p.cupos > sus.plan.cupos), None)
+            llenos.append(_caso(
+                e["id"], e["nombre"], e["email"], e["telefono"],
+                f"Usa {usados} de {sus.plan.cupos} cupos.",
+                (f"Ofrecer subir a {mayor.nombre} (paga solo la diferencia por los días que quedan)."
+                 if mayor else "Ofrecer Pro o llaves para los alumnos extra."),
+                valor=(mayor.precio_mensual - sus.plan.precio_mensual) if mayor else None,
+            ))
+    return [
+        {
+            "clave": "suscripcion_por_vencer", "segmento": "escuela",
+            "titulo": "Suscripción por renovar",
+            "descripcion": f"Planes vigentes que vencen en {DIAS_RENOVAR} días o menos.",
+            "casos": sorted(por_vencer, key=lambda c: c["valor"] or 0, reverse=True),
+        },
+        {
+            "clave": "suscripcion_en_gracia", "segmento": "escuela",
+            "titulo": "Vencidas sin renovar",
+            "descripcion": "Suscripciones en gracia o suspendidas: aún se pueden recuperar sin reasignar cupos.",
+            "casos": sorted(gracia, key=lambda c: c["valor"] or 0, reverse=True),
+        },
+        {
+            "clave": "cupos_llenos", "segmento": "escuela",
+            "titulo": "Cupos llenos",
+            "descripcion": f"Escuelas con {CUPOS_LLENOS_PCT}% o más de sus cupos en uso.",
+            "casos": sorted(llenos, key=lambda c: c["valor"] or 0, reverse=True),
+        },
+    ]

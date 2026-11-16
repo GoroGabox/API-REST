@@ -130,11 +130,18 @@ class EmisionTests(OfflineBase):
         self.assertEqual(lic['offline_hasta'], ak.valid_until.isoformat().replace('+00:00', 'Z'))
         self.assertEqual(lic['acceso_hasta'], lic['offline_hasta'])
 
-    def test_cupo_sin_vencimiento_tope_7_dias(self):
-        dar_acceso(self.al, self.curso, dias=None, origen='seat')
+    def test_cupo_de_suscripcion_acota_al_fin_de_la_gracia(self):
+        from schools.models import Escuela
+        from sales.suscripciones import fin_acceso
+        from sales.testing import dar_cupo, dar_suscripcion
+        escuela = Escuela.objects.create(nombre='E', direccion='x', email='e@e.com', telefono='1')
+        self.al.escuela = escuela
+        self.al.save(update_fields=['escuela'])
+        sus = dar_suscripcion(escuela, cupos=2, fin=timezone.now() + timedelta(days=60))
+        dar_cupo(sus, self.al)
         r, _ = self.pedir()
         lic = json.loads(r.data['licencia'])
-        self.assertIsNone(lic['acceso_hasta'])
+        self.assertEqual(lic['acceso_hasta'], fin_acceso(sus).isoformat().replace('+00:00', 'Z'))
         self.assertIsNotNone(lic['offline_hasta'])
 
     def test_misma_licencia_y_cek_al_repedir(self):

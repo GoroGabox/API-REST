@@ -1240,11 +1240,12 @@ class ProgresoEstudiantesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, escuela_id):
-        if not is_admin(request.user):
-            if not is_director(request.user):
-                return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
-            if request.user.escuela_id != int(escuela_id):
-                return Response({"detail": "No autorizado para esa escuela."}, status=status.HTTP_403_FORBIDDEN)
+        # Alcance: admin todo; director su escuela (o su sede, plan Pro);
+        # ver schools.equipo.
+        from schools.equipo import estudiantes_visibles
+        visibles = estudiantes_visibles(request.user, escuela_id)
+        if visibles is None:
+            return Response({"detail": "No autorizado para esa escuela."}, status=status.HTTP_403_FORBIDDEN)
 
         curso_id = request.query_params.get("curso_id")
         try:
@@ -1252,7 +1253,7 @@ class ProgresoEstudiantesView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "curso_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
 
-        estudiantes_qs = Usuario.objects.filter(is_estudiante=True, escuela_id=escuela_id)
+        estudiantes_qs = visibles
         if curso_id_int is not None:
             estudiantes_qs = estudiantes_qs.filter(
                 id__in=EstudianteCurso.objects.filter(curso_id=curso_id_int).values("estudiante_id")

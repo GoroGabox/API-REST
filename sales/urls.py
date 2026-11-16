@@ -21,7 +21,7 @@ from .views import (
     SolicitudAccesoViewSet,
 )
 
-from . import views_admin
+from . import views_admin, views_suscripcion as vs
 
 router = DefaultRouter()
 router.register(r'productos', ProductoViewSet)
@@ -30,8 +30,20 @@ router.register(r'access_key', AccessKeyViewSet)
 router.register(r'estudiante_curso', EstudianteCursoViewSet)
 router.register(r'estudiante-cursos-detail', EstudianteCursoDetailViewSet, basename='estudiante-curso-detail')
 router.register(r'solicitudes', SolicitudAccesoViewSet, basename='solicitud-acceso')
+router.register(r'admin/planes-suscripcion', vs.PlanSuscripcionAdminViewSet, basename='admin-planes-suscripcion')
 
 urlpatterns = [
+    # Suscripciones de escuelas (director + catálogo público + admin).
+    path('suscripcion/planes/', vs.PlanesPublicosView.as_view(), name='suscripcion_planes'),
+    path('suscripcion/', vs.MiSuscripcionView.as_view(), name='mi_suscripcion'),
+    path('suscripcion/cotizar/', vs.CotizarView.as_view(), name='suscripcion_cotizar'),
+    path('suscripcion/bajada/', vs.BajadaView.as_view(), name='suscripcion_bajada'),
+    path('suscripcion/no-renovar/', vs.NoRenovarView.as_view(), name='suscripcion_no_renovar'),
+    path('suscripcion/facturacion/', vs.FacturacionView.as_view(), name='suscripcion_facturacion'),
+    path('suscripcion/transferencia/', vs.TransferenciaView.as_view(), name='suscripcion_transferencia'),
+    path('suscripcion/transferencia/<int:venta_id>/', vs.TransferenciaView.as_view(), name='suscripcion_transferencia_anular'),
+    path('admin/suscripciones/<int:escuela_id>/', vs.SuscripcionEscuelaAdminView.as_view(), name='admin_suscripcion_escuela'),
+    path('admin/ventas/<int:venta_id>/transferencia/', vs.TransferenciaAdminView.as_view(), name='admin_transferencia'),
     # Sección Comercial del panel de admin.
     path('admin/panorama/', views_admin.PanoramaView.as_view(), name='admin_panorama'),
     path('admin/ventas/', views_admin.VentasAdminView.as_view(), name='admin_ventas'),

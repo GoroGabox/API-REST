@@ -70,9 +70,12 @@ def producto_llaves(cant=5, precio=50000):
                                    descripcion="d", cant_basic_key=cant)
 
 
-def producto_suscripcion(cupos=3, dias=30, precio=90000):
-    return Producto.objects.create(nombre="Suscripción", tipo="suscripcion", valor_neto=precio,
-                                   descripcion="d", basic_access=True, cant_seats=cupos, duracion_dias=dias)
+def plan_suscripcion(cupos=3, precio=90000, tier="esencial"):
+    from sales.models import PlanSuscripcion
+    return PlanSuscripcion.objects.create(
+        tier=tier, cupos=cupos, precio_mensual=precio,
+        precio_semestral=int(precio * 6 * 0.9), precio_anual=int(precio * 12 * 0.8),
+    )
 
 
 def tiene_acceso(client, curso):
@@ -303,87 +306,96 @@ class J2DirectorCompraLlavesTests(TestCase):
 
 @patch("sales.views.Transaction")
 class J3DirectorCompraSuscripcionTests(TestCase):
+    """Director contrata un plan por Webpay, asigna cupos (un alumno = todos los
+    cursos), libera y reasigna, vence (gracia → suspendida) y renueva."""
+
     def setUp(self):
         self.escuela = crear_escuela()
         self.dora = make_user("dora@a.com", is_director=True, escuela=self.escuela)
         self.alumnos = [make_user(f"al{i}@a.com", is_estudiante=True, escuela=self.escuela) for i in range(4)]
         self.curso = crear_curso()
-        self.sub = producto_suscripcion(cupos=3, dias=30, precio=90000)
+        self.curso2 = crear_curso("Curso Dos")
+        self.plan = plan_suscripcion(cupos=3, precio=90000)
 
-    def _activar(self, c, alumno, source="seat", days=None):
-        body = {"user_id": alumno.id, "curso_id": self.curso.id, "source": source}
+    def _activar(self, c, alumno, source="seat", days=None, curso=None):
+        body = {"user_id": alumno.id, "curso_id": (curso or self.curso).id, "source": source}
         if days:
             body["days"] = days
         return c.post("/api/v1/sales/activar_curso/", body, format="json")
 
+    def _bo(self, meses=1, plan=None):
+        return f"sus_{(plan or self.plan).id}_{meses}_{self.dora.id}"
+
     def test_journey(self, MockTx):
+        from sales.models import IntentoPago, Suscripcion, Venta
         TransbankFake(MockTx)
         c = api_login("dora@a.com")
 
-        _, r2 = pagar(c, self.dora, buy_order=f"order_{self.sub.id}_{self.dora.id}", amount=90000,
-                      item_type="producto")
-        self.assertEqual(r2.status_code, 201, r2.data)
-        self.escuela.refresh_from_db()
-        self.assertTrue(self.escuela.basic_access)
-        self.assertEqual(self.escuela.basic_seats_max, 3)
-        self.assertAlmostEqual((self.escuela.basic_access_until - timezone.now()).days, 29, delta=1)
+        # Monto manipulado → rechazado antes de cobrar.
+        r1, _ = pagar(c, self.dora, buy_order=self._bo(), amount=1000, item_type="suscripcion")
+        self.assertEqual(r1.status_code, 400, r1.data)
 
-        st = c.get(f"/api/v1/schools/{self.escuela.id}/subscription-status/").json()["basic"]
-        self.assertEqual((st["access"], st["seats_max"], st["seats_available"]), (True, 3, 3))
-        self.assertIsNotNone(st["access_until"])
+        _, r2 = pagar(c, self.dora, buy_order=self._bo(), amount=90000, item_type="suscripcion")
+        self.assertEqual(r2.status_code, 201, r2.data)
+        venta = Venta.objects.get(buy_order=self._bo())
+        self.assertEqual((venta.item_type, venta.periodo_meses, venta.plan_suscripcion_id),
+                         ("suscripcion", 1, self.plan.id))
+        self.assertEqual(IntentoPago.objects.get(token__isnull=False, venta=venta).estado, "autorizado")
+        self.assertTrue(any("suscripción" in m.subject.lower() for m in mail.outbox))
+
+        st = c.get(f"/api/v1/schools/{self.escuela.id}/subscription-status/").json()
+        self.assertEqual((st["basic"]["access"], st["basic"]["seats_max"]), (True, 3))
+        self.assertEqual(st["suscripcion"]["estado"], "vigente")
 
         # 3 cupos → 3 alumnos; el 4º no tiene cupo; con auto y sin llaves tampoco.
         for al in self.alumnos[:3]:
             r = self._activar(c, al)
-            self.assertEqual(r.status_code, 201, r.data)
-            self.assertEqual(r.data["origen"], "seat")
+            self.assertEqual((r.status_code, r.data.get("origen")), (201, "seat"), r.data)
         self.assertEqual(self._activar(c, self.alumnos[3]).status_code, 400)
         self.assertEqual(self._activar(c, self.alumnos[3], source="auto").status_code, 400)
-        self.escuela.refresh_from_db()
-        self.assertEqual(self.escuela.basic_seats_used, 3)
+        # Un cupo da todos los cursos: al0 entra al segundo curso sin otra activación.
         c_al0 = api_login("al0@a.com")
         self.assertTrue(tiene_acceso(c_al0, self.curso))
+        self.assertTrue(tiene_acceso(c_al0, self.curso2))
 
         # Con llaves en saldo, auto cae a llave cuando no hay cupo.
         Escuela.objects.filter(pk=self.escuela.pk).update(basic_key=1)
         r = self._activar(c, self.alumnos[3], source="auto")
         self.assertEqual((r.status_code, r.data["origen"]), (201, "key"))
 
-        # Liberar un cupo lo devuelve al pool.
-        ec = EstudianteCurso.objects.get(estudiante_id=self.alumnos[2], curso_id=self.curso)
-        r = c.delete(f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec.id}/")
-        self.assertIn(r.status_code, (200, 204), getattr(r, "data", None))
-        self.escuela.refresh_from_db()
-        self.assertEqual(self.escuela.basic_seats_used, 2)
+        # Liberar un cupo lo devuelve y se reasigna sin costo.
+        cupos = c.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/").json()["results"]
+        cupo_al2 = next(x for x in cupos if x["estudiante"]["id"] == self.alumnos[2].id)
+        r = c.delete(f"/api/v1/schools/{self.escuela.id}/subscription-seats/{cupo_al2['id']}/")
+        self.assertEqual(r.status_code, 200)
         self.assertFalse(tiene_acceso(api_login("al2@a.com"), self.curso))
+        nuevo = make_user("al9@a.com", is_estudiante=True, escuela=self.escuela)
+        r = c.post(f"/api/v1/schools/{self.escuela.id}/subscription-seats/", {"estudiante_id": nuevo.id},
+                   format="json")
+        self.assertEqual(r.status_code, 201, r.data)
 
-        # Vence la suscripción → cupos sin acceso y no se pueden asignar.
-        vencida = timezone.now() - timedelta(days=1)
-        Escuela.objects.filter(pk=self.escuela.pk).update(basic_access_until=vencida)
-        AccessKey.objects.filter(origen="seat").update(valid_until=vencida)
-        self.escuela.refresh_from_db()
-        self.assertFalse(tiene_seat(self.escuela))
+        # Vence: 7 días de gracia con acceso; después, suspendida sin acceso.
+        sus = Suscripcion.objects.get(escuela=self.escuela)
+        Suscripcion.objects.filter(pk=sus.pk).update(fin=timezone.now() - timedelta(days=3))
+        self.assertTrue(tiene_acceso(c_al0, self.curso))
+        Suscripcion.objects.filter(pk=sus.pk).update(fin=timezone.now() - timedelta(days=8))
         self.assertFalse(tiene_acceso(c_al0, self.curso))
         self.assertEqual(self._activar(c, self.alumnos[2]).status_code, 400)
         self.assertFalse(c.get(f"/api/v1/schools/{self.escuela.id}/subscription-status/").json()["basic"]["access"])
 
-        # Renovar: nuevo período de 30 días; los cupos asignados recuperan acceso.
-        pagar(c, self.dora, buy_order=f"order_{self.sub.id}_{self.dora.id}", amount=90000, item_type="producto")
-        self.escuela.refresh_from_db()
-        self.assertGreater(self.escuela.basic_access_until, timezone.now() + timedelta(days=28))
-        self.assertEqual(self.escuela.basic_seats_max, 3)
+        # Renovar en suspensión: período nuevo desde hoy y los cupos guardados vuelven.
+        _, r = pagar(c, self.dora, buy_order=self._bo(), amount=90000, item_type="suscripcion")
+        self.assertEqual(r.status_code, 201, r.data)
+        sus.refresh_from_db()
+        self.assertGreater(sus.fin, timezone.now() + timedelta(days=27))
         self.assertTrue(tiene_acceso(c_al0, self.curso))
-        # Cupo libre (2/3 usados) → al2 se reactiva.
-        self.assertEqual(self._activar(c, self.alumnos[2]).status_code, 201)
 
-        # Comprar con la suscripción vigente suma cupos y extiende desde el fin.
-        fin = self.escuela.basic_access_until
-        pagar(c, self.dora, buy_order=f"order_{self.sub.id}_{self.dora.id}", amount=90000, item_type="producto")
-        self.escuela.refresh_from_db()
-        self.assertEqual(self.escuela.basic_seats_max, 6)
-        self.assertAlmostEqual((self.escuela.basic_access_until - fin).days, 30, delta=1)
-        seat_ak = EstudianteCurso.objects.get(estudiante_id=self.alumnos[0], curso_id=self.curso).access_key_id
-        self.assertEqual(seat_ak.valid_until, self.escuela.basic_access_until)
+        # Renovar con la suscripción vigente extiende desde el fin (un mes más).
+        fin = sus.fin
+        _, r = pagar(c, self.dora, buy_order=self._bo(), amount=90000, item_type="suscripcion")
+        self.assertEqual(r.status_code, 201, r.data)
+        sus.refresh_from_db()
+        self.assertAlmostEqual((sus.fin - fin).days, 30, delta=2)
 
 
 class J4DirectorEntregaLlavesTests(TestCase):
@@ -633,8 +645,10 @@ class J9CuposAdminYCatalogoTests(TestCase):
     """Cupos asignados por admin se contabilizan; el catálogo refleja el acceso real."""
 
     def setUp(self):
+        from sales.testing import dar_suscripcion
         self.admin = make_user("admin@x.com", is_admin=True)
-        self.escuela = crear_escuela(basic_access=True, basic_seats_max=2)
+        self.escuela = crear_escuela()
+        dar_suscripcion(self.escuela, cupos=2)
         self.dora = make_user("dora@a.com", is_director=True, escuela=self.escuela)
         self.al1 = make_user("al1@a.com", is_estudiante=True, escuela=self.escuela)
         self.al2 = make_user("al2@a.com", is_estudiante=True, escuela=self.escuela)
@@ -665,15 +679,16 @@ class J9CuposAdminYCatalogoTests(TestCase):
         self.assertEqual(r.status_code, 201, r.data)
         self.assertTrue(self._catalogo(c_al2, self.al2)["user_can_access"])
 
-        # Revocar el cupo del admin no libera el de al2: queda 1 usado, 1 libre.
+        # Revocar el cupo de al1 no libera el de al2: queda 1 usado, 1 libre.
         ak1 = EstudianteCurso.objects.get(estudiante_id=self.al1).access_key_id
         c.post("/api/v1/sales/revocar_llave/", {"access_key_id": str(ak1.id)}, format="json")
         self.escuela.refresh_from_db()
         self.assertEqual(self.escuela.basic_seats_used, 1)
         self.assertTrue(tiene_acceso(c_al2, self.curso))
 
-        # Inscripción vencida: ya "tuyo" pero sin acceso.
-        vencer_llave(EstudianteCurso.objects.get(estudiante_id=self.al2).access_key_id)
+        # Sin cupo: "ya tuyo" (inscripción con avance) pero sin acceso.
+        c.delete(f"/api/v1/schools/{self.escuela.id}/subscription-seats/"
+                 f"{self.al2.cupos_suscripcion.get(liberado_en__isnull=True).id}/")
         item = self._catalogo(c_al2, self.al2)
         self.assertEqual((item["user_can_access"], item["already_owned"]), (False, True))
 

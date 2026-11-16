@@ -29,7 +29,45 @@ class Producto(models.Model):
     def __str__(self):
         return self.nombre
 
-ITEM_TYPES = [('curso', 'Curso'), ('producto', 'Producto')]
+ITEM_TYPES = [
+    ('curso', 'Curso'),
+    ('producto', 'Producto'),
+    ('suscripcion', 'Suscripción'),  # alta o renovación de un plan
+    ('subida', 'Subida de plan'),    # diferencia prorrateada al subir de plan
+]
+
+TIERS = [('esencial', 'Esencial'), ('pro', 'Pro')]
+PERIODOS = [(1, 'Mensual'), (6, 'Semestral'), (12, 'Anual')]
+
+
+### 📦 Planes de suscripción (catálogo B2B) ###
+class PlanSuscripcion(models.Model):
+    """Un plan vendible a escuelas: tier × cupos, con precio por período.
+
+    Cada cupo es un estudiante con acceso a todos los cursos mientras la
+    suscripción tenga acceso. Los tres precios son explícitos (el admin decide
+    el descuento semestral/anual). Reemplaza a `Producto(tipo='suscripcion')`.
+    """
+    tier = models.CharField(max_length=10, choices=TIERS)
+    cupos = models.PositiveIntegerField()
+    precio_mensual = models.PositiveIntegerField()
+    precio_semestral = models.PositiveIntegerField()
+    precio_anual = models.PositiveIntegerField()
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['tier', 'cupos']
+        constraints = [models.UniqueConstraint(fields=['tier', 'cupos'], name='unique_plan_tier_cupos')]
+
+    @property
+    def nombre(self):
+        return f"{self.get_tier_display()} {self.cupos}"
+
+    def precio(self, meses) -> int:
+        return {1: self.precio_mensual, 6: self.precio_semestral, 12: self.precio_anual}[int(meses)]
+
+    def __str__(self):
+        return self.nombre
 
 
 ### 🛒 Venta ###
@@ -49,9 +87,14 @@ class Venta(models.Model):
     # Datos de la compra para el análisis comercial (antes solo vivían dentro
     # del buy_order de TransbankTransaction). `item_type`: 'curso' (B2C) o
     # 'producto' (B2B: llaves/suscripción); `dias`: plan del curso (7/14/35).
-    item_type = models.CharField(max_length=10, choices=ITEM_TYPES, null=True, blank=True)
+    item_type = models.CharField(max_length=12, choices=ITEM_TYPES, null=True, blank=True)
     dias = models.PositiveIntegerField(null=True, blank=True)
     buy_order = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    # Suscripción: plan y período pagados (alta/renovación/subida).
+    plan_suscripcion = models.ForeignKey(PlanSuscripcion, on_delete=models.SET_NULL, null=True, blank=True)
+    periodo_meses = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Folio de la factura emitida a mano por el admin (pagos de escuelas).
+    folio_factura = models.CharField(max_length=40, blank=True, default='')
 
     def __str__(self):
         item = self.producto.nombre if self.producto else (self.curso.nombre if self.curso else "—")
@@ -199,10 +242,14 @@ class IntentoPago(models.Model):
     token = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     usuario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True)
     escuela = models.ForeignKey(Escuela, on_delete=models.SET_NULL, null=True, blank=True)
-    item_type = models.CharField(max_length=10, choices=ITEM_TYPES)
+    item_type = models.CharField(max_length=12, choices=ITEM_TYPES)
     producto = models.ForeignKey(Producto, on_delete=models.SET_NULL, null=True, blank=True)
     curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True)
     dias = models.PositiveIntegerField(null=True, blank=True)
+    # Suscripción: plan/período cotizado. En una subida, `monto` es la
+    # diferencia prorrateada calculada al iniciar (se valida contra este valor).
+    plan_suscripcion = models.ForeignKey(PlanSuscripcion, on_delete=models.SET_NULL, null=True, blank=True)
+    periodo_meses = models.PositiveSmallIntegerField(null=True, blank=True)
     monto = models.PositiveIntegerField()
     pay_system = models.CharField(max_length=20)
     estado = models.CharField(max_length=12, choices=ESTADOS, default='iniciado', db_index=True)
@@ -225,9 +272,13 @@ class CambioPrecio(models.Model):
     precio; la migración 0027 guardó el estado inicial de cada ítem. `nombre`
     es una foto del nombre del ítem al momento del cambio.
     """
-    TIPOS = [('plan_curso', 'Plan de curso'), ('producto', 'Producto')]
+    TIPOS = [
+        ('plan_curso', 'Plan de curso'),
+        ('producto', 'Producto'),
+        ('plan_suscripcion', 'Plan de suscripción'),  # registra el precio mensual
+    ]
 
-    tipo = models.CharField(max_length=12, choices=TIPOS)
+    tipo = models.CharField(max_length=20, choices=TIPOS)
     objeto_id = models.PositiveIntegerField()
     nombre = models.CharField(max_length=200)
     curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True)
@@ -273,3 +324,129 @@ class MovimientoLlaves(models.Model):
 
     def __str__(self):
         return f"{self.escuela_id}: {self.cantidad:+d} ({self.motivo})"
+
+
+### 🏫 Suscripción de una escuela ###
+GRACIA_DIAS = 7       # tras `fin`, los alumnos siguen con acceso
+RETENCION_DIAS = 30   # después de la gracia, los cupos se guardan (sin acceso)
+
+
+class Suscripcion(models.Model):
+    """Contrato prepago de una escuela con un `PlanSuscripcion`.
+
+    El estado se calcula por fecha (ver `estado`), no se guarda:
+    vigente (≤ fin) → gracia (≤ fin + 7 d, con acceso) → suspendida
+    (≤ fin + 37 d, sin acceso pero cupos guardados) → vencida (cupos liberados
+    por la tarea diaria). `precio_periodo` congela lo pagado por el período en
+    curso: es la base del prorrateo al subir de plan. `plan_siguiente` /
+    `periodo_siguiente` guardan una bajada programada para la renovación.
+    """
+    escuela = models.OneToOneField(Escuela, on_delete=models.CASCADE, related_name='suscripcion')
+    plan = models.ForeignKey(PlanSuscripcion, on_delete=models.PROTECT, related_name='suscripciones')
+    periodo_meses = models.PositiveSmallIntegerField(choices=PERIODOS, default=1)
+    inicio = models.DateTimeField()
+    fin = models.DateTimeField()
+    # Inicio del período en curso (alta, renovación tras vencer). Junto con
+    # `fin` y `precio_periodo` da la tarifa diaria pagada (base del prorrateo).
+    periodo_inicio = models.DateTimeField()
+    precio_periodo = models.PositiveIntegerField(default=0)
+    # Cambio de plan a partir de `cambio_en` (renovación anticipada pagada con
+    # otro plan). Con `cambio_en` null y `plan_siguiente`, es una bajada
+    # programada que se aplica al renovar.
+    cambio_en = models.DateTimeField(null=True, blank=True)
+    precio_siguiente = models.PositiveIntegerField(null=True, blank=True)
+    plan_siguiente = models.ForeignKey(
+        PlanSuscripcion, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    periodo_siguiente = models.PositiveSmallIntegerField(choices=PERIODOS, null=True, blank=True)
+    # "No renovaré": apaga los avisos de vencimiento y registra el motivo (churn).
+    no_renovara = models.BooleanField(default=False)
+    motivo_no_renovar = models.TextField(blank=True, default='')
+    creada = models.DateTimeField(auto_now_add=True)
+    actualizada = models.DateTimeField(auto_now=True)
+
+    def estado(self, now=None):
+        from datetime import timedelta
+        now = now or timezone.now()
+        if now <= self.fin:
+            return 'vigente'
+        if now <= self.fin + timedelta(days=GRACIA_DIAS):
+            return 'gracia'
+        if now <= self.fin + timedelta(days=GRACIA_DIAS + RETENCION_DIAS):
+            return 'suspendida'
+        return 'vencida'
+
+    def con_acceso(self, now=None):
+        return self.estado(now) in ('vigente', 'gracia')
+
+    def __str__(self):
+        return f"{self.escuela} · {self.plan} hasta {self.fin:%Y-%m-%d}"
+
+
+class PeriodoSuscripcion(models.Model):
+    """Historial del contrato: cada alta, renovación, cambio o cortesía."""
+    MOTIVOS = [
+        ('alta', 'Alta'),
+        ('renovacion', 'Renovación'),
+        ('subida', 'Subida de plan'),
+        ('bajada', 'Bajada de plan'),
+        ('cortesia', 'Cortesía'),
+        ('manual', 'Ajuste manual'),
+    ]
+    suscripcion = models.ForeignKey(Suscripcion, on_delete=models.CASCADE, related_name='periodos')
+    plan = models.ForeignKey(PlanSuscripcion, on_delete=models.PROTECT, related_name='+')
+    periodo_meses = models.PositiveSmallIntegerField(choices=PERIODOS, null=True, blank=True)
+    inicio = models.DateTimeField()
+    fin = models.DateTimeField()
+    monto = models.PositiveIntegerField(default=0)
+    venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True, blank=True, related_name='periodos')
+    motivo = models.CharField(max_length=12, choices=MOTIVOS)
+    usuario = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    creado = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['-creado']
+
+
+class CupoSuscripcion(models.Model):
+    """Un estudiante ocupando un cupo: acceso a todos los cursos mientras la
+    suscripción tenga acceso. `liberado_en` lo devuelve (reasignable)."""
+    suscripcion = models.ForeignKey(Suscripcion, on_delete=models.CASCADE, related_name='cupos')
+    estudiante = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='cupos_suscripcion')
+    asignado_en = models.DateTimeField(default=timezone.now)
+    asignado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    liberado_en = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-asignado_en']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['estudiante'], condition=models.Q(liberado_en__isnull=True),
+                name='unique_cupo_activo_por_estudiante',
+            ),
+        ]
+
+
+class DatosFacturacion(models.Model):
+    """Datos para emitir la factura de una escuela (se piden antes de pagar)."""
+    escuela = models.OneToOneField(Escuela, on_delete=models.CASCADE, related_name='facturacion')
+    rut = models.CharField(max_length=12)
+    razon_social = models.CharField(max_length=150)
+    giro = models.CharField(max_length=150)
+    direccion = models.CharField(max_length=200)
+    email = models.EmailField()
+    actualizado = models.DateTimeField(auto_now=True)
+
+
+class AvisoSuscripcion(models.Model):
+    """Registro de avisos ya enviados por la tarea diaria (idempotencia).
+
+    `clave` identifica el aviso y el período (p. ej. `vence_7_20261201`), así
+    correr la tarea dos veces el mismo día no duplica correos.
+    """
+    suscripcion = models.ForeignKey(Suscripcion, on_delete=models.CASCADE, related_name='avisos')
+    clave = models.CharField(max_length=60)
+    enviado = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['suscripcion', 'clave'], name='unique_aviso_suscripcion')]

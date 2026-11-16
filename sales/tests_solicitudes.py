@@ -200,15 +200,14 @@ class ListarSolicitudesTests(SolicitudBaseTest):
 
 
 class AprobarConCupoVigenciaTests(SolicitudBaseTest):
-    """B17: el cupo otorgado al aprobar vence con la suscripción de la escuela
-    de la solicitud, aunque el estudiante aún no estuviera vinculado."""
+    """B17: aprobar con cupo da al estudiante un cupo de la escuela de la
+    solicitud (aunque aún no estuviera vinculado), contabilizado en ella."""
 
     def setUp(self):
         super().setUp()
+        from sales.testing import dar_suscripcion
         self.hasta = timezone.now() + timedelta(days=20)
-        Escuela.objects.filter(pk=self.escuela.pk).update(
-            basic_access=True, basic_seats_max=3, basic_seats_used=0, basic_access_until=self.hasta,
-        )
+        self.sus = dar_suscripcion(self.escuela, cupos=3, fin=self.hasta)
 
     def _aprobar(self, user, source):
         sol_id = self.crear_solicitud().data["id"]
@@ -218,13 +217,16 @@ class AprobarConCupoVigenciaTests(SolicitudBaseTest):
         return EstudianteCurso.objects.get(estudiante_id=self.est, curso_id=self.curso).access_key_id
 
     def test_director_cupo_vence_con_suscripcion(self):
+        from sales.services import vencimiento_acceso
+        from sales.suscripciones import fin_acceso
         ak = self._aprobar(self.director, "seat")
         self.assertEqual(ak.origen, "seat")
-        self.assertIsNotNone(ak.valid_until)
-        self.assertAlmostEqual(ak.valid_until.timestamp(), self.hasta.timestamp(), delta=1)
+        self.assertTrue(self.est.cupos_suscripcion.filter(suscripcion=self.sus, liberado_en__isnull=True).exists())
+        tiene, hasta = vencimiento_acceso(self.est, self.curso.id)
+        self.assertTrue(tiene)
+        self.assertEqual(hasta, fin_acceso(self.sus))
 
     def test_admin_cupo_vence_y_se_contabiliza_en_la_escuela(self):
-        ak = self._aprobar(self.admin, "seat")
-        self.assertAlmostEqual(ak.valid_until.timestamp(), self.hasta.timestamp(), delta=1)
+        self._aprobar(self.admin, "seat")
         self.escuela.refresh_from_db()
         self.assertEqual(self.escuela.basic_seats_used, 1)

@@ -6,6 +6,7 @@ from accounts.tests import make_user
 from schools.models import Curso, Escuela
 from sales.models import AccessKey, EstudianteCurso
 from sales.views import MercadoPagoPaymentStrategy
+from sales.testing import dar_cupo, dar_suscripcion, llenar_cupos
 
 
 class MercadoPagoStubTests(APITestCase):
@@ -347,8 +348,8 @@ class ActivarCursoConSeatsTests(APITestCase):
         self.escuela = Escuela.objects.create(
             nombre="Sub", direccion="x", email="s@s.com", telefono="1",
             basic_key=3,
-            basic_access=True, basic_seats_max=2, basic_seats_used=0,
         )
+        self.sus = dar_suscripcion(self.escuela, cupos=2)
         self.dir_ = make_user("dsub@x.com", is_director=True, escuela=self.escuela)
         self.est = make_user("esub@x.com", is_estudiante=True, escuela=self.escuela)
         self.curso_basico = Curso.objects.create(nombre="B", descripcion="d", is_profesional=False)
@@ -371,8 +372,7 @@ class ActivarCursoConSeatsTests(APITestCase):
         self.assertEqual(self.escuela.basic_key, 3)  # no toca llaves
 
     def test_auto_cae_a_key_si_no_hay_seat(self):
-        self.escuela.basic_seats_used = self.escuela.basic_seats_max
-        self.escuela.save()
+        llenar_cupos(self.sus)
         r = self._post(self.curso_basico)
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(r.data["origen"], "key")
@@ -381,8 +381,7 @@ class ActivarCursoConSeatsTests(APITestCase):
         self.assertEqual(self.escuela.basic_key, 2)
 
     def test_source_seat_falla_si_no_hay_cupo(self):
-        self.escuela.basic_seats_used = self.escuela.basic_seats_max
-        self.escuela.save()
+        llenar_cupos(self.sus)
         r = self._post(self.curso_basico, source="seat")
         self.assertEqual(r.status_code, 400, r.data)
 
@@ -404,14 +403,24 @@ class ActivarCursoConSeatsTests(APITestCase):
 
     def test_curso_pro_sin_saldo_ni_seats_falla_400(self):
         self.escuela.basic_key = 0
-        self.escuela.basic_seats_used = self.escuela.basic_seats_max
         self.escuela.save()
+        llenar_cupos(self.sus)
         r = self._post(self.curso_pro)
         self.assertEqual(r.status_code, 400)
 
     def test_source_invalido(self):
         r = self._post(self.curso_basico, source="banana")
         self.assertEqual(r.status_code, 400)
+
+    def test_estudiante_con_cupo_no_consume_otro_cupo(self):
+        # Un cupo es un alumno con todos los cursos: activar otro curso no gasta nada.
+        r = self._post(self.curso_basico, source="seat")
+        self.assertEqual(r.status_code, 201, r.data)
+        r = self._post(self.curso_pro, source="key")
+        self.assertEqual(r.status_code, 409, r.data)  # ya tiene acceso por su cupo
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 1)
+        self.assertEqual(self.escuela.basic_key, 3)
 
 
 class ExtenderSeatRechazaTests(APITestCase):
@@ -448,8 +457,10 @@ class SubscriptionStatusTests(APITestCase):
         self.escuela = Escuela.objects.create(
             nombre="E", direccion="x", email="e@e.com", telefono="1",
             basic_key=3,
-            basic_access=True, basic_seats_max=10, basic_seats_used=4,
         )
+        sus = dar_suscripcion(self.escuela, cupos=10)
+        for i in range(4):
+            dar_cupo(sus, make_user(f"cupo{i}_ss@x.com", is_estudiante=True, escuela=self.escuela))
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="x", email="b@e.com", telefono="1",
         )
@@ -473,6 +484,11 @@ class SubscriptionStatusTests(APITestCase):
         self.assertTrue(b["access"])
         # Ya no existe el tier profesional en la respuesta.
         self.assertNotIn("professional", r.data)
+        s = r.data["suscripcion"]
+        self.assertEqual(s["estado"], "vigente")
+        self.assertEqual(s["cupos_usados"], 4)
+        self.assertEqual(s["plan"]["cupos"], 10)
+        self.assertIn("reasignar_cupos", s["funciones"])
 
     def test_director_otra_escuela_403(self):
         self.client.force_authenticate(self.dir_b)
@@ -491,13 +507,13 @@ class SubscriptionStatusTests(APITestCase):
 
 
 class SubscriptionSeatsTests(APITestCase):
-    """GET + DELETE de cupos ocupados por estudiantes."""
+    """GET/POST/DELETE de cupos (un cupo = un estudiante)."""
 
     def setUp(self):
-        self.escuela = Escuela.objects.create(
-            nombre="E", direccion="x", email="e@e.com", telefono="1",
-            basic_access=True, basic_seats_max=5, basic_seats_used=0,
-        )
+        from sales.models import CupoSuscripcion
+        self.Cupo = CupoSuscripcion
+        self.escuela = Escuela.objects.create(nombre="E", direccion="x", email="e@e.com", telefono="1")
+        self.sus = dar_suscripcion(self.escuela, cupos=5)
         self.escuela_b = Escuela.objects.create(
             nombre="B", direccion="y", email="b@b.com", telefono="1",
         )
@@ -508,17 +524,20 @@ class SubscriptionSeatsTests(APITestCase):
         self.est_2 = make_user("e2_sea@x.com", is_estudiante=True, escuela=self.escuela)
         self.curso = Curso.objects.create(nombre="C", descripcion="d", is_profesional=False)
 
-        # Ocupamos 2 seats via activar_curso
+        # Ocupamos 2 cupos via activar_curso
         self.client.force_authenticate(self.dir_)
-        self.client.post("/api/v1/sales/activar_curso/", {
-            "user_id": self.est_1.id, "curso_id": self.curso.id, "source": "seat",
-        }, format="json")
-        self.client.post("/api/v1/sales/activar_curso/", {
-            "user_id": self.est_2.id, "curso_id": self.curso.id, "source": "seat",
-        }, format="json")
+        for est in (self.est_1, self.est_2):
+            r = self.client.post("/api/v1/sales/activar_curso/", {
+                "user_id": est.id, "curso_id": self.curso.id, "source": "seat",
+            }, format="json")
+            assert r.status_code == 201, r.data
+
+    def _url(self, escuela=None, cupo_id=None):
+        base = f"/api/v1/schools/{(escuela or self.escuela).id}/subscription-seats/"
+        return f"{base}{cupo_id}/" if cupo_id else base
 
     def test_list_devuelve_solo_seats(self):
-        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        r = self.client.get(self._url())
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data["count"], 2)
         emails = {row["estudiante"]["email"] for row in r.data["results"]}
@@ -526,46 +545,47 @@ class SubscriptionSeatsTests(APITestCase):
 
     def test_director_otra_escuela_403(self):
         self.client.force_authenticate(self.dir_b)
-        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        r = self.client.get(self._url())
         self.assertEqual(r.status_code, 403)
 
     def test_delete_libera_seat(self):
-        r_list = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
-        ec_id = r_list.data["results"][0]["id"]
-        self.escuela.refresh_from_db()
-        seats_before = self.escuela.basic_seats_used
-
-        r_del = self.client.delete(
-            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec_id}/"
-        )
+        from sales.services import tiene_acceso_a_curso
+        cupo = self.Cupo.objects.get(estudiante=self.est_1)
+        r_del = self.client.delete(self._url(cupo_id=cupo.id))
         self.assertEqual(r_del.status_code, 200, r_del.data)
         self.assertEqual(r_del.data["status"], "released")
-
         self.escuela.refresh_from_db()
-        self.assertEqual(self.escuela.basic_seats_used, seats_before - 1)
-        # La inscripción fue borrada.
-        from sales.models import EstudianteCurso
-        self.assertFalse(EstudianteCurso.objects.filter(pk=ec_id).exists())
+        self.assertEqual(self.escuela.basic_seats_used, 1)
+        self.assertFalse(tiene_acceso_a_curso(self.est_1, self.curso.id))
+        # La inscripción (y su avance) se conserva.
+        self.assertTrue(EstudianteCurso.objects.filter(estudiante_id=self.est_1, curso_id=self.curso).exists())
 
-    def test_delete_de_inscripcion_key_devuelve_400(self):
-        from sales.models import AccessKey, EstudianteCurso
-        from datetime import timedelta
-        from django.utils import timezone
-        # Nueva inscripción vía key
+    def test_post_asigna_y_reasigna_cupo(self):
         est3 = make_user("e3_sea@x.com", is_estudiante=True, escuela=self.escuela)
-        k = AccessKey.objects.create(
-            valid_until=timezone.now() + timedelta(days=30), origen="key",
-        )
-        ec = EstudianteCurso.objects.create(
-            estudiante_id=est3, curso_id=self.curso, access_key_id=k,
-        )
-        r = self.client.delete(
-            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec.id}/"
-        )
+        r = self.client.post(self._url(), {"estudiante_id": est3.id}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        from sales.services import tiene_acceso_a_curso
+        self.assertTrue(tiene_acceso_a_curso(est3, self.curso.id))
+        # Liberar uno y dárselo a otro alumno.
+        self.client.delete(self._url(cupo_id=r.data["id"]))
+        est4 = make_user("e4_sea@x.com", is_estudiante=True, escuela=self.escuela)
+        r = self.client.post(self._url(), {"estudiante_id": est4.id}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.escuela.refresh_from_db()
+        self.assertEqual(self.escuela.basic_seats_used, 3)
+
+    def test_post_sin_cupos_libres_400(self):
+        llenar_cupos(self.sus)
+        est3 = make_user("e3b_sea@x.com", is_estudiante=True, escuela=self.escuela)
+        r = self.client.post(self._url(), {"estudiante_id": est3.id}, format="json")
         self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.data["code"], "sin_cupos")
+
+    def test_delete_cupo_inexistente_404(self):
+        r = self.client.delete(self._url(cupo_id=999999))
+        self.assertEqual(r.status_code, 404)
 
     def _revocar_seat_de(self, est):
-        from sales.models import EstudianteCurso
         ec = EstudianteCurso.objects.get(estudiante_id=est, curso_id=self.curso)
         r = self.client.post(
             "/api/v1/sales/revocar_llave/", {"access_key_id": str(ec.access_key_id_id)}, format="json",
@@ -575,37 +595,34 @@ class SubscriptionSeatsTests(APITestCase):
 
     def test_list_excluye_seats_revocados(self):
         self._revocar_seat_de(self.est_1)
-        r = self.client.get(f"/api/v1/schools/{self.escuela.id}/subscription-seats/")
+        r = self.client.get(self._url())
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data["count"], 1)
         self.assertEqual(r.data["results"][0]["estudiante"]["email"], self.est_2.email)
 
     def test_delete_de_seat_ya_revocado_no_descuenta(self):
-        ec = self._revocar_seat_de(self.est_1)
+        self._revocar_seat_de(self.est_1)
         self.escuela.refresh_from_db()
         self.assertEqual(self.escuela.basic_seats_used, 1)  # solo est_2 ocupa
-        r = self.client.delete(f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec.id}/")
-        self.assertIn(r.status_code, (200, 404), r.data)
+        cupo = self.Cupo.objects.get(estudiante=self.est_1)
+        r = self.client.delete(self._url(cupo_id=cupo.id))
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["status"], "already_released")
         self.escuela.refresh_from_db()
         self.assertEqual(self.escuela.basic_seats_used, 1)
 
     def test_delete_inscripcion_de_otra_escuela_404(self):
-        # Preparar seat en escuela B usando admin
-        self.escuela_b.basic_access = True
-        self.escuela_b.basic_seats_max = 3
-        self.escuela_b.save()
+        dar_suscripcion(self.escuela_b, cupos=3)
         est_b = make_user("eb_sea@x.com", is_estudiante=True, escuela=self.escuela_b)
         self.client.force_authenticate(self.admin)
-        self.client.post("/api/v1/sales/activar_curso/", {
+        r = self.client.post("/api/v1/sales/activar_curso/", {
             "user_id": est_b.id, "curso_id": self.curso.id, "source": "seat",
         }, format="json")
-        r_list = self.client.get(f"/api/v1/schools/{self.escuela_b.id}/subscription-seats/")
-        ec_id_b = r_list.data["results"][0]["id"]
+        self.assertEqual(r.status_code, 201, r.data)
+        cupo_b = self.Cupo.objects.get(estudiante=est_b)
 
         self.client.force_authenticate(self.dir_)
-        r = self.client.delete(
-            f"/api/v1/schools/{self.escuela.id}/subscription-seats/{ec_id_b}/"
-        )
+        r = self.client.delete(self._url(cupo_id=cupo_b.id))
         self.assertEqual(r.status_code, 404)
 
 
@@ -670,10 +687,10 @@ class RevocarLlaveTests(APITestCase):
 
     def test_revocar_seat_libera_cupo(self):
         from sales.models import AccessKey, EstudianteCurso
-        self.escuela_a.basic_seats_used = 1
-        self.escuela_a.save()
+        sus = dar_suscripcion(self.escuela_a, cupos=2)
         seat_key = AccessKey.objects.create(valid_until=None, origen="seat")
         est2 = make_user("esta2_rev@a.com", is_estudiante=True, escuela=self.escuela_a)
+        dar_cupo(sus, est2)
         EstudianteCurso.objects.create(
             estudiante_id=est2, curso_id=self.curso, access_key_id=seat_key,
         )

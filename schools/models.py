@@ -85,6 +85,20 @@ def slug_unico_curso(nombre, excluir_pk=None):
     return slug
 
 
+class Sede(models.Model):
+    """Sucursal de una escuela (plan Pro). Un director o estudiante con sede
+    solo opera dentro de ella; sin sede, ve toda la escuela."""
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='sedes')
+    nombre = models.CharField(max_length=100)
+
+    class Meta:
+        ordering = ['nombre']
+        constraints = [models.UniqueConstraint(fields=['escuela', 'nombre'], name='unique_sede_por_escuela')]
+
+    def __str__(self):
+        return f"{self.escuela} · {self.nombre}"
+
+
 class Curso(models.Model):
     id = models.AutoField(primary_key=True, auto_created=True)
     nombre = models.CharField(max_length=100)

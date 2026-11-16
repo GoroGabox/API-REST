@@ -54,12 +54,27 @@ class EstudianteCursoSerializer(serializers.ModelSerializer):
             'acceso_vigente', 'valid_until', 'origen',
         ]
 
+    def _cupo(self, obj):
+        """Cupo con acceso del estudiante (cacheado por estudiante en el serializer)."""
+        from .suscripciones import cupo_con_acceso
+        cache = self.__dict__.setdefault('_cupos', {})
+        if obj.estudiante_id_id not in cache:
+            cache[obj.estudiante_id_id] = cupo_con_acceso(obj.estudiante_id)
+        return cache[obj.estudiante_id_id]
+
     def get_acceso_vigente(self, obj):
         ak = obj.access_key_id
+        if ak and ak.origen == 'seat':
+            # La inscripción por cupo vale mientras el cupo tenga acceso.
+            return ak.status == 'active' and self._cupo(obj) is not None
         return bool(ak and ak.is_valid())
 
     def get_valid_until(self, obj):
         ak = obj.access_key_id
+        if ak and ak.origen == 'seat':
+            from .suscripciones import fin_acceso
+            cupo = self._cupo(obj)
+            return fin_acceso(cupo.suscripcion) if cupo else None
         return ak.valid_until if ak else None
 
     def get_origen(self, obj):
@@ -117,6 +132,7 @@ class EstudianteCursosActivosSerializer(serializers.ModelSerializer):
             'nombre',
             'apellido',
             'email',
+            'sede',       # plan Pro (null = sin sede)
             'registros',  # lista de EstudianteCursoDetailSerializer
         ]
 

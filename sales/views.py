@@ -16,6 +16,7 @@ from transbank.common.integration_type import IntegrationType
 from rest_framework.views import APIView
 from autotestAPI.auditoria import como_usuario
 from django.db import IntegrityError, transaction as db_transaction
+from django.db.models import Count
 from django.http import HttpResponse
 from .utils import extract_ids_from_buy_order, extract_dias_from_buy_order, parse_accounting_date
 from rest_framework.exceptions import ValidationError
@@ -51,6 +52,7 @@ from .services import (
     inscripcion_previa,
     suscripcion_vigente,
     llaves_para_dias,
+    SinSaldoError,
     # Helpers de activación seat/key (fuente única en services; ver más abajo).
     resolver_source_director as _resolver_source_director,
     decrementar_saldo as _decrementar_saldo,
@@ -120,6 +122,9 @@ def _validar_monto_contra_producto(buy_order, amount):
             {"error": "Producto no encontrado para esta compra."},
             status=status.HTTP_404_NOT_FOUND,
         ), None
+    if not producto.activo:
+        return Response({"error": "Este paquete ya no está disponible."},
+                        status=status.HTTP_400_BAD_REQUEST), None
     esperado = precio_final_producto(producto)
     if int(round(float(amount))) != esperado:
         return Response(
@@ -457,9 +462,11 @@ class EstudiantesCursosActivosPorEscuelaView(APIView):
     permission_classes = [drf_permissions.IsAuthenticated]
 
     def get(self, request, escuela_id):
-        if not is_admin(request.user):
-            if not is_director(request.user) or request.user.escuela_id != escuela_id:
-                return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
+        # Alcance por rol/sede (plan Pro): ver schools.equipo.
+        from schools.equipo import estudiantes_visibles
+        visibles = estudiantes_visibles(request.user, escuela_id)
+        if visibles is None:
+            return Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
 
         # Prefetch los EstudianteCurso del estudiante con sus FK ya cargadas.
         # Reduce O(n) → O(1) en consultas para `get_registros`.
@@ -470,8 +477,7 @@ class EstudiantesCursosActivosPorEscuelaView(APIView):
             .select_related('estudiante_id', 'curso_id', 'access_key_id')
         )
         estudiantes = (
-            Usuario.objects
-            .filter(escuela_id=escuela_id, is_estudiante=True)
+            visibles
             .prefetch_related(Prefetch('estudiantecurso_set', queryset=registros_qs, to_attr='_prefetched_registros'))
             .order_by('apellido', 'nombre')
         )
@@ -753,10 +759,10 @@ class ActivarCursoView(APIView):
 
         if not user.is_estudiante:
             return Response({"error": "Solo se pueden activar cursos para estudiantes."}, status=status.HTTP_400_BAD_REQUEST)
-        # Con acceso vigente no se vuelve a cobrar; una inscripción sin acceso
-        # (revocada/vencida) se reactiva con la llave nueva (asignar_por_source).
-        _previa, vigente = inscripcion_previa(user, curso)
-        if vigente:
+        # Con acceso vigente (llave, compra o cupo de suscripción) no se vuelve a
+        # cobrar; una inscripción sin acceso (revocada/vencida) se reactiva con
+        # la llave nueva (asignar_por_source).
+        if tiene_acceso_a_curso(user, curso.id):
             return Response(
                 {"error": "El estudiante ya tiene acceso vigente a este curso. Usa extender_llave."},
                 status=status.HTTP_409_CONFLICT,
@@ -784,13 +790,16 @@ class ActivarCursoView(APIView):
         keys_needed = llaves_para_dias(days)
         with db_transaction.atomic():
             escuela = Escuela.objects.select_for_update().get(pk=request.user.escuela_id)
-            resolved_source = _resolver_source_director(escuela, source, keys_needed)
+            resolved_source = _resolver_source_director(escuela, source, keys_needed, user)
             if resolved_source is None:
                 return Response(
                     {"error": _mensaje_sin_saldo(source, keys_needed)},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            _decrementar_saldo(escuela, resolved_source, keys_needed)
+            try:
+                _decrementar_saldo(escuela, resolved_source, keys_needed, user, request.user)
+            except SinSaldoError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
             escuela.save()
             access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
 
@@ -935,11 +944,14 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
             keys_needed = llaves_para_dias(days)
             with db_transaction.atomic():
                 escuela = Escuela.objects.select_for_update().get(pk=solicitud.escuela_id)
-                resolved_source = _resolver_source_director(escuela, source, keys_needed)
+                resolved_source = _resolver_source_director(escuela, source, keys_needed, estudiante)
                 if resolved_source is None:
                     return Response({"error": _mensaje_sin_saldo(source, keys_needed)},
                                     status=status.HTTP_400_BAD_REQUEST)
-                _decrementar_saldo(escuela, resolved_source, keys_needed)
+                try:
+                    _decrementar_saldo(escuela, resolved_source, keys_needed, estudiante, request.user)
+                except SinSaldoError as e:
+                    return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
                 escuela.save()
                 access_key = _asignar_por_source(estudiante, curso, days, resolved_source, escuela=escuela)
 
@@ -1173,12 +1185,11 @@ class RevocarLlaveView(APIView):
                     status=status.HTTP_200_OK,
                 )
 
-            # Si ocupaba un cupo de suscripción, devolverlo al pool.
-            if access_key.origen == "seat" and inscripcion is not None and inscripcion.estudiante_id.escuela_id:
-                escuela = Escuela.objects.select_for_update().get(pk=inscripcion.estudiante_id.escuela_id)
-                if escuela.basic_seats_used > 0:
-                    escuela.basic_seats_used -= 1
-                escuela.save()
+            # Una llave de cupo marca un curso de un estudiante con cupo (acceso a
+            # todos los cursos): revocarla libera el cupo completo.
+            if access_key.origen == "seat" and inscripcion is not None:
+                from .suscripciones import liberar_cupo
+                liberar_cupo(inscripcion.estudiante_id)
 
             access_key.status = "revoked"
             access_key.save(update_fields=["status"])
@@ -1435,6 +1446,10 @@ class UnifiedSaleInitiationView(APIView):
         try:
             amount, session_id, buy_order, method = self.validate_payment_request(request.data)
 
+            item_type = (request.data.get("item_type") or "producto").lower().strip()
+            if item_type in ("suscripcion", "subida"):
+                return self._iniciar_suscripcion(request, amount, session_id, buy_order, method)
+
             _, student_id = extract_ids_from_buy_order(buy_order)
             if student_id is None:
                 return Response(
@@ -1448,8 +1463,7 @@ class UnifiedSaleInitiationView(APIView):
             # Anti price-tampering: el monto debe coincidir con el precio
             # autoritativo del item (no confiar en el `amount` del cliente).
             # item_type='curso' → compra individual de un estudiante; por defecto
-            # 'producto' → compra de llave/suscripción (flujo escuela).
-            item_type = (request.data.get("item_type") or "producto").lower().strip()
+            # 'producto' → compra de llaves (flujo escuela).
             if item_type == "curso":
                 price_err, _item = _validar_monto_contra_curso(buy_order, amount)
             else:
@@ -1476,6 +1490,42 @@ class UnifiedSaleInitiationView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def _iniciar_suscripcion(self, request, amount, session_id, buy_order, method):
+        """Alta, renovación o cambio de plan: el servidor cotiza y el monto del
+        cliente debe coincidir (en una subida, el prorrateo de este momento)."""
+        from .suscripciones import SuscripcionError, cotizar, parse_buy_order, plan_activo, registrar_intento
+        datos = parse_buy_order(buy_order)
+        if datos is None:
+            return Response(
+                {"error": "buy_order de suscripción inválido. Formato: sus_<plan>_<meses>_<usuario>."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        plan_id, meses, user_id = datos
+        owner_check = _enforce_payment_ownership(request, user_id)
+        if owner_check is not None:
+            return owner_check
+        comprador = _comprador(request, user_id)
+        err = _exigir_director_con_escuela(comprador)
+        if err is not None:
+            return err
+        try:
+            cot = cotizar(comprador.escuela, plan_activo(plan_id), meses)
+        except SuscripcionError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_400_BAD_REQUEST)
+        if cot["monto"] <= 0:
+            return Response({"error": "No hay nada que pagar por este cambio."}, status=status.HTTP_400_BAD_REQUEST)
+        if int(round(float(amount))) != cot["monto"]:
+            return Response(
+                {"error": "El monto no coincide con la cotización.", "expected": cot["monto"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        payment_data = self.get_payment_strategy(method).create_transaction(cot["monto"], buy_order, session_id)
+        registrar_intento(
+            usuario=comprador, buy_order=buy_order, token=payment_data.get("token"),
+            cotizacion=cot, pay_system=method,
+        )
+        return Response(payment_data, status=status.HTTP_200_OK)
 
     def validate_payment_request(self, data):
         amount = data.get('amount')
@@ -1504,6 +1554,39 @@ class UnifiedSaleInitiationView(APIView):
 class UnifiedPaymentConfirmationView(APIView):
     permission_classes = [drf_permissions.IsAuthenticated]
 
+    def _confirmar_suscripcion(self, request, method, result):
+        from .suscripciones import SuscripcionError, avisar_compra, parse_buy_order, registrar_venta_webpay
+        extra = result.get("extra_data") or {}
+        token = extra.get("token")
+        datos = parse_buy_order(extra.get("buy_order"))
+        if datos is None:
+            return Response({"success": False, "details": "buy_order inválido en la confirmación."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        _, _, buyer_id = datos
+        if buyer_id != request.user.id and not is_admin(request.user):
+            return Response({"success": False, "details": "El comprador no coincide con el pago."},
+                            status=status.HTTP_403_FORBIDDEN)
+        user = request.user if buyer_id == request.user.id else Usuario.objects.filter(id=buyer_id).first()
+        if user is None or not user.escuela_id:
+            return Response({"success": False, "details": "Comprador sin escuela."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            venta = registrar_venta_webpay(user=user, method=method, result=result)
+        except IntegrityError:
+            return Response({"success": False, "details": "Esta transacción ya fue procesada."},
+                            status=status.HTTP_200_OK)
+        except SuscripcionError as e:
+            # Cobrado pero no aplicable: queda como intento rechazado para que el
+            # admin lo resuelva a mano (reembolso o cortesía).
+            logger.error("Pago de suscripción no aplicado (token=%s): %s", token, e)
+            resolver_intento_pago(token, estado='rechazado', codigo=e.code)
+            return Response({"success": False, "details": str(e), "code": e.code},
+                            status=status.HTTP_400_BAD_REQUEST)
+        resolver_intento_pago(token, estado='autorizado', codigo=result.get("status"), venta=venta)
+        avisar_compra(venta)
+        return Response({"success": True, "details": "Suscripción actualizada.", "data": result},
+                        status=status.HTTP_201_CREATED)
+
     def post(self, request):
         try:
             owner_check = _enforce_payment_ownership(request, request.data.get("user_id"))
@@ -1527,6 +1610,9 @@ class UnifiedPaymentConfirmationView(APIView):
                 return Response({"success": False, "details": result.get("message", "Pago no autorizado.")}, status=status.HTTP_200_OK)
 
             item_type = (request.data.get("item_type") or "producto").lower().strip()
+
+            if item_type in ("suscripcion", "subida"):
+                return self._confirmar_suscripcion(request, method, result)
 
             if item_type == "curso":
                 # Compra individual de curso: otorga acceso 7 días al comprador.
@@ -1596,12 +1682,15 @@ class UnifiedPaymentConfirmationView(APIView):
 class SubscriptionStatusView(APIView):
     """GET /api/v1/schools/<school_id>/subscription-status/
 
-    Resumen de la licencia de la escuela: llaves + suscripciones (con cupos
-    y disponibilidad). Auth: admin (cualquier escuela) o director (solo la suya).
+    Saldo de la escuela: llaves (`basic.keys_available`), el espejo de cupos
+    (`basic`, compatibilidad) y la suscripción completa (`suscripcion`: plan,
+    estado, fechas, cupos, cambio programado, funciones; null sin suscripción).
+    Auth: admin (cualquier escuela) o director (solo la suya).
     """
     permission_classes = [drf_permissions.IsAuthenticated]
 
     def get(self, request, school_id):
+        from .suscripciones import resumen, suscripcion_de, cupos_activos
         try:
             school_id = int(school_id)
         except (TypeError, ValueError):
@@ -1616,32 +1705,30 @@ class SubscriptionStatusView(APIView):
         except Escuela.DoesNotExist:
             return Response({"detail": "Escuela no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
-        def tier(access, seats_used, seats_max, keys):
-            return {
-                "access": bool(access),
-                "seats_max": int(seats_max),
-                "seats_used": int(seats_used),
-                "seats_available": max(0, int(seats_max) - int(seats_used)),
-                "keys_available": int(keys),
-            }
-
-        basic = tier(
-            suscripcion_vigente(escuela), escuela.basic_seats_used, escuela.basic_seats_max, escuela.basic_key,
-        )
-        basic["access_until"] = escuela.basic_access_until
+        sus = suscripcion_de(escuela)
+        usados = cupos_activos(sus).count() if sus else 0
+        cupos = sus.plan.cupos if sus else 0
+        basic = {
+            "access": bool(sus and sus.con_acceso()),
+            "seats_max": cupos,
+            "seats_used": usados,
+            "seats_available": max(0, cupos - usados),
+            "keys_available": int(escuela.basic_key),
+            "access_until": sus.fin if sus else None,
+        }
         return Response({
             "escuela_id": escuela.id,
             "basic": basic,
+            "suscripcion": resumen(escuela),
         })
 
 
 class SubscriptionSeatsView(APIView):
-    """GET  /api/v1/schools/<school_id>/subscription-seats/
-    DELETE /api/v1/schools/<school_id>/subscription-seats/<estudiante_curso_id>/
+    """Cupos de la suscripción de una escuela (un cupo = un estudiante).
 
-    GET: lista los EstudianteCurso que ocupan un seat (AccessKey.origen='seat').
-    DELETE: libera el seat revocando el acceso (marca la key como revoked,
-    borra el EstudianteCurso, decrementa `*_seats_used`).
+    GET    /api/v1/schools/<school_id>/subscription-seats/        → cupos activos
+    POST   /api/v1/schools/<school_id>/subscription-seats/        {estudiante_id} → asigna
+    DELETE /api/v1/schools/<school_id>/subscription-seats/<cupo_id>/ → libera (reasignable)
 
     Permisos: admin (cualquier escuela) o director (solo la suya).
     """
@@ -1657,89 +1744,63 @@ class SubscriptionSeatsView(APIView):
                 return None, Response({"detail": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
         return school_id, None
 
-    def get(self, request, school_id, estudiante_curso_id=None):
+    def get(self, request, school_id, cupo_id=None):
+        from .models import CupoSuscripcion
         school_id, err = self._authz(request, school_id)
         if err is not None:
             return err
-
         qs = (
-            EstudianteCurso.objects
-            .filter(
-                estudiante_id__escuela_id=school_id,
-                access_key_id__origen="seat",
-                # Un seat revocado ya no ocupa cupo (revocar_llave descontó
-                # seats_used); listarlo invitaba a "liberarlo" otra vez.
-                access_key_id__status="active",
-            )
-            .select_related("estudiante_id", "curso_id", "access_key_id")
-            .order_by("id")
+            CupoSuscripcion.objects
+            .filter(suscripcion__escuela_id=school_id, liberado_en__isnull=True)
+            .select_related("estudiante")
+            .annotate(cursos=Count("estudiante__estudiantecurso"))
+            .order_by("-asignado_en")
         )
-
         results = [
             {
-                "id": ec.id,
+                "id": c.id,
                 "estudiante": {
-                    "id": ec.estudiante_id_id,
-                    "nombre": f"{ec.estudiante_id.nombre} {ec.estudiante_id.apellido}".strip(),
-                    "email": ec.estudiante_id.email,
+                    "id": c.estudiante_id,
+                    "nombre": f"{c.estudiante.nombre} {c.estudiante.apellido}".strip(),
+                    "email": c.estudiante.email,
                 },
-                "curso": {
-                    "id": ec.curso_id_id,
-                    "nombre": ec.curso_id.nombre,
-                    "is_profesional": ec.curso_id.is_profesional,
-                },
-                "access_key": {
-                    "id": str(ec.access_key_id.id),
-                    "status": ec.access_key_id.status,
-                    "valid_from": ec.access_key_id.valid_from,
-                },
+                "asignado_en": c.asignado_en,
+                "cursos": c.cursos,
             }
-            for ec in qs
+            for c in qs
         ]
         return Response({"count": len(results), "results": results})
 
-    def delete(self, request, school_id, estudiante_curso_id):
+    def post(self, request, school_id, cupo_id=None):
+        from .suscripciones import SuscripcionError, asignar_cupo
         school_id, err = self._authz(request, school_id)
         if err is not None:
             return err
-
         try:
-            estudiante_curso_id = int(estudiante_curso_id)
-        except (TypeError, ValueError):
-            return Response({"detail": "estudiante_curso_id inválido."}, status=status.HTTP_400_BAD_REQUEST)
+            estudiante = Usuario.objects.get(pk=int(request.data.get("estudiante_id")), is_estudiante=True)
+        except (Usuario.DoesNotExist, TypeError, ValueError):
+            return Response({"error": "Estudiante no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        if estudiante.escuela_id != school_id:
+            return Response({"error": "El estudiante no pertenece a tu escuela."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            cupo = asignar_cupo(Escuela.objects.get(pk=school_id), estudiante, por=request.user)
+        except SuscripcionError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "assigned", "id": cupo.id}, status=status.HTTP_201_CREATED)
 
-        with db_transaction.atomic():
-            ec = (
-                EstudianteCurso.objects
-                .select_related("access_key_id", "curso_id", "estudiante_id")
-                .filter(pk=estudiante_curso_id)
-                .first()
-            )
-            if ec is None:
-                return Response({"detail": "Inscripción no encontrada."}, status=status.HTTP_404_NOT_FOUND)
-            if ec.estudiante_id.escuela_id != school_id:
-                return Response({"detail": "La inscripción no pertenece a esta escuela."}, status=status.HTTP_404_NOT_FOUND)
-
-            access_key = ec.access_key_id
-            if access_key.origen != "seat":
-                return Response(
-                    {"detail": "Esta inscripción no ocupa un cupo de suscripción; usa el flujo de llaves."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            # Ya revocado: el cupo se devolvió al revocar. Descontar otra vez
-            # liberaría el cupo de otro estudiante (drift de seats_used).
-            if access_key.status != "active":
-                ec.delete()
-                return Response({"status": "already_released"}, status=status.HTTP_200_OK)
-
-            escuela = Escuela.objects.select_for_update().get(pk=school_id)
-            if escuela.basic_seats_used > 0:
-                escuela.basic_seats_used -= 1
-            escuela.save()
-
-            access_key.status = "revoked"
-            access_key.save(update_fields=["status"])
-            ec.delete()
-
+    def delete(self, request, school_id, cupo_id):
+        from .models import CupoSuscripcion
+        from .suscripciones import liberar_cupo
+        school_id, err = self._authz(request, school_id)
+        if err is not None:
+            return err
+        cupo = (
+            CupoSuscripcion.objects.select_related("estudiante")
+            .filter(pk=cupo_id, suscripcion__escuela_id=school_id).first()
+        )
+        if cupo is None:
+            return Response({"detail": "Cupo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        if cupo.liberado_en is not None:
+            return Response({"status": "already_released"}, status=status.HTTP_200_OK)
+        liberar_cupo(cupo.estudiante)
         return Response({"status": "released"}, status=status.HTTP_200_OK)

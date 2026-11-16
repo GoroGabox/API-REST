@@ -592,10 +592,9 @@ class DesvincularEstudianteView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            escuela = (
-                Escuela.objects.select_for_update().filter(pk=target.escuela_id).first()
-                if target.escuela_id else None
-            )
+            # Su cupo de suscripción (si tenía) vuelve a la escuela.
+            from sales.suscripciones import liberar_cupo
+            liberar_cupo(target)
 
             inscripciones = (
                 EstudianteCurso.objects
@@ -608,16 +607,10 @@ class DesvincularEstudianteView(APIView):
                 # de la escuela. Al salir de la escuela lo conserva intacto.
                 if ak and ak.origen == "purchase":
                     continue
-                if ak and ak.origen == "seat" and escuela is not None:
-                    if escuela.basic_seats_used > 0:
-                        escuela.basic_seats_used -= 1
                 if ak:
                     ak.status = "revoked"
                     ak.save(update_fields=["status"])
                 ec.delete()
-
-            if escuela is not None:
-                escuela.save()
 
             target.escuela = None
             target.save(update_fields=["escuela"])
@@ -740,6 +733,10 @@ class CursoViewSet(viewsets.ModelViewSet):
                     {"detail": "No tienes acceso a este curso."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
+            # Con cupo de suscripción (todos los cursos) la inscripción se crea
+            # al abrir el curso, para que cuente en su avance y en "mis cursos".
+            from sales.suscripciones import asegurar_inscripcion_cupo
+            asegurar_inscripcion_cupo(user, curso)
         lecciones_ordenadas = Leccion.objects.select_related('categoria').order_by('posicion', 'id')
         unidades = (
             Unidad.objects.filter(curso=curso)

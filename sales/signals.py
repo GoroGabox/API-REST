@@ -11,10 +11,11 @@ from django.dispatch import receiver
 from autotestAPI.auditoria import usuario_actual
 from schools.models import PlanCurso
 
-from .models import CambioPrecio, Producto
+from .models import CambioPrecio, PlanSuscripcion, Producto
 
 CAMPOS_PLAN = ("precio", "precio_referencia", "activo")
 CAMPOS_PRODUCTO = ("valor_neto", "descuento", "activo")
+CAMPOS_SUSCRIPCION = ("precio_mensual", "activo")
 
 
 def _entero(v):
@@ -86,3 +87,29 @@ def _norm(v):
     if v is None or isinstance(v, bool):
         return v
     return round(float(v), 2)
+
+
+@receiver(pre_save, sender=PlanSuscripcion)
+def _plan_sus_pre(sender, instance, **kwargs):
+    instance._precio_previo = _previos(PlanSuscripcion, instance, CAMPOS_SUSCRIPCION)
+
+
+@receiver(post_save, sender=PlanSuscripcion)
+def _plan_sus_post(sender, instance, created, raw=False, **kwargs):
+    """Historial del precio mensual (base de la evolución) de un plan de suscripción."""
+    if raw:
+        return
+    prev = getattr(instance, "_precio_previo", None)
+    if not created and prev and all(prev[c] == getattr(instance, c) for c in CAMPOS_SUSCRIPCION):
+        return
+    prev = prev or {}
+    CambioPrecio.objects.create(
+        tipo="plan_suscripcion",
+        objeto_id=instance.pk,
+        nombre=f"{instance.nombre} · mensual",
+        dias=30,
+        precio_anterior=_entero(prev.get("precio_mensual")),
+        precio_nuevo=_entero(instance.precio_mensual),
+        activo=instance.activo,
+        usuario=usuario_actual(),
+    )

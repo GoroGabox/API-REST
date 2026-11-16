@@ -84,6 +84,8 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
 
     is_director = models.BooleanField(default=False)
     is_estudiante = models.BooleanField(default=False)
+    # Plan Pro: sede del usuario (director/estudiante; null = toda la escuela).
+    sede = models.ForeignKey('schools.Sede', on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios')
     date_joined = models.DateTimeField(auto_now_add=True, null=True)
 
     # Gamificación — progresión
@@ -154,6 +156,7 @@ class Notificacion(models.Model):
         ('hearts_refilled', 'Vidas recuperadas'),
         ('access_request', 'Solicitud de acceso'),            # → director: nueva solicitud
         ('access_request_resolved', 'Solicitud resuelta'),     # → estudiante: aprobada/rechazada
+        ('suscripcion', 'Suscripción'),                    # → director: pagos, vencimientos, cupos
         ('promo', 'Promoción'),
         ('info', 'Informativa'),
     ]

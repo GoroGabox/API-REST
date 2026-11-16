@@ -582,10 +582,11 @@ class DesvincularEstudianteTests(APITestCase):
 
     def test_seat_libera_cupo(self):
         from sales.models import AccessKey, EstudianteCurso
-        self.escuela_a.basic_seats_used = 1
-        self.escuela_a.save()
+        from sales.testing import dar_cupo, dar_suscripcion
+        sus = dar_suscripcion(self.escuela_a, cupos=2)
         seat_key = AccessKey.objects.create(valid_until=None, origen="seat")
         est2 = make_user("est2_des@a.com", is_estudiante=True, escuela=self.escuela_a)
+        dar_cupo(sus, est2)
         EstudianteCurso.objects.create(
             estudiante_id=est2, curso_id=self.curso, access_key_id=seat_key,
         )

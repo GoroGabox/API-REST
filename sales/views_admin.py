@@ -120,7 +120,9 @@ class VentasAdminView(APIView):
             except ValueError as e:
                 return _malo(e)
             params = _params_con_rango(request, desde, hasta)
-        qs = comercial.filtrar_ventas(params)
+        # `estado=pendiente`: órdenes por transferencia aún sin pagar (para confirmarlas).
+        base = Venta.objects.filter(payment_status="pendiente") if params.get("estado") == "pendiente" else None
+        qs = comercial.filtrar_ventas(params, base=base)
         if _es_csv(request):
             def filas():
                 for v in qs.iterator():
@@ -144,7 +146,9 @@ class VentaAdminDetalleView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request, venta_id):
-        v = get_object_or_404(Venta.objects.select_related("producto", "curso", "escuela", "usuario"), pk=venta_id)
+        v = get_object_or_404(
+            Venta.objects.select_related("producto", "curso", "escuela", "usuario", "plan_suscripcion"), pk=venta_id,
+        )
         data = comercial.fila_venta(v)
         tx = getattr(v, "transbank_transaction", None)
         data["transaccion"] = {

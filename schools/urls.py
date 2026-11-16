@@ -24,6 +24,7 @@ from .views import (
 # EstudianteCurso/AccessKey, pero se exponen bajo el árbol de schools para
 # consistencia con el spec del frontend.
 from sales.views import SubscriptionStatusView, SubscriptionSeatsView
+from . import equipo
 
 router = DefaultRouter()
 router.register(r'schools', EscuelaViewSet)
@@ -87,9 +88,15 @@ urlpatterns = [
         name="subscription_seats_list",
     ),
     path(
-        "<int:school_id>/subscription-seats/<int:estudiante_curso_id>/",
+        "<int:school_id>/subscription-seats/<int:cupo_id>/",
         SubscriptionSeatsView.as_view(),
         name="subscription_seats_detail",
     ),
+    # Equipo (plan Pro): directores y sedes.
+    path("equipo/", equipo.EquipoView.as_view(), name="equipo"),
+    path("equipo/invitar/", equipo.InvitarMiembroView.as_view(), name="equipo_invitar"),
+    path("equipo/miembros/<int:user_id>/", equipo.MiembroView.as_view(), name="equipo_miembro"),
+    path("equipo/sedes/", equipo.SedesView.as_view(), name="equipo_sedes"),
+    path("equipo/sedes/<int:sede_id>/", equipo.SedesView.as_view(), name="equipo_sede"),
     *router.urls,
 ]

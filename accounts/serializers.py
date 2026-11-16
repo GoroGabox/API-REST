@@ -87,7 +87,7 @@ class AdminUsuarioCreateSerializer(serializers.ModelSerializer):
 # Campos que solo un admin puede modificar. Para cualquier otro usuario (p.ej.
 # un estudiante editando su propio perfil vía IsAdminOrSelf) quedan read-only,
 # evitando escalada de privilegios.
-ADMIN_ONLY_WRITABLE = ('is_superuser', 'is_staff', 'is_director', 'is_estudiante', 'is_active', 'email')
+ADMIN_ONLY_WRITABLE = ('is_superuser', 'is_staff', 'is_director', 'is_estudiante', 'sede', 'is_active', 'email')
 
 
 class UsuarioSerializer(serializers.ModelSerializer):
@@ -106,6 +106,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
             'escuela',
             'is_director',
             'is_estudiante',
+            'sede',
             'is_superuser',
             'is_active',
             'is_staff',
@@ -216,6 +217,7 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['is_director'] = user.is_director
         token['is_estudiante'] = user.is_estudiante
         token['is_superuser'] = user.is_superuser
+        token['sede'] = user.sede_id
 
         return token
 
