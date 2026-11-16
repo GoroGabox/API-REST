@@ -35,10 +35,12 @@ _SYSTEM = (
 
 
 def _render_batch(lote: list[dict[str, Any]]) -> str:
+    # Numeración local 1..n del lote: el modelo tiende a acortar ids largos
+    # («adolfo-b-c2-52» → «52»); con números simples la respuesta es estable.
     partes = []
-    for e in lote:
+    for i, e in enumerate(lote, start=1):
         ops = " | ".join(f"{k}) {v}" for k, v in e["opciones"].items())
-        partes.append(f'#{e["numero"]}: {e["pregunta"]}\n   Opciones: {ops}')
+        partes.append(f'#{i}: {e["pregunta"]}\n   Opciones: {ops}')
     return "Clasifica estas preguntas:\n\n" + "\n\n".join(partes)
 
 
@@ -62,19 +64,25 @@ def clasificar(
 
     for inicio in range(0, len(ejercicios), _BATCH):
         lote = ejercicios[inicio:inicio + _BATCH]
-        try:
-            raw = cli.complete(
-                system=_SYSTEM,
-                user=_render_batch(lote),
-                max_tokens=1500,
-                temperature=0.0,
-            )
-            mapping = parse_json_object(raw)
-        except Exception:
-            mapping = {}
+        mapping: dict = {}
+        # Un reintento si la respuesta no trae todas las preguntas del lote.
+        for _ in range(2):
+            try:
+                raw = cli.complete(
+                    system=_SYSTEM,
+                    user=_render_batch(lote),
+                    max_tokens=3000,
+                    temperature=0.0,
+                )
+                # El modelo a veces repite el «#» del prompt en las claves.
+                mapping = {str(k).lstrip("#").strip(): v for k, v in parse_json_object(raw).items()}
+            except Exception:
+                mapping = {}
+            if all(str(i) in mapping for i in range(1, len(lote) + 1)):
+                break
 
-        for e in lote:
-            cat = mapping.get(str(e["numero"])) or mapping.get(e["numero"])
+        for i, e in enumerate(lote, start=1):
+            cat = mapping.get(str(i))
             # resolve() normaliza variantes/tildes y manda a "General" lo que no
             # sea una etiqueta canónica válida.
             resultado[e["numero"]] = resolve(cat)

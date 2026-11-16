@@ -1,7 +1,8 @@
 from django.conf import settings
 from rest_framework import serializers
 from .models import (
-    Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, Glosario, Categoria, Unidad, Recurso, PlanCurso,
+    Escuela, Curso, Leccion, LeccionRecurso, Ejercicio, EjercicioUnidad, Glosario, Categoria, Unidad, Recurso,
+    PlanCurso,
     PREGUNTAS_SESION_TEMATICA,
 )
 
@@ -117,6 +118,15 @@ class LeccionDetalleSerializer(serializers.ModelSerializer):
     unidad_nombre = serializers.CharField(source='unidad.nombre', read_only=True)
     recursos = LeccionRecursoSerializer(many=True, read_only=True)
     imagenes = serializers.SerializerMethodField()
+    # Lección quiz cuyo quiz se arma desde el banco de su unidad
+    # (`POST accounts/lessons/<id>/quiz/`). False → preguntas embebidas en `contenido`.
+    quiz_banco = serializers.SerializerMethodField()
+
+    def get_quiz_banco(self, obj):
+        if obj.tipo != 'quiz':
+            return False
+        from .services import quiz_desde_banco
+        return quiz_desde_banco(obj)
 
     def get_imagenes(self, obj):
         meta_int = lambda m, k: int(m.get(k) or 0)  # noqa: E731
@@ -136,6 +146,7 @@ class LeccionDetalleSerializer(serializers.ModelSerializer):
             'id', 'curso', 'unidad', 'unidad_orden', 'unidad_nombre',
             'categoria', 'nombre', 'posicion', 'tipo', 'descripcion', 'contenido', 'transcripcion',
             'duracion_min', 'url_video', 'url_audio', 'url_pdf', 'recursos', 'imagenes',
+            'quiz_banco',
         ]
 
     def to_representation(self, instance):
@@ -176,10 +187,48 @@ class EjercicioSerializer(serializers.ModelSerializer):
 
 
 class EjercicioConRespuestaSerializer(serializers.ModelSerializer):
-    """Solo para grading o vistas administrativas — incluye la respuesta correcta."""
+    """Solo para grading o vistas administrativas — incluye la respuesta correcta.
+
+    ``unidades`` (ids) se puede escribir: reemplaza los vínculos con origen
+    ``manual``. ``unidades_detalle`` es de lectura (curso, orden y nombre).
+    """
+    unidades = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Unidad.objects.all(), required=False,
+    )
+    unidades_detalle = serializers.SerializerMethodField()
+
     class Meta:
         model = Ejercicio
         fields = '__all__'
+
+    def get_unidades_detalle(self, obj):
+        return [
+            {'id': u.id, 'curso': u.curso_id, 'orden': u.orden, 'nombre': u.nombre}
+            for u in obj.unidades.all()
+        ]
+
+    def _guardar_unidades(self, ejercicio, unidades):
+        if unidades is None:
+            return
+        actuales = set(ejercicio.unidades.values_list('id', flat=True))
+        nuevas = {u.id for u in unidades}
+        EjercicioUnidad.objects.filter(ejercicio=ejercicio, unidad_id__in=actuales - nuevas).delete()
+        EjercicioUnidad.objects.bulk_create(
+            [EjercicioUnidad(ejercicio=ejercicio, unidad_id=uid, origen='manual') for uid in nuevas - actuales],
+            ignore_conflicts=True,
+        )
+
+    def create(self, validated_data):
+        unidades = validated_data.pop('unidades', None)
+        ejercicio = super().create(validated_data)
+        self._guardar_unidades(ejercicio, unidades)
+        return ejercicio
+
+    def update(self, instance, validated_data):
+        unidades = validated_data.pop('unidades', None)
+        ejercicio = super().update(instance, validated_data)
+        self._guardar_unidades(ejercicio, unidades)
+        return ejercicio
 
 class GlosarioSerializer(serializers.ModelSerializer):
     class Meta:

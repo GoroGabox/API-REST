@@ -1,8 +1,10 @@
 """Importa a la BD el banco de ejercicios generado por `build_ejercicios_json`.
 
 Paso ONLINE (no usa LLM): pensado para correr contra la Postgres desplegada.
-Crea filas ``Ejercicio`` con ``curso=NULL`` y ``leccion=NULL`` (pool general +
-categoría), idempotente por texto de pregunta. Omite los ítems ``diferir=true``.
+Crea filas ``Ejercicio`` (idempotente por enunciado + alternativas). Con
+``--curso`` (o ``curso`` en el JSON) vincula cada ítem con ``unidad_orden`` a esa
+unidad del curso (quiz de unidad). Sin curso quedan en el pool común. Omite los
+ítems ``diferir=true``.
 
 Uso::
 
@@ -25,6 +27,10 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--file", required=True, help="JSON de build_ejercicios_json.")
         parser.add_argument("--dry-run", action="store_true", help="No escribe; reporta qué haría.")
+        parser.add_argument(
+            "--curso", default="",
+            help="Código del curso: vincula cada ítem con `unidad_orden` a esa unidad del curso.",
+        )
 
     def handle(self, *args, **opts):
         import sys
@@ -43,11 +49,24 @@ class Command(BaseCommand):
         if not isinstance(ejercicios, list):
             raise CommandError("El JSON debe traer una lista 'ejercicios'.")
 
+        # Fuente del archivo para los ítems que no la traen (p. ej. el PDF de CONASET).
+        fuente = data.get("fuente") if isinstance(data, dict) else ""
+        if fuente:
+            ejercicios = [{**e, "fuente": e.get("fuente") or fuente} for e in ejercicios]
+
         accion = "DRY-RUN" if opts["dry_run"] else "IMPORT"
         self.stdout.write(f"Ejercicios en archivo: {len(ejercicios)} · {accion}")
 
+        curso = None
+        codigo = opts["curso"] or (data.get("curso") if isinstance(data, dict) else "")
+        if codigo:
+            from schools.models import Curso
+            curso = Curso.objects.filter(codigo=codigo).first()
+            if curso is None:
+                raise CommandError(f"No existe el curso con código {codigo!r}.")
+            self.stdout.write(f"Curso: {curso.codigo} · {curso.nombre} (#{curso.id})")
         try:
-            summary = import_ejercicios(ejercicios, dry_run=opts["dry_run"])
+            summary = import_ejercicios(ejercicios, dry_run=opts["dry_run"], curso=curso)
         except Exception as exc:
             raise CommandError(str(exc)) from exc
 

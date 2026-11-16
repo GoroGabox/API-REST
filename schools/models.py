@@ -156,6 +156,9 @@ class PlanCurso(models.Model):
 # ofrece para esa sesión si tiene al menos esta cantidad de ejercicios.
 # Fuente única: `accounts.services.SIZES['categoria']` la reutiliza.
 PREGUNTAS_SESION_TEMATICA = 15
+# Preguntas por intento del quiz de unidad. Si la unidad tiene menos grupos de
+# ejercicios en el banco, el quiz usa las preguntas embebidas de la lección.
+PREGUNTAS_QUIZ_UNIDAD = 10
 
 
 class Categoria(models.Model):
@@ -338,11 +341,42 @@ class Ejercicio(models.Model):
     multiple = models.BooleanField(default=False)
     respuestas_correctas = models.JSONField(default=list, blank=True)
     explicacion = models.TextField(blank=True, default="")
+    # Unidades (de uno o varios cursos/licencias) cuyo quiz puede usar este
+    # ejercicio. Sin unidades = pool común. El curso sale de `unidad.curso`.
+    unidades = models.ManyToManyField(
+        'Unidad', through='EjercicioUnidad', related_name='ejercicios', blank=True,
+    )
+    # Variantes de una misma pregunta (mismo enunciado, otras alternativas)
+    # comparten `grupo`: un quiz nunca muestra dos del mismo grupo.
+    grupo = models.CharField(max_length=64, blank=True, default="")
+    fuente = models.CharField(max_length=120, blank=True, default="")
 
     class Meta:
         ordering = ['id']
 
     def __str__(self):
         return self.pregunta
+
+
+class EjercicioUnidad(models.Model):
+    """Vínculo ejercicio ↔ unidad (un ejercicio puede servir a varias licencias)."""
+    ORIGEN_CHOICES = [
+        ('docx', 'Cuestionario del curso'),
+        ('clasificacion', 'Clasificación automática'),
+        ('manual', 'Manual'),
+    ]
+    ejercicio = models.ForeignKey(Ejercicio, on_delete=models.CASCADE, related_name='vinculos_unidad')
+    unidad = models.ForeignKey(Unidad, on_delete=models.CASCADE, related_name='vinculos_ejercicio')
+    origen = models.CharField(max_length=20, choices=ORIGEN_CHOICES, default='manual')
+    confianza = models.FloatField(null=True, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['ejercicio', 'unidad'], name='unique_ejercicio_unidad'),
+        ]
+
+    def __str__(self):
+        return f"{self.ejercicio_id} → {self.unidad}"
 
 

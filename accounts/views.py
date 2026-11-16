@@ -732,13 +732,58 @@ class SubmitPruebaView(APIView):
         return Response(resultado, status=status.HTTP_200_OK)
 
 
+class QuizLeccionView(APIView):
+    """POST /api/v1/accounts/lessons/<leccion_id>/quiz/[?categoria=<id>]
+
+    Arma el quiz de una lección tipo quiz desde el banco de ejercicios de su
+    unidad (`PREGUNTAS_QUIZ_UNIDAD` al azar, uno por grupo de variantes).
+    - 201 {fuente: "banco", prueba_id, preguntas (sin clave), total, aprobacion}
+      → se entrega con `tests/<prueba_id>/submit/`; si aprueba, la lección
+      queda completada en el servidor.
+    - 200 {fuente: "embebido"} si la unidad no tiene banco suficiente: el
+      cliente usa las preguntas de `Leccion.contenido`, como antes.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, leccion_id):
+        from schools.models import Leccion as _Leccion
+        from sales.services import tiene_acceso_a_curso
+        leccion = (_Leccion.objects.select_related('unidad', 'curso')
+                   .filter(pk=leccion_id).first())
+        if leccion is None:
+            return Response({"detail": "Lección no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        if leccion.tipo != 'quiz':
+            return Response({"detail": "La lección no es un quiz."}, status=status.HTTP_400_BAD_REQUEST)
+        if not is_admin(request.user) and not tiene_acceso_a_curso(request.user, leccion.curso_id):
+            return Response({"detail": "No tienes acceso a este curso.", "razon": "sin_acceso"},
+                            status=status.HTTP_403_FORBIDDEN)
+        categoria_id = request.query_params.get('categoria') or request.data.get('categoria_id')
+        try:
+            categoria_id = int(categoria_id) if categoria_id else None
+        except (TypeError, ValueError):
+            return Response({"detail": "categoria inválida."}, status=status.HTTP_400_BAD_REQUEST)
+
+        prueba, ejercicios = accounts_services.generar_quiz_unidad(request.user, leccion, categoria_id)
+        if prueba is None:
+            return Response({"fuente": "embebido"}, status=status.HTTP_200_OK)
+        return Response({
+            "fuente": "banco",
+            "prueba_id": prueba.id,
+            "leccion_id": leccion.id,
+            "preguntas": accounts_services.serializar_preguntas_publicas(ejercicios),
+            "total": len(ejercicios),
+            "aprobacion": float(accounts_services.APROBACION_QUIZ_PCT),
+        }, status=status.HTTP_201_CREATED)
+
+
 class MisPruebasView(ListAPIView):
-    """GET /api/v1/accounts/me/tests/ — historial del estudiante."""
+    """GET /api/v1/accounts/me/tests/ — historial del estudiante (sin quizzes de unidad)."""
     serializer_class = PruebaDetalleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Prueba.objects.filter(estudiante=self.request.user).order_by('-fecha', '-id')
+        return (Prueba.objects.filter(estudiante=self.request.user)
+                .exclude(tipo='quiz').order_by('-fecha', '-id'))
 
 
 class MisPruebasDetalleView(APIView):

@@ -280,105 +280,171 @@ def _norm_pregunta(texto: str) -> str:
     return " ".join((texto or "").split()).strip().lower()
 
 
+def clave_ejercicio(pregunta: str, opciones) -> str:
+    """Identidad de un ejercicio: enunciado + alternativas normalizados.
+
+    Las variantes de una pregunta comparten enunciado, así que el enunciado solo
+    no basta. ``opciones`` es ``{letra: texto}`` o una lista de textos; el orden
+    de las alternativas no importa.
+    """
+    textos = opciones.values() if isinstance(opciones, dict) else (opciones or [])
+    alts = sorted(_norm_pregunta(t) for t in textos if (t or "").strip())
+    return _norm_pregunta(pregunta) + " || " + " | ".join(alts)
+
+
+def clave_de_fila(e: Ejercicio) -> str:
+    return clave_ejercicio(e.pregunta, [getattr(e, f"opcion_{k}") for k in _LETRAS])
+
+
+def _fila_truncada(candidatas: list[Ejercicio], opciones: dict) -> Ejercicio | None:
+    """Fila con el mismo enunciado cuyas alternativas son el comienzo de las nuevas
+    (mismas letras; al menos una cortada). ``None`` si no hay una sola así."""
+    nuevas = {k: _norm_pregunta(v) for k, v in opciones.items() if (v or "").strip()}
+    halladas = []
+    for fila in candidatas:
+        viejas = {k: _norm_pregunta(getattr(fila, f"opcion_{k}")) for k in _LETRAS
+                  if (getattr(fila, f"opcion_{k}") or "").strip()}
+        if set(viejas) != set(nuevas) or viejas == nuevas:
+            continue
+        if all(nuevas[k].startswith(v) and len(v) >= 20 or nuevas[k] == v for k, v in viejas.items()):
+            halladas.append(fila)
+    return halladas[0] if len(halladas) == 1 else None
+
+
 def import_ejercicios(
     ejercicios: list[dict[str, Any]],
     dry_run: bool = False,
+    curso: Curso | None = None,
 ) -> ImportSummary:
     """Crea filas ``Ejercicio`` desde una lista parseada/clasificada.
 
-    Convenciones (ver seed-deployed-db):
-      - ``curso``/``leccion`` quedan en NULL (van al pool general + categoría).
-      - ``categoria`` se resuelve por nombre (``get_or_create``). Obligatoria: si
-        falta, el ítem se omite (el examen por categoría la necesita).
-      - Idempotente: dedupe por texto de pregunta normalizado (igual que el
-        importador Excel del catálogo). Re-importar no duplica.
-      - Soporta multi-respuesta: ``respuestas_correctas`` guarda las keys; para
-        respuesta única además se setea ``respuesta`` (texto) por compatibilidad.
-      - Se omiten los ítems marcados ``diferir`` (imagen / datos insuficientes).
-
-    Devuelve un ``ImportSummary`` con contadores.
+    - ``categoria`` (canónica, ``taxonomy.resolve``) es obligatoria.
+    - Idempotente: dedupe por enunciado + alternativas (``clave_ejercicio``), así
+      las variantes de una misma pregunta se cargan todas y re-importar no duplica.
+    - Con ``curso``: cada ítem con ``unidad_orden`` se vincula a esa unidad del
+      curso (``EjercicioUnidad(origen='docx')``). Si el ejercicio ya existía
+      (p. ej. vino de otra licencia) solo se agrega el vínculo.
+    - Guarda ``grupo`` y ``fuente`` si vienen (sin pisar valores existentes).
+    - Multi-respuesta: ``respuestas_correctas`` guarda las keys; con respuesta
+      única además se setea ``respuesta`` (texto) por compatibilidad.
+    - Se omiten los ítems ``diferir``.
     """
+    from schools.models import EjercicioUnidad
+
     summary = ImportSummary(dry_run=dry_run)
-
-    # Preguntas ya en BD (normalizadas) para dedupe idempotente.
-    existentes = {
-        _norm_pregunta(p)
-        for p in Ejercicio.objects.values_list("pregunta", flat=True)
-    }
-    vistas_en_lote: set[str] = set()
-
-    a_crear: list[Ejercicio] = []
+    existentes = {clave_de_fila(e): e for e in Ejercicio.objects.all()}
+    por_enunciado: dict[str, list[Ejercicio]] = defaultdict(list)
+    for fila in existentes.values():
+        por_enunciado[_norm_pregunta(fila.pregunta)].append(fila)
+    unidades = {u.orden: u for u in Unidad.objects.filter(curso=curso)} if curso else {}
+    vistas_en_lote: dict[str, Any] = {}
     categoria_cache: dict[str, Categoria] = {}
 
-    for e in ejercicios:
-        if e.get("diferir"):
-            summary.add("diferido")
-            continue
+    with transaction.atomic():
+        for e in ejercicios:
+            if e.get("diferir"):
+                summary.add("diferido")
+                continue
+            pregunta = (e.get("pregunta") or "").strip()
+            opciones = e.get("opciones") or {}
+            respuestas = [str(r).strip().lower() for r in (e.get("respuestas") or [])]
+            respuestas = [r for r in respuestas if r in opciones]
+            categoria_nombre = (e.get("categoria") or "").strip()
+            if not pregunta or not opciones:
+                summary.add("omitido_sin_datos")
+                continue
+            if not respuestas:
+                summary.add("omitido_sin_respuesta")
+                continue
+            if not categoria_nombre:
+                summary.add("omitido_sin_categoria")
+                continue
 
-        pregunta = (e.get("pregunta") or "").strip()
-        opciones = e.get("opciones") or {}
-        respuestas = [str(r).strip().lower() for r in (e.get("respuestas") or [])]
-        respuestas = [r for r in respuestas if r in opciones]
-        categoria_nombre = (e.get("categoria") or "").strip()
+            unidad = None
+            if curso is not None and e.get("unidad_orden") is not None:
+                unidad = unidades.get(int(e["unidad_orden"]))
+                if unidad is None:
+                    summary.add(f"sin_unidad_en_curso::{e['unidad_orden']}")
 
-        if not pregunta or not opciones:
-            summary.add("omitido_sin_datos")
-            continue
-        if not respuestas:
-            summary.add("omitido_sin_respuesta")
-            continue
-        if not categoria_nombre:
-            summary.add("omitido_sin_categoria")
-            continue
+            clave = clave_ejercicio(pregunta, opciones)
+            ejercicio = existentes.get(clave) or vistas_en_lote.get(clave)
+            truncado = None if ejercicio is not None else _fila_truncada(
+                por_enunciado.get(_norm_pregunta(pregunta), []), opciones)
+            if truncado is not None:
+                # Misma pregunta guardada con alternativas cortadas (cargas viejas):
+                # se repara con el texto completo en vez de duplicarla.
+                summary.add("reparado_truncado")
+                ejercicio = truncado
+                if not dry_run:
+                    for letra in _LETRAS:
+                        setattr(ejercicio, f"opcion_{letra}", opciones.get(letra))
+                    ejercicio.respuestas_correctas = respuestas
+                    ejercicio.multiple = bool(e.get("multi"))
+                    ejercicio.respuesta = (opciones.get(respuestas[0], "")
+                                           if len(respuestas) == 1 and not ejercicio.multiple else "")
+                    ejercicio.save()
+                existentes[clave] = ejercicio
+            elif ejercicio is not None:
+                summary.add("duplicado")
+            else:
+                canonical = taxonomy.resolve(categoria_nombre)
+                summary.add("ejercicio_create")
+                summary.add(f"categoria::{canonical}")
+                if dry_run:
+                    vistas_en_lote[clave] = True
+                    if unidad is not None:
+                        summary.add("vinculo_unidad_create")
+                    continue
+                categoria = categoria_cache.get(canonical)
+                if categoria is None:
+                    categoria, created = Categoria.objects.get_or_create(
+                        nombre=canonical, defaults={"color_hex": taxonomy.color_for(canonical)}
+                    )
+                    categoria_cache[canonical] = categoria
+                    summary.add("categoria_create" if created else "categoria_reuse")
+                es_multi = bool(e.get("multi"))
+                respuesta_texto = ""
+                if not es_multi and len(respuestas) == 1:
+                    respuesta_texto = opciones.get(respuestas[0], "") or respuestas[0]
+                ejercicio = Ejercicio.objects.create(
+                    categoria=categoria,
+                    curso=None,
+                    leccion=None,
+                    pregunta=pregunta,
+                    imagen="http://placeholder.url",
+                    opcion_a=opciones.get("a"),
+                    opcion_b=opciones.get("b"),
+                    opcion_c=opciones.get("c"),
+                    opcion_d=opciones.get("d"),
+                    opcion_e=opciones.get("e"),
+                    opcion_f=opciones.get("f"),
+                    respuesta=respuesta_texto,
+                    multiple=es_multi,
+                    respuestas_correctas=respuestas,
+                    explicacion=e.get("explicacion", "") or "",
+                    grupo=(e.get("grupo") or "")[:64],
+                    fuente=(e.get("fuente") or "")[:120],
+                )
+                vistas_en_lote[clave] = ejercicio
 
-        clave = _norm_pregunta(pregunta)
-        if clave in existentes or clave in vistas_en_lote:
-            summary.add("duplicado")
-            continue
-        vistas_en_lote.add(clave)
-
+            if dry_run:
+                # Duplicado en dry-run: `True` = visto antes en este mismo lote.
+                if unidad is not None and ejercicio is not True:
+                    ya = EjercicioUnidad.objects.filter(ejercicio=ejercicio, unidad=unidad).exists()
+                    summary.add("vinculo_unidad_existente" if ya else "vinculo_unidad_create")
+                continue
+            cambios = []
+            for campo, largo in (("grupo", 64), ("fuente", 120)):
+                if e.get(campo) and not getattr(ejercicio, campo):
+                    setattr(ejercicio, campo, e[campo][:largo])
+                    cambios.append(campo)
+            if cambios:
+                ejercicio.save(update_fields=cambios)
+            if unidad is not None:
+                _, creado = EjercicioUnidad.objects.get_or_create(
+                    ejercicio=ejercicio, unidad=unidad, defaults={"origen": "docx"})
+                summary.add("vinculo_unidad_create" if creado else "vinculo_unidad_existente")
         if dry_run:
-            summary.add("ejercicio_create")
-            summary.add(f"categoria::{taxonomy.resolve(categoria_nombre)}")
-            continue
-
-        # Categoría canónica compartida con las lecciones (misma taxonomía).
-        canonical = taxonomy.resolve(categoria_nombre)
-        categoria = categoria_cache.get(canonical)
-        if categoria is None:
-            categoria, created = Categoria.objects.get_or_create(
-                nombre=canonical, defaults={"color_hex": taxonomy.color_for(canonical)}
-            )
-            categoria_cache[canonical] = categoria
-            summary.add("categoria_create" if created else "categoria_reuse")
-
-        es_multi = bool(e.get("multi"))
-        # Texto de la opción correcta (solo tiene sentido para respuesta única).
-        respuesta_texto = ""
-        if not es_multi and len(respuestas) == 1:
-            respuesta_texto = opciones.get(respuestas[0], "") or respuestas[0]
-
-        a_crear.append(Ejercicio(
-            categoria=categoria,
-            curso=None,
-            leccion=None,
-            pregunta=pregunta,
-            imagen="http://placeholder.url",
-            opcion_a=opciones.get("a"),
-            opcion_b=opciones.get("b"),
-            opcion_c=opciones.get("c"),
-            opcion_d=opciones.get("d"),
-            opcion_e=opciones.get("e"),
-            opcion_f=opciones.get("f"),
-            respuesta=respuesta_texto,
-            multiple=es_multi,
-            respuestas_correctas=respuestas,
-            explicacion=e.get("explicacion", "") or "",
-        ))
-        summary.add("ejercicio_create")
-
-    if not dry_run and a_crear:
-        with transaction.atomic():
-            Ejercicio.objects.bulk_create(a_crear, batch_size=100)
+            transaction.set_rollback(True)
 
     return summary

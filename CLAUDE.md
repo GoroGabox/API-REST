@@ -113,6 +113,18 @@ Solo lectura, `IsAdmin`, rutas `sales/admin/...`: `panorama/` (KPIs vs. período
 - **Nivel por tema** (`services.niveles_por_tema`, `GET me/temas/`, auth): por cada tema con `disponible_tematica`, usa las últimas `NIVEL_VENTANA`=20 respuestas corregidas del estudiante en **exámenes finales entregados** (la práctica no cuenta; sin final, todos `null`); desde `NIVEL_MIN_RESPUESTAS`=5: <60% `reforzar`, <80% `progreso`, si no `dominado` (menos de 5 → `null`). `recomendada` = tema con menos aciertos bajo 80% (`motivo: 'mas_dificil'`), si no el primero sin practicar (`'sin_practicar'`), si domina todo `null`. **Nunca expone % ni conteos** — solo `{temas: [{categoria_id, nivel}], recomendada}`.
 - `services.submit_prueba` corrige (set exacto de keys; acepta `'a'`, `['a','b']` o `'a,b'`) y devuelve `{aprobado, score, total_correctas, total, detalles, xp_ganado, streak_actual, logros_nuevos}` (+ `certificado` en la vista).
 - **Elegibilidad del examen final** (`services.elegibilidad_examen_final`, `GET me/courses/<id>/final-exam/`): `razon` ∈ `ok` | `curso_completado` | `plazo_vencido` | `lecciones_pendientes` (evaluadas en ese orden; exige **todas** las `Leccion` del curso con `EstudianteLeccion` — un curso sin lecciones no bloquea). Incluye `expira_en`, `ultimo_intento` (informativo), `lecciones_total`, `lecciones_completadas` y `total_preguntas` (nº real del examen, ≤35). **Sin espera entre intentos** — se puede reintentar de inmediato; `generate/` responde 403 + `razon` en los tres casos bloqueantes.
+- **Quiz de unidad desde el banco.** Una lección `tipo='quiz'` se arma con los ejercicios de su unidad:
+  - `POST accounts/lessons/<id>/quiz/[?categoria=]` (`QuizLeccionView`) sortea `PREGUNTAS_QUIZ_UNIDAD`=10, uno por `grupo` de variantes (`schools/services.quiz_desde_banco`, `accounts/services.generar_quiz_unidad`).
+  - Crea una `Prueba(tipo='quiz', leccion)` y responde 201 `{fuente:'banco', prueba_id, preguntas (sin clave), aprobacion}`. Se entrega con `tests/<id>/submit/`: aprueba con `APROBACION_QUIZ_PCT`=80 y, si aprueba, crea el `EstudianteLeccion`.
+  - Si la unidad tiene menos de 10 grupos, responde 200 `{fuente:'embebido'}` y el cliente usa las preguntas de `contenido`, como antes; el modo offline siempre usa las embebidas. `LeccionDetalleSerializer.quiz_banco` le dice al cliente qué camino tomar.
+  - Las pruebas `quiz` no salen en `me/tests/` ni cuentan como examen final; sí dan XP y racha.
+- **Banco multi-licencia.**
+  - `Ejercicio.unidades` es M2M a `Unidad` mediante `EjercicioUnidad(origen docx|clasificacion|manual, confianza)`: un ejercicio puede servir a unidades de varios cursos (B, C, A2…) sin duplicarse. Un ejercicio sin unidades queda en el pool común.
+  - `grupo` agrupa variantes (mismo enunciado, otras alternativas) y `fuente` indica el origen.
+  - `_ejercicios_de_curso_qs` (examen final) también incluye `unidades__curso`. Filtros admin en `exercices/`: `unidades`, `unidades__curso`, `grupo`, `fuente`. El serializer admin escribe `unidades` y lee `unidades_detalle`.
+  - Licencia nueva = `build_ejercicios_docx` + `import_ejercicios --curso <cod>` + `clasificar_ejercicios --curso <cod>` (agrega vínculos, no quita los de otros cursos).
+  - Pendiente: filtrar por licencia el pool común de la práctica del Gimnasio.
+- **Categorías: una sola taxonomía** (`content_pipeline/taxonomy.py`, 14 + «General») para lecciones y ejercicios. `consolidar_categorias [--dry-run]` mueve las FKs de categorías heredadas a la canónica y borra las heredadas; es idempotente y hay que correrlo también en prod. `LeccionViewSet` filtra por `categoria`.
 - **Gamificación** (`accounts/gamification.py`): solo **XP, racha y logros**. **No existen vidas (hearts)**: se eliminaron el modelo (`hearts`/`next_heart_regen_at`, migración `0020_remove_hearts`), el consumo/gate/regeneración, `FINAL_EXAM_RETRY_HOURS` y los campos de API (`hearts`, `max_hearts`, `next_heart_regen_at`, `corazones_restantes`, `retry_after_seconds`, `proximo_intento`). La choice de notificación `hearts_refilled` se conserva solo para leer registros históricos. No reintroducir vidas ni cooldown sin pedirlo; clientes (webapp y app Expo) dependen de este contrato.
 
 ### Modo offline (app móvil, `offline/`)
@@ -222,10 +234,19 @@ python manage.py import_course --file out/a4.json
 python manage.py audit_course_json out/a4.json --contenido "Libro.pdf" --llm
 ```
 
-Flujo vivo — banco de ejercicios (PDF → JSON → BD):
+Flujo vivo — banco de ejercicios (PDF/Word → JSON → BD):
 ```powershell
 python manage.py build_ejercicios_json --pdf "Cuestionario Clase B.pdf" --out out/ejercicios_b.json
-python manage.py import_ejercicios --file out/ejercicios_b.json   # idempotente por texto de pregunta
+# Cuestionario de instructor en Word: «CAPITULO N» = unidad N. La IA (Sonnet) estructura preguntas y variantes;
+# la validación exige que enunciado y alternativas estén en el docx (cuestionario_docx_parser); lo inválido queda diferir.
+python manage.py build_ejercicios_docx --docx cuestionario.docx --curso B --fuente "Cuestionario Adolfo B" --grupo adolfo-b --out out/ejercicios/adolfo_b.json
+python manage.py import_ejercicios --file out/ejercicios/adolfo_b.json --curso B   # idempotente por enunciado + alternativas; vincula unidades
+#   (repara filas viejas con alternativas truncadas en vez de duplicarlas; `--recategorizar` en build_ejercicios_docx rehace solo las categorías)
+# Clasificar el banco existente en unidades + categoría (Haiku, escribe JSON) y aplicarlo (sin IA, también en prod):
+python manage.py clasificar_ejercicios --curso B --out out/ejercicios/clasif_b.json
+python manage.py clasificar_ejercicios --aplicar out/ejercicios/clasif_b.json --dry-run
+# Categoría por lección (reescribe el JSON del curso; luego import_course):
+python manage.py clasificar_ejercicios --curso B --lecciones --course-json out/b_pub_v4.json --out out/b_pub_v5.json
 ```
 
 Flujo vivo — audio de lecciones (JSON del curso → guion → TTS → storage). `generate_media` no toca la BD; guarda el JSON **tras cada lección** (re-correr retoma donde quedó; no rehace guiones ni audios existentes salvo `--rehacer-guion` / `--overwrite`):

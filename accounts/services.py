@@ -14,7 +14,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from schools.models import Categoria, Ejercicio, PREGUNTAS_SESION_TEMATICA
+from schools.models import Categoria, Ejercicio, PREGUNTAS_QUIZ_UNIDAD, PREGUNTAS_SESION_TEMATICA
+from schools.services import ejercicios_de_unidad, grupos_de_ejercicios, quiz_desde_banco
 from .models import Certificado, Prueba, PruebaEjercicio, q_examen_final
 
 
@@ -113,14 +114,46 @@ def seleccionar_ejercicios(tipo: str, categoria_id: Optional[int] = None):
 
 
 def _ejercicios_de_curso_qs(curso):
-    """Ejercicios del curso: asociados directamente (`curso`) o a una de sus
-    lecciones (`leccion__curso`)."""
+    """Ejercicios del curso: asociados directamente (`curso`), a una de sus
+    lecciones (`leccion__curso`) o a una de sus unidades (`unidades__curso`)."""
     return (
         Ejercicio.objects
         .select_related('categoria', 'curso', 'leccion')
-        .filter(Q(curso=curso) | Q(leccion__curso=curso))
+        .filter(Q(curso=curso) | Q(leccion__curso=curso) | Q(unidades__curso=curso))
         .distinct()
     )
+
+
+# ---------------------------------------------------------------------------
+# Quiz de unidad (lecciones tipo quiz sorteadas del banco)
+# ---------------------------------------------------------------------------
+
+# Umbral de aprobación del quiz de unidad (en %).
+APROBACION_QUIZ_PCT = Decimal('80')
+
+
+def seleccionar_quiz_unidad(unidad, n: int, categoria_id=None) -> list:
+    """Sortea `n` ejercicios de la unidad, a lo más uno por grupo de variantes."""
+    grupos = grupos_de_ejercicios(ejercicios_de_unidad(unidad, categoria_id))
+    claves = list(grupos)
+    random.shuffle(claves)
+    ids = [random.choice(grupos[c]) for c in claves[:n]]
+    por_id = {e.id: e for e in Ejercicio.objects.filter(id__in=ids).select_related('categoria')}
+    return [por_id[i] for i in ids if i in por_id]
+
+
+def generar_quiz_unidad(estudiante, leccion, categoria_id=None):
+    """Crea la Prueba del quiz de unidad. Devuelve (prueba, ejercicios) o (None, None)
+    si la unidad no tiene banco suficiente (el cliente usa las preguntas embebidas)."""
+    if not quiz_desde_banco(leccion, categoria_id):
+        return None, None
+    ejercicios = seleccionar_quiz_unidad(leccion.unidad, PREGUNTAS_QUIZ_UNIDAD, categoria_id)
+    prueba = crear_prueba_con_ejercicios(
+        estudiante, ejercicios, tipo='quiz', modalidad='practica', curso=leccion.curso,
+    )
+    Prueba.objects.filter(pk=prueba.pk).update(leccion=leccion)
+    prueba.leccion = leccion
+    return prueba, ejercicios
 
 
 def total_preguntas_examen_final(curso) -> int:
@@ -376,7 +409,12 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     score = (Decimal(correctas) / Decimal(total) * Decimal(100)).quantize(Decimal('0.01'))
     # El examen final del curso (evaluación + completa) exige 80%; el resto 70%.
     es_examen_final = prueba.modalidad == 'evaluacion' and prueba.tipo == 'completa'
-    umbral = APROBACION_EXAMEN_FINAL_PCT if es_examen_final else APROBACION_MIN_PCT
+    if es_examen_final:
+        umbral = APROBACION_EXAMEN_FINAL_PCT
+    elif prueba.tipo == 'quiz':
+        umbral = APROBACION_QUIZ_PCT
+    else:
+        umbral = APROBACION_MIN_PCT
     aprobado = score >= umbral
 
     prueba.total_correctas = correctas
@@ -384,6 +422,14 @@ def submit_prueba(prueba: Prueba, respuestas: dict) -> dict:
     prueba.aprobado = aprobado
     prueba.completada_en = timezone.now()
     prueba.save(update_fields=['total_correctas', 'score', 'aprobado', 'completada_en'])
+
+    # Quiz de unidad aprobado: la lección queda completada en el servidor.
+    if prueba.tipo == 'quiz' and aprobado and prueba.leccion_id:
+        from .models import EstudianteLeccion
+        EstudianteLeccion.objects.get_or_create(
+            estudiante=prueba.estudiante, leccion_id=prueba.leccion_id,
+            defaults={'curso_id': prueba.curso_id, 'completada_en': prueba.completada_en},
+        )
 
     # ---- Gamificación: XP, streak, logros ----
     from . import gamification

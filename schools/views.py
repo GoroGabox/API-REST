@@ -782,7 +782,7 @@ class CursoIdOSlugFilter(django_filters.FilterSet):
 class LeccionFilter(CursoIdOSlugFilter):
     class Meta:
         model = Leccion
-        fields = ['curso', 'unidad', 'posicion', 'tipo']
+        fields = ['curso', 'unidad', 'posicion', 'tipo', 'categoria']
 
 
 class UnidadFilter(CursoIdOSlugFilter):
@@ -858,7 +858,7 @@ class EjercicioViewSet(viewsets.ModelViewSet):
     serializer_class = EjercicioSerializer
     permission_classes = [ReadOnlyOrAdmin]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['categoria', 'curso', 'leccion']
+    filterset_fields = ['categoria', 'curso', 'leccion', 'unidades', 'unidades__curso', 'grupo', 'fuente']
 
     def get_queryset(self):
         # El banco de preguntas es contenido premium: NO se expone directamente a
@@ -866,7 +866,7 @@ class EjercicioViewSet(viewsets.ModelViewSet):
         # los quiz de lección van embebidos en el contenido). Solo admin/director.
         user = self.request.user
         if is_admin(user) or is_director(user):
-            return Ejercicio.objects.all()
+            return Ejercicio.objects.prefetch_related('unidades').distinct()
         return Ejercicio.objects.none()
 
     def get_serializer_class(self):

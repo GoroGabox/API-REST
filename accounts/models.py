@@ -265,6 +265,8 @@ class Prueba(models.Model):
         ('completa', 'Completa'),
         ('rapida', 'Rápida'),
         ('categoria', 'Por categoría'),
+        # Quiz de una lección tipo quiz, sorteado del banco de su unidad.
+        ('quiz', 'Quiz de unidad'),
     ]
     MODALIDAD_CHOICES = [
         # práctica: para entrenar. No otorga certificado.
@@ -284,6 +286,10 @@ class Prueba(models.Model):
     # Tema de la Sesión Temática (tipo='categoria'); null en los demás modos.
     categoria = models.ForeignKey(
         Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='pruebas',
+    )
+    # Lección quiz que originó la prueba (tipo='quiz'); null en los demás modos.
+    leccion = models.ForeignKey(
+        Leccion, on_delete=models.SET_NULL, null=True, blank=True, related_name='pruebas_quiz',
     )
 
     fecha = models.DateField(auto_now_add=True)

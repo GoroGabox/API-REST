@@ -27,6 +27,7 @@ from .views import (
     ProgresoEstudiantesView,
     EscuelaConDirectorView,
     SubmitPruebaView,
+    QuizLeccionView,
     MisPruebasView,
     MisPruebasDetalleView,
     MisCertificadosView,
@@ -82,6 +83,7 @@ urlpatterns = [
 
     # Pruebas: submit + historial + detalle
     path("tests/<int:prueba_id>/submit/", SubmitPruebaView.as_view(), name="submit_test"),
+    path("lessons/<int:leccion_id>/quiz/", QuizLeccionView.as_view(), name="quiz_leccion"),
     path("me/tests/", MisPruebasView.as_view(), name="mis_pruebas"),
     path("me/tests/<int:prueba_id>/", MisPruebasDetalleView.as_view(), name="mis_pruebas_detalle"),
 

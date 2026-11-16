@@ -45,3 +45,36 @@ def sync_media_mirror(leccion: Leccion, *, url_quitada: str | None = None) -> di
         for campo, valor in cambios.items():
             setattr(leccion, campo, valor)
     return cambios
+
+
+# ---------------------------------------------------------------------------
+# Banco de ejercicios por unidad (quiz de unidad)
+# ---------------------------------------------------------------------------
+
+def ejercicios_de_unidad(unidad, categoria_id=None):
+    """Ejercicios del banco vinculados a la unidad (M2M ``Ejercicio.unidades``).
+
+    Sin las de selección múltiple: el quiz de lección de los clientes es de una
+    sola respuesta (siguen disponibles en el Gimnasio y el examen final)."""
+    from .models import Ejercicio
+    qs = Ejercicio.objects.filter(unidades=unidad, multiple=False)
+    if categoria_id:
+        qs = qs.filter(categoria_id=categoria_id)
+    return qs.distinct()
+
+
+def grupos_de_ejercicios(qs) -> dict[str, list[int]]:
+    """``{clave_grupo: [ids]}``; sin ``grupo``, cada ejercicio es su propio grupo."""
+    grupos: dict[str, list[int]] = {}
+    for row in qs.values("id", "grupo"):
+        grupos.setdefault(row["grupo"] or f"id:{row['id']}", []).append(row["id"])
+    return grupos
+
+
+def quiz_desde_banco(leccion, categoria_id=None) -> bool:
+    """True si el quiz de ``leccion`` se arma desde el banco de su unidad
+    (al menos ``PREGUNTAS_QUIZ_UNIDAD`` grupos de variantes)."""
+    from .models import PREGUNTAS_QUIZ_UNIDAD
+    if getattr(leccion, "tipo", None) != "quiz" or not leccion.unidad_id:
+        return False
+    return len(grupos_de_ejercicios(ejercicios_de_unidad(leccion.unidad, categoria_id))) >= PREGUNTAS_QUIZ_UNIDAD
