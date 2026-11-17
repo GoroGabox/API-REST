@@ -223,6 +223,22 @@ python manage.py publish_media --file out/b.json --out out/b_pub.json --storage 
 python manage.py import_course --file out/b_pub.json
 ```
 
+Flujo GUÍA DEL ALUMNO — conversión fiel (cuando la guía ya viene redactada como curso; usado en A4):
+```powershell
+# Un .docx por módulo (<COD>_<n>_….docx) → curso + banco. Cada «Unidad N · …» / «Módulo N · …» = lección:
+# Objetivos → ## Objetivo, capítulos → ## Desarrollo (### capítulo, H2/Subtitle en negrita), Ideas clave → ## Puntos clave,
+# tabla de 1 celda → recuadro (rótulo → tipo en guia_docx.TIPOS_RECUADRO), tablas GFM, imágenes (también grillas en tablas) → figuras.
+# Actividad de aplicación → ## Aplicación práctica de la última lección; glosario/fuentes → lección anexo «Material de referencia»;
+# cuestionarios + «Respuestas de los cuestionarios» → ejercicios (con explicación; si la clave no calza → diferir); quiz embebido por módulo.
+# La IA (Haiku) solo agrega las secciones núcleo que falten (Resumen siempre; Objetivo/Puntos clave si no vienen), auditadas
+# por cifras (unsupported_figures; si persiste → extractivo), registradas en auditoria.generado. «Libro CONASET: páginas …» → un tramo por fuente.
+python manage.py build_curso_guia --dir "C:/…/A4" --codigo A4 --nombre "Curso Profesional Clase A4" --precio 6990 --is-profesional --out out/a4/a4_guia.json --ejercicios out/a4/ejercicios_a4.json
+python manage.py clasificar_ejercicios --curso A4 --lecciones --course-json out/a4/a4_guia.json --out out/a4/a4_guia.json
+python manage.py publish_media --file out/a4/a4_guia.json --out out/a4/a4_pub.json --storage s3 --paginas-libro --contenido libro_pro.pdf  # PDF junta todos los tramos
+python manage.py import_course --file out/a4/a4_pub.json --prune --dry-run   # el dry-run informa lecciones, avance de alumnos y unidades que borraría --prune
+python manage.py import_ejercicios --file out/a4/ejercicios_a4.json --curso A4
+```
+
 Flujo LEGACY — estructura inferida (fallback):
 ```powershell
 # Estructura/densidad inferidas por IA desde el contenido. --temario opcional (checklist).

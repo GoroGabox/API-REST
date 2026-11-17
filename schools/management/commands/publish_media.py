@@ -35,12 +35,14 @@ def _resolve(archivo: str, base: Path) -> Path | None:
     return None
 
 
-def book_pages_pdf(src, a: int, b: int) -> bytes:
-    """PDF con las páginas ``a..b`` (1-based, inclusivas) del documento ``src`` (fitz)."""
+def book_pages_pdf(src, a: int, b: int, tramos: list[tuple[int, int]] | None = None) -> bytes:
+    """PDF con las páginas ``a..b`` (1-based, inclusivas) del documento ``src`` (fitz).
+    Con ``tramos`` junta varios rangos en orden (p. ej. págs. 40 y 205 a 210)."""
     import fitz
 
     out = fitz.open()
-    out.insert_pdf(src, from_page=a - 1, to_page=b - 1)
+    for x, y in tramos or [(a, b)]:
+        out.insert_pdf(src, from_page=x - 1, to_page=y - 1)
     data = out.tobytes(garbage=3, deflate=True)
     out.close()
     return data
@@ -122,22 +124,32 @@ class Command(BaseCommand):
                         if lesson.get("tipo") == "quiz":
                             continue
                         f0 = (lesson.get("fuentes") or [{}])[0]
-                        a, b = int(f0.get("pagina_inicio") or 0), int(f0.get("pagina_fin") or 0)
-                        if not (1 <= a <= b <= len(doc)):
+                        # Todos los tramos del mismo libro (una guía puede citar «40 y 205 a 210»).
+                        tramos = [
+                            (int(f.get("pagina_inicio") or 0), int(f.get("pagina_fin") or 0))
+                            for f in lesson.get("fuentes") or []
+                            if f.get("fuente_nombre") == f0.get("fuente_nombre")
+                        ]
+                        tramos = [(x, y) for x, y in tramos if 1 <= x <= y <= len(doc)]
+                        if not tramos:
                             continue
-                        fname = f"{codigo}/paginas_{a:03d}-{b:03d}.pdf"
+                        a, b = tramos[0][0], max(y for _, y in tramos)
+                        if len(tramos) == 1:
+                            fname = f"{codigo}/paginas_{a:03d}-{tramos[0][1]:03d}.pdf"
+                        else:
+                            fname = f"{codigo}/paginas_" + "_".join(f"{x:03d}-{y:03d}" for x, y in tramos) + ".pdf"
                         st = storage("docs")
                         if not opts["overwrite"] and st.exists(fname):
                             url, nuevo = st.url(fname), False
                         else:
-                            url, nuevo = st.save(fname, book_pages_pdf(doc, a, b)), True
+                            url, nuevo = st.save(fname, book_pages_pdf(doc, a, b, tramos)), True
                         subidos += nuevo
                         reutilizados += not nuevo
-                        etiqueta = f"{a}" if a == b else f"{a}-{b}"
+                        etiqueta = ", ".join(f"{x}" if x == y else f"{x}-{y}" for x, y in tramos)
                         upsert_recurso(lesson, {
                             "tipo": "pdf", "rol": "paginas_libro", "clave": "paginas", "url": url,
                             "orden": 1001, "titulo": f"Páginas del libro ({etiqueta})",
-                            "meta": {"paginas": [a, b], "fuente": f0.get("fuente_nombre") or ""},
+                            "meta": {"paginas": [a, b], "tramos": tramos, "fuente": f0.get("fuente_nombre") or ""},
                         })
                         paginas += 1
                 self.stdout.write(f"Páginas del libro: {paginas} lecciones.")

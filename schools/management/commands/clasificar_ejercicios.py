@@ -128,7 +128,8 @@ class Command(BaseCommand):
         if not o["curso"] or not o["out"]:
             raise CommandError("Usa --curso y --out (o --aplicar <json>).")
         curso = Curso.objects.filter(codigo=o["curso"]).first()
-        if curso is None:
+        # --lecciones solo trabaja sobre el JSON del curso: no exige que esté en la BD.
+        if curso is None and not o["lecciones"]:
             raise CommandError(f"No existe el curso {o['curso']!r}.")
         if not LLMClient.is_available():
             raise CommandError("Falta ANTHROPIC_API_KEY.")
@@ -204,13 +205,16 @@ class Command(BaseCommand):
                 self.stdout.write(f"  U{l['unidad_orden']}.{l['posicion']} {l['nombre']}: {l.get('categoria')} → {nueva}")
                 l["categoria"] = nueva
                 cambios += 1
-        for l in data["lessons"]:
-            if l.get("anexo"):
-                l["categoria"] = "Señales de Tránsito"
-        for q in (l for l in data["lessons"] if l.get("tipo") == "quiz"):
-            cats = Counter(l["categoria"] for l in texto if str(l["unidad_orden"]) == str(q["unidad_orden"]))
-            if cats:
-                q["categoria"] = cats.most_common(1)[0][0]
+        # Quiz y anexos: la categoría más frecuente de las lecciones de su unidad
+        # (un anexo de señales, como el del curso B, va a «Señales de Tránsito»).
+        for x in data["lessons"]:
+            if x.get("tipo") == "quiz" or x.get("anexo"):
+                if x.get("anexo") and "señal" in (x.get("nombre") or "").lower():
+                    x["categoria"] = "Señales de Tránsito"
+                    continue
+                cats = Counter(l["categoria"] for l in texto if str(l["unidad_orden"]) == str(x["unidad_orden"]))
+                if cats:
+                    x["categoria"] = cats.most_common(1)[0][0]
         data.setdefault("revision_humana", []).append({
             "fase": "categorias", "fuente": f"clasificar_ejercicios --lecciones ({cli.model})",
             "aplicadas": cambios,

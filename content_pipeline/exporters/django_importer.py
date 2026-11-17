@@ -168,6 +168,19 @@ def import_a2_course(
         for lesson in lessons:
             summary.add("leccion_check")
             summary.add("fuente_sync", len(lesson.get("fuentes") or []))
+        curso_bd = Curso.objects.filter(codigo=curso_spec["codigo"]).first()
+        if prune and curso_bd is not None:
+            # Qué borraría --prune: lecciones que no están en el JSON (identidad = unidad +
+            # posición + nombre), el avance de alumnos en ellas y las unidades sobrantes.
+            from django.apps import apps
+            claves = {(int(l["unidad_orden"]), int(l["posicion"]), l["nombre"]) for l in lessons}
+            stale = [x.id for x in Leccion.objects.filter(curso=curso_bd).select_related("unidad")
+                     if (x.unidad.orden if x.unidad else None, x.posicion, x.nombre) not in claves]
+            summary.add("leccion_delete", len(stale))
+            avance = apps.get_model("accounts", "EstudianteLeccion").objects.filter(leccion_id__in=stale)
+            summary.add("avance_alumnos_delete", avance.count())
+            ordenes = {int(u["orden"]) for u in unidades_spec}
+            summary.add("unidad_delete", Unidad.objects.filter(curso=curso_bd).exclude(orden__in=ordenes).count())
         return summary
 
     touched_lesson_ids: set[int] = set()
@@ -248,6 +261,10 @@ def import_a2_course(
             stale = Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)
             summary.add("leccion_delete", stale.count())
             stale.delete()
+            # Unidades que ya no están en el JSON (p. ej. un curso que pasa de 8 a 7 unidades).
+            stale_u = Unidad.objects.filter(curso=curso).exclude(orden__in=list(unidades))
+            summary.add("unidad_delete", stale_u.count())
+            stale_u.delete()
 
     return summary
 
