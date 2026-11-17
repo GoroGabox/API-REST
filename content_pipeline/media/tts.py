@@ -221,8 +221,9 @@ def tts_available(name: str | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 # Precio aproximado en USD por 1.000 caracteres sintetizados (solo para estimar;
-# ajustar por env según el plan contratado).
-_USD_1K_DEFAULT = {"elevenlabs": 0.18, "openai": 0.017}
+# ajustar por env según el plan contratado). ElevenLabs API (nov. 2026): 0,08 por
+# 1k en multilingual v2 / v3 / v4; 0,04 en Flash/Turbo; igual en todos los planes.
+_USD_1K_DEFAULT = {"elevenlabs": 0.08, "openai": 0.017}
 
 
 def usd_por_1k(provider_name: str) -> float | None:
