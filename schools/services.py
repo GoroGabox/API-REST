@@ -54,10 +54,14 @@ def sync_media_mirror(leccion: Leccion, *, url_quitada: str | None = None) -> di
 def ejercicios_de_unidad(unidad, categoria_id=None):
     """Ejercicios del banco vinculados a la unidad (M2M ``Ejercicio.unidades``).
 
-    Sin las de selección múltiple: el quiz de lección de los clientes es de una
-    sola respuesta (siguen disponibles en el Gimnasio y el examen final)."""
+    Sin las de selección múltiple ni las que dependen de una imagen: el quiz de
+    lección de los clientes es de una sola respuesta y sin imagen (siguen
+    disponibles en el Gimnasio y el examen final, que sí las muestran)."""
+    from django.db.models import Q
+
     from .models import Ejercicio
-    qs = Ejercicio.objects.filter(unidades=unidad, multiple=False)
+    qs = (Ejercicio.objects.filter(unidades=unidad, multiple=False)
+          .filter(Q(imagen="") | Q(imagen__isnull=True) | Q(imagen="http://placeholder.url")))
     if categoria_id:
         qs = qs.filter(categoria_id=categoria_id)
     return qs.distinct()

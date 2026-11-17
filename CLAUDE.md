@@ -239,6 +239,28 @@ python manage.py import_course --file out/a4/a4_pub.json --prune --dry-run   # e
 python manage.py import_ejercicios --file out/a4/ejercicios_a4.json --curso A4
 ```
 
+Flujo CURSO HTML — conversión fiel de un curso interactivo (usado en C y D):
+```powershell
+# El HTML guarda todo en su <script>: MODULES (intro|core|extra), SVG (láminas, fig(k,pie)), SIGNS (webp) y el banco Q
+# (propias + OFFICIAL de CONASET; en D, REMAP/OVR reasignan módulos). `curso_html_extract.js` (node, contexto vm vacío)
+# evalúa solo la parte de datos. Módulo core = unidad; los extra = una unidad final (--titulo-extras); el intro lo cubre
+# la presentación. Lecciones = secciones h3 hasta ~4.000 caracteres; láminas SVG → PNG (PyMuPDF); div.key → recuadro.
+# La IA (Haiku) agrega Objetivo/Puntos clave/Resumen (guia_docx.completar_secciones) y clasifica el banco.
+python manage.py build_curso_html --html out/cd/zip/Curso-Licencia-Clase-C.html --codigo C --nombre "Curso Clase C" --precio 7000 `
+  --fuente "Curso Licencia Clase C (AutoTest, basado en CONASET)" --libro "Libro del Nuevo Conductor Motociclistas (CONASET)" `
+  --paginas "6-10,11-22,23-60,61-67,68-73,74-111,112-118,119-156,157-166,167-178" --out out/c/c_html.json --ejercicios out/c/ejercicios_c.json --publicar-imagenes s3
+# Luego clasificar_ejercicios --lecciones → publish_media (C con --paginas-libro --contenido libro_c.pdf) → import_course → import_ejercicios --curso → presentacion_curso.
+```
+- `--publicar-imagenes` sube las imágenes del banco (señales) y deja la URL en `imagen`; `import_ejercicios` la guarda (y completa filas con placeholder). Las preguntas con imagen **no entran al quiz de unidad** (`ejercicios_de_unidad`; el quiz de lección de los clientes no muestra imágenes), sí al Gimnasio y al examen.
+
+### Presentación inicial «Antes de empezar» (`presentacion_curso`)
+
+Todo curso lleva una **unidad 0 «Antes de empezar»** con la lección de lectura «Requisitos y exámenes» (qué habilita la licencia, requisitos, declaración jurada, camino, examen teórico y práctico, qué llevar, salud, preguntas frecuentes).
+- Fuente en `content_pipeline/presentaciones/`: `<LICENCIA>.md` (front matter `licencia`, `renovacion`, `fuentes`; `C1` usa `C.md`) + `comun_declaracion.md` (en `{{declaracion}}`, o antes de «### El camino a la licencia») + `comun_salud_faq.md` (en `{{salud_faq}}`, o al final) + `medios.json` (URLs en R2 de los 2 PDF de las declaraciones). Armado en `content_pipeline/processors/presentacion.py`.
+- `python manage.py presentacion_curso --curso B [--curso A4…] [--dry-run] [--mostrar]` (sin IA, idempotente; `content_pipeline.exporters.django_importer.importar_presentacion`): upsert de la unidad 0 + lección (posición 1); a los alumnos que ya completaron las demás lecciones les marca también esta (no pierden la elegibilidad del examen final). `--subir-medios --storage s3 --pdf-dir …` sube los PDF y reescribe `medios.json` (una vez, desde local).
+- Los PDF van como enlaces en el texto, no como recursos `pdf/descarga` (el espejo los copiaría a `url_pdf`).
+- `import_course --prune` **no borra la unidad 0** (`ORDEN_PRESENTACION`), aunque el JSON del curso no la traiga.
+
 Flujo LEGACY — estructura inferida (fallback):
 ```powershell
 # Estructura/densidad inferidas por IA desde el contenido. --temario opcional (checklist).

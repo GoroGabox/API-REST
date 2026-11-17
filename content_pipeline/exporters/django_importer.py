@@ -11,6 +11,10 @@ from content_pipeline import taxonomy
 from schools.models import Categoria, Curso, Ejercicio, Leccion, LeccionFuente, LeccionRecurso, PlanCurso, Unidad
 from schools.services import PLACEHOLDER_URL, sync_media_mirror
 
+# Unidad «Antes de empezar» (presentación inicial): la crea ``presentacion_curso`` y
+# ``--prune`` no la borra aunque el JSON del curso no la traiga.
+ORDEN_PRESENTACION = 0
+
 
 @dataclass
 class ImportSummary:
@@ -175,11 +179,12 @@ def import_a2_course(
             from django.apps import apps
             claves = {(int(l["unidad_orden"]), int(l["posicion"]), l["nombre"]) for l in lessons}
             stale = [x.id for x in Leccion.objects.filter(curso=curso_bd).select_related("unidad")
-                     if (x.unidad.orden if x.unidad else None, x.posicion, x.nombre) not in claves]
+                     if (x.unidad.orden if x.unidad else None, x.posicion, x.nombre) not in claves
+                     and (x.unidad is None or x.unidad.orden != ORDEN_PRESENTACION)]
             summary.add("leccion_delete", len(stale))
             avance = apps.get_model("accounts", "EstudianteLeccion").objects.filter(leccion_id__in=stale)
             summary.add("avance_alumnos_delete", avance.count())
-            ordenes = {int(u["orden"]) for u in unidades_spec}
+            ordenes = {int(u["orden"]) for u in unidades_spec} | {ORDEN_PRESENTACION}
             summary.add("unidad_delete", Unidad.objects.filter(curso=curso_bd).exclude(orden__in=ordenes).count())
         return summary
 
@@ -258,11 +263,13 @@ def import_a2_course(
             _sync_recursos(leccion, lesson, summary)
 
         if prune:
-            stale = Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)
+            # La unidad 0 («Antes de empezar») la gestiona ``presentacion_curso``: no se poda.
+            stale = (Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)
+                     .exclude(unidad__orden=ORDEN_PRESENTACION))
             summary.add("leccion_delete", stale.count())
             stale.delete()
             # Unidades que ya no están en el JSON (p. ej. un curso que pasa de 8 a 7 unidades).
-            stale_u = Unidad.objects.filter(curso=curso).exclude(orden__in=list(unidades))
+            stale_u = Unidad.objects.filter(curso=curso).exclude(orden__in=[*unidades, ORDEN_PRESENTACION])
             summary.add("unidad_delete", stale_u.count())
             stale_u.delete()
 
@@ -341,7 +348,7 @@ def import_ejercicios(
     - Con ``curso``: cada ítem con ``unidad_orden`` se vincula a esa unidad del
       curso (``EjercicioUnidad(origen='docx')``). Si el ejercicio ya existía
       (p. ej. vino de otra licencia) solo se agrega el vínculo.
-    - Guarda ``grupo`` y ``fuente`` si vienen (sin pisar valores existentes).
+    - Guarda ``grupo``, ``fuente`` e ``imagen`` (URL) si vienen (sin pisar valores existentes).
     - Multi-respuesta: ``respuestas_correctas`` guarda las keys; con respuesta
       única además se setea ``respuesta`` (texto) por compatibilidad.
     - Se omiten los ítems ``diferir``.
@@ -428,7 +435,7 @@ def import_ejercicios(
                     curso=None,
                     leccion=None,
                     pregunta=pregunta,
-                    imagen="http://placeholder.url",
+                    imagen=e.get("imagen") or "http://placeholder.url",
                     opcion_a=opciones.get("a"),
                     opcion_b=opciones.get("b"),
                     opcion_c=opciones.get("c"),
@@ -455,6 +462,9 @@ def import_ejercicios(
                 if e.get(campo) and not getattr(ejercicio, campo):
                     setattr(ejercicio, campo, e[campo][:largo])
                     cambios.append(campo)
+            if e.get("imagen") and ejercicio.imagen in ("", "http://placeholder.url"):
+                ejercicio.imagen = e["imagen"]
+                cambios.append("imagen")
             if cambios:
                 ejercicio.save(update_fields=cambios)
             if unidad is not None:
@@ -464,4 +474,65 @@ def import_ejercicios(
         if dry_run:
             transaction.set_rollback(True)
 
+    return summary
+
+
+def importar_presentacion(curso: Curso, leccion_spec: dict[str, Any], dry_run: bool = False) -> ImportSummary:
+    """Upsert de la unidad 0 «Antes de empezar» con la lección de presentación.
+
+    No toca las demás unidades ni lecciones (la clave del importador es unidad +
+    posición + nombre). A los alumnos que ya completaron todas las demás lecciones
+    del curso les registra también esta, para que no pierdan la elegibilidad del
+    examen final (que exige todas las lecciones).
+    """
+    from django.apps import apps
+
+    from content_pipeline.processors.presentacion import LECCION_NOMBRE, UNIDAD_NOMBRE
+
+    EstudianteLeccion = apps.get_model("accounts", "EstudianteLeccion")
+    summary = ImportSummary(dry_run=dry_run)
+    with transaction.atomic():
+        unidad, creada = Unidad.objects.update_or_create(
+            curso=curso, orden=ORDEN_PRESENTACION,
+            defaults={"nombre": UNIDAD_NOMBRE, "descripcion": "Requisitos, exámenes y trámite de la licencia"},
+        )
+        summary.add("unidad_create" if creada else "unidad_update")
+        categoria = _get_or_create_categoria("General", {}, summary)
+        lesson = {
+            "tipo": "texto", "nombre": LECCION_NOMBRE, "contenido": leccion_spec["contenido"],
+            "descripcion": "Qué necesitas para postular a la licencia y cómo son los exámenes.",
+            "duracion_min": leccion_spec.get("duracion_min") or 15,
+            "recursos": leccion_spec.get("recursos") or [],
+        }
+        leccion = Leccion.objects.filter(curso=curso, unidad=unidad, posicion=1).first()
+        if leccion is None:
+            leccion = Leccion.objects.create(curso=curso, unidad=unidad, posicion=1, nombre=LECCION_NOMBRE,
+                                             **_lesson_defaults(lesson, categoria))
+            summary.add("leccion_create")
+        else:
+            defaults = {**_lesson_defaults(lesson, categoria), "nombre": LECCION_NOMBRE}
+            for campo, valor in defaults.items():
+                setattr(leccion, campo, valor)
+            leccion.save(update_fields=list(defaults))
+            summary.add("leccion_update")
+        LeccionFuente.objects.filter(leccion=leccion).delete()
+        for fuente in leccion_spec.get("fuentes") or []:
+            LeccionFuente.objects.create(leccion=leccion, fuente_nombre=str(fuente)[:255], pagina_inicio=0,
+                                         pagina_fin=0, tema_regulatorio=LECCION_NOMBRE)
+        _sync_recursos(leccion, lesson, summary)
+
+        otras = list(Leccion.objects.filter(curso=curso).exclude(id=leccion.id).values_list("id", flat=True))
+        if otras:
+            vistas: dict[int, int] = defaultdict(int)
+            for est in EstudianteLeccion.objects.filter(leccion_id__in=otras).values_list("estudiante_id", flat=True):
+                vistas[est] += 1
+            completos = [e for e, n in vistas.items() if n >= len(otras)]
+            ya = set(EstudianteLeccion.objects.filter(leccion=leccion, estudiante_id__in=completos)
+                     .values_list("estudiante_id", flat=True))
+            nuevos = [e for e in completos if e not in ya]
+            EstudianteLeccion.objects.bulk_create(
+                [EstudianteLeccion(estudiante_id=e, leccion=leccion, curso=curso) for e in nuevos])
+            summary.add("avance_completado", len(nuevos))
+        if dry_run:
+            transaction.set_rollback(True)
     return summary
