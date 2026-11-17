@@ -8,7 +8,6 @@ from django.test import TestCase, TransactionTestCase
 from content_pipeline.exporters.django_importer import import_generated_course
 from schools.models import Leccion, LeccionRecurso
 from schools.serializers import LeccionDetalleSerializer
-from schools.services import PLACEHOLDER_URL
 
 MANIFEST = {"curso": {"codigo": "REC", "nombre": "Curso Rec", "descripcion": "d"},
             "unidades": [{"orden": 1, "nombre": "U1", "categoria": "General"}]}
@@ -33,11 +32,18 @@ class ImportRecursosTests(TestCase):
         lec = self._import(_lesson(recursos=[FIG, AUDIO]))
         self.assertEqual(sorted(lec.recursos.values_list("clave", flat=True)), ["F-aaa", "audio"])
         self.assertEqual(lec.url_audio, "http://cdn/a.mp3")                       # espejo
-        # Re-import sin el audio: se borra el recurso y el espejo vuelve a placeholder.
-        lec = self._import(_lesson(recursos=[{**FIG, "meta": {"pie": "Nuevo pie"}}]))
-        self.assertEqual(list(lec.recursos.values_list("clave", flat=True)), ["F-aaa"])
-        self.assertEqual(lec.recursos.get().meta["pie"], "Nuevo pie")             # update, no duplica
-        self.assertEqual(lec.url_audio, PLACEHOLDER_URL)
+        # Re-import sin la figura ni el audio: la figura se borra; la narración se conserva
+        # (un JSON sin audio nunca borra el audio publicado, ver test_import_audio).
+        lec = self._import(_lesson(recursos=[{**FIG, "clave": "F-bbb", "meta": {"pie": "Nuevo pie"}}]))
+        self.assertEqual(sorted(lec.recursos.values_list("clave", flat=True)), ["F-bbb", "audio"])
+        self.assertEqual(lec.url_audio, "http://cdn/a.mp3")
+        # Re-import con la figura: update, no duplica.
+        lec = self._import(_lesson(recursos=[{**FIG, "clave": "F-bbb", "meta": {"pie": "Otro"}}]))
+        self.assertEqual(lec.recursos.get(clave="F-bbb").meta["pie"], "Otro")
+        # Un audio con otra clave reemplaza la narración anterior y el espejo la sigue.
+        lec = self._import(_lesson(recursos=[{**AUDIO, "clave": "audio2", "url": "http://cdn/b.mp3"}]))
+        self.assertEqual(list(lec.recursos.values_list("clave", flat=True)), ["audio2"])
+        self.assertEqual(lec.url_audio, "http://cdn/b.mp3")
 
     def test_resource_without_url_keeps_published_one(self):
         self._import(_lesson(recursos=[FIG]))

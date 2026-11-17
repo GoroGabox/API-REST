@@ -11,6 +11,11 @@ Uso típico:
 
 `--dry-run` reporta qué crearía/actualizaría sin escribir; úsalo siempre antes de
 aplicar en producción.
+
+`--solo-audio` lleva solo el audio (salida de `generate_media`) a un curso ya
+importado: `transcripcion` + recurso audio/narración de cada lección existente; no
+toca texto, figuras, quiz, unidades ni avance. Un import normal con un JSON sin
+audio tampoco borra el audio ni la transcripción publicados.
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from content_pipeline.exporters.django_importer import import_a2_course
+from content_pipeline.exporters.django_importer import import_a2_course, import_audio_curso
 from content_pipeline.exporters.json_exporter import read_json
 from content_pipeline.processors.validators import import_blockers
 from schools.models import Curso
@@ -47,6 +52,12 @@ class Command(BaseCommand):
             help="Elimina lecciones del curso que no estén en el JSON "
                  "(destructivo: borra progresos vinculados por CASCADE).",
         )
+        parser.add_argument(
+            "--solo-audio",
+            action="store_true",
+            help="Actualiza SOLO transcripción + recurso de audio (narración) de las lecciones "
+                 "que ya existen; no toca texto, figuras, quiz, unidades ni avance.",
+        )
 
     def handle(self, *args, **opts):
         if opts.get("file"):
@@ -62,6 +73,10 @@ class Command(BaseCommand):
             raise CommandError("Indica --file, o bien --manifest y --lessons juntos.")
 
         codigo = (manifest.get("curso") or {}).get("codigo", "?")
+        if opts["solo_audio"]:
+            if opts["prune"]:
+                raise CommandError("--solo-audio no admite --prune.")
+            return self._solo_audio(manifest, lessons, codigo, opts["dry_run"])
         bloqueos, _v = import_blockers({"manifest": manifest, "lessons": lessons,
                                          "auditoria": data.get("auditoria") if opts.get("file") else None})
         if bloqueos:
@@ -95,3 +110,19 @@ class Command(BaseCommand):
             ))
         else:
             self.stdout.write(self.style.SUCCESS("Importación lista."))
+
+    def _solo_audio(self, manifest, lessons, codigo, dry_run):
+        accion = "DRY-RUN" if dry_run else "IMPORT"
+        self.stdout.write(f"Curso: {codigo} · {len(lessons)} lecciones · {accion} solo audio")
+        try:
+            summary, no_encontradas = import_audio_curso(manifest, lessons, dry_run=dry_run)
+        except Exception as exc:
+            raise CommandError(str(exc)) from exc
+        for line in summary.as_lines():
+            self.stdout.write(f"  {line}")
+        for ref in no_encontradas:
+            self.stderr.write(self.style.WARNING(f"  NO ENCONTRADA {ref}"))
+        if dry_run:
+            self.stdout.write(self.style.SUCCESS("Dry-run listo (sin cambios en la BD)."))
+        else:
+            self.stdout.write(self.style.SUCCESS("Audio importado."))

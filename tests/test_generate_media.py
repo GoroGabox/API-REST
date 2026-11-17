@@ -22,9 +22,10 @@ from content_pipeline.media.narration import (
     audit_script,
     build_narration_script_meta,
     has_findings,
+    split_sections,
 )
 from content_pipeline.media.storage import S3Storage
-from content_pipeline.media.tts import OpenAITTS, TTSError, _chunk_text
+from content_pipeline.media.tts import OpenAITTS, TTSError, _chunk_text, mp3_duracion_seg
 
 MOD = "schools.management.commands.generate_media."
 
@@ -48,16 +49,21 @@ class _StubTTS:
         return "mp3"
 
 
+RELLENO = " Conduce con atención y respeta siempre las normas del tránsito." * 5
+
+
 def _course_json():
     return {
         "manifest": {"curso": {"nombre": "Curso Demo", "codigo": "DEMO"}, "unidades": []},
         "lessons": [
             {"nombre": "Lección Uno", "tipo": "texto", "posicion": 1,
-             "contenido": "# Uno\n\nContenido de la lección uno.", "transcripcion": ""},
+             "contenido": "# Uno\n\nContenido de la lección uno." + RELLENO, "transcripcion": ""},
             {"nombre": "Quiz Uno", "tipo": "quiz", "posicion": 2,
              "contenido": {"questions": []}, "transcripcion": ""},
             {"nombre": "Lección Dos", "tipo": "texto", "posicion": 3,
-             "contenido": "# Dos\n\nLímite de 60 km/h en zona urbana.", "transcripcion": ""},
+             "contenido": "# Dos\n\nLímite de 60 km/h en zona urbana." + RELLENO, "transcripcion": ""},
+            {"nombre": "Anexo: Señales", "tipo": "texto", "posicion": 4, "anexo": True,
+             "contenido": "# Señales\n\n## Desarrollo\n\n{{figura:F-1}}" + RELLENO, "transcripcion": ""},
         ],
     }
 
@@ -73,7 +79,12 @@ class ChunkTextTests(TestCase):
         self.assertTrue(all(len(c) <= 100 for c in chunks))
 
 
-class GenerateMediaCommandTests(TestCase):
+def _guion(base: str, nombre: str) -> str:
+    """Guion del stub: distinto por lección (el archivo de audio sale del hash del guion)."""
+    return base if nombre == "Lección Uno" else f"{base} Segunda lección."
+
+
+class _MediaCase(TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.file = self.tmp / "curso.json"
@@ -88,7 +99,7 @@ class GenerateMediaCommandTests(TestCase):
         with patch("content_pipeline.llm.client.LLMClient.is_available", lambda: False), \
              patch(MOD + "get_tts_provider", return_value=tts), \
              patch(MOD + "build_narration_script_meta",
-                   return_value=NarrationResult(guion)) as narr:
+                   side_effect=lambda contenido, nombre, client: NarrationResult(_guion(guion, nombre))) as narr:
             call_command(
                 "generate_media",
                 file=str(self.file),
@@ -100,20 +111,22 @@ class GenerateMediaCommandTests(TestCase):
             )
         return tts, narr
 
+
+class GenerateMediaCommandTests(_MediaCase):
     def test_locuta_solo_lecciones_texto(self):
         self._run()
-        uno, quiz, dos = self._data()["lessons"]
+        uno, quiz, dos = self._data()["lessons"][:3]
 
         for texto in (uno, dos):
             self.assertTrue(texto["url_audio"].startswith("http://test/media/course_audio/"))
             self.assertTrue(texto["url_audio"].endswith(".mp3"))
-            self.assertEqual(texto["transcripcion"], "Guion de prueba locutado.")
+            self.assertEqual(texto["transcripcion"], _guion("Guion de prueba locutado.", texto["nombre"]))
             self.assertEqual(texto["audio_meta"]["provider"], "stub")
 
         # El quiz no se locuta.
         self.assertNotIn("url_audio", quiz)
         self.assertEqual(quiz["transcripcion"], "")
-        self.assertEqual(len(list(self.media.glob("*.mp3"))), 2)
+        self.assertEqual(len(list(self.media.rglob("*.mp3"))), 2)
 
     def test_provider_no_configurado_falla(self):
         with patch(MOD + "get_tts_provider", side_effect=TTSError("Falta ELEVENLABS_API_KEY.")):
@@ -125,7 +138,7 @@ class GenerateMediaCommandTests(TestCase):
 
     def test_no_regenera_si_existe_y_conserva_guion(self):
         self._run()
-        primero = next(self.media.glob("*.mp3"))
+        primero = next(self.media.rglob("*.mp3"))
         mtime = primero.stat().st_mtime_ns
         # Segunda corrida sin --overwrite: no reescribe el audio ni rehace el guion.
         tts, narr = self._run()
@@ -157,7 +170,7 @@ class GenerateMediaCommandTests(TestCase):
         tts, narr = self._run(solo_audio=True)
         narr.assert_not_called()
         self.assertEqual(tts.calls, 1)
-        uno, _, dos = self._data()["lessons"]
+        uno, _, dos = self._data()["lessons"][:3]
         self.assertTrue(uno["url_audio"].endswith(".mp3"))
         self.assertEqual(uno["transcripcion"], "Guion revisado a mano.")
         self.assertNotIn("url_audio", dos)
@@ -171,10 +184,10 @@ class GenerateMediaCommandTests(TestCase):
     def test_guardado_incremental_ante_fallo(self):
         with self.assertRaises(CommandError):
             self._run(tts=_StubTTS(fail_on=2))
-        uno, _, dos = self._data()["lessons"]
+        uno, _, dos = self._data()["lessons"][:3]
         self.assertTrue(uno["url_audio"].endswith(".mp3"))
         # El guion de la lección que falló quedó guardado para retomar.
-        self.assertEqual(dos["transcripcion"], "Guion de prueba locutado.")
+        self.assertEqual(dos["transcripcion"], _guion("Guion de prueba locutado.", "Lección Dos"))
         self.assertNotIn("url_audio", dos)
 
 
@@ -209,6 +222,127 @@ class AuditScriptTests(TestCase):
         res = build_narration_script_meta("# Hola\n\nContenido.", nombre="X", client=client)
         self.assertEqual(client.max_tokens, [4000, 8000])
         self.assertFalse(res.truncado)
+
+    def test_leccion_larga_se_locuta_por_tramos(self):
+        class _Client:
+            def __init__(self):
+                self.users = []
+
+            def complete_meta(self, **kw):
+                self.users.append(kw["user"])
+                return LLMResponse(text=f"tramo {len(self.users)}", stop_reason="end_turn")
+
+        seccion = "Texto de la sección. " * 200            # ~4.200 caracteres
+        contenido = f"# L\n\n## Uno\n\n{seccion}\n\n## Dos\n\n{seccion}\n\n## Tres\n\n{seccion}"
+        client = _Client()
+        res = build_narration_script_meta(contenido, nombre="X", client=client)
+        self.assertEqual(len(client.users), 3)
+        self.assertNotIn("CONTINUACIÓN", client.users[0])
+        self.assertIn("CONTINUACIÓN (parte 2 de 3)", client.users[1])
+        self.assertEqual(res.script, "tramo 1\n\ntramo 2\n\ntramo 3")
+
+
+class SplitSectionsTests(TestCase):
+    def test_corto_un_tramo(self):
+        self.assertEqual(split_sections("## A\n\nHola."), ["## A\n\nHola."])
+
+    def test_respeta_tope_y_no_pierde_texto(self):
+        texto = "\n\n".join(f"## S{i}\n\n" + ("palabra " * 300) for i in range(8))
+        tramos = split_sections(texto, max_chars=5000)
+        self.assertGreater(len(tramos), 1)
+        self.assertTrue(all(len(t) <= 5000 for t in tramos))
+        self.assertEqual("".join(tramos).replace("\n", "").replace(" ", ""),
+                         texto.replace("\n", "").replace(" ", ""))
+
+
+class AudioNuevoTests(_MediaCase):
+    """Nombre por hash, guion obsoleto, anexos, estimación y duración."""
+
+    def test_nombre_por_hash_en_carpeta_del_curso(self):
+        self._run()
+        uno = self._data()["lessons"][0]
+        archivo = uno["audio_meta"]["archivo"]
+        self.assertRegex(archivo, r"^demo/[0-9a-f]{16}\.mp3$")
+        self.assertTrue(uno["url_audio"].endswith(archivo))
+        self.assertEqual(uno["audio_meta"]["hash_audio"], archivo.split("/")[1][:16])
+        self.assertTrue((self.media / archivo).exists())
+
+    def test_otra_voz_genera_otro_archivo(self):
+        self._run()
+        primero = self._data()["lessons"][0]["audio_meta"]["archivo"]
+        otra = _StubTTS()
+        otra.voice_id = "v2"
+        tts, _ = self._run(tts=otra)
+        self.assertEqual(tts.calls, 2)
+        segundo = self._data()["lessons"][0]["audio_meta"]["archivo"]
+        self.assertNotEqual(primero, segundo)
+        self.assertEqual(len(list(self.media.rglob("*.mp3"))), 4)
+
+    def test_no_locuta_anexo(self):
+        self._run()
+        data = self._data()
+        anexo = data["lessons"][3]
+        self.assertEqual(anexo["transcripcion"], "")
+        self.assertNotIn("url_audio", anexo)
+        self.assertEqual(data["auditoria_audio"]["omitidas"],
+                         [{"leccion": "Anexo: Señales", "motivo": "anexo"}])
+
+    def test_texto_cambiado_rehace_solo_esa_leccion(self):
+        self._run()
+        data = self._data()
+        data["lessons"][2]["contenido"] += " Nueva regla agregada por la revisión."
+        self.file.write_text(json.dumps(data), encoding="utf-8")
+        tts, narr = self._run(guion="Guion corregido.")
+        self.assertEqual(narr.call_count, 1)
+        self.assertEqual(tts.calls, 1)
+        uno, _, dos = self._data()["lessons"][:3]
+        self.assertEqual(uno["transcripcion"], "Guion de prueba locutado.")
+        self.assertEqual(dos["transcripcion"], _guion("Guion corregido.", "Lección Dos"))
+        self.assertEqual(self._data()["auditoria_audio"]["obsoletas"], [])
+
+    def test_solo_audio_no_sintetiza_guion_obsoleto(self):
+        self._run(solo_guion=True)
+        data = self._data()
+        data["lessons"][0]["contenido"] += " Cambio posterior al guion."
+        self.file.write_text(json.dumps(data), encoding="utf-8")
+        tts, narr = self._run(solo_audio=True)
+        narr.assert_not_called()
+        self.assertEqual(tts.calls, 1)                      # solo la lección dos
+        self.assertNotIn("url_audio", self._data()["lessons"][0])
+        self.assertEqual(self._data()["auditoria_audio"]["obsoletas"], ["Lección Uno"])
+
+    def test_solo_estimar_no_escribe(self):
+        antes = self.file.read_text(encoding="utf-8")
+        out = StringIO()
+        with patch(MOD + "get_tts_provider", return_value=_StubTTS()):
+            call_command("generate_media", file=str(self.file), solo_estimar=True, stdout=out)
+        self.assertEqual(self.file.read_text(encoding="utf-8"), antes)
+        self.assertIn("Pendiente: 2 guiones · 2 audios", out.getvalue())
+
+    def test_estimar_descuenta_audios_existentes(self):
+        self._run()
+        out = StringIO()
+        with patch(MOD + "get_tts_provider", return_value=_StubTTS()):
+            call_command("generate_media", file=str(self.file), solo_estimar=True, stdout=out)
+        self.assertIn("Pendiente: 0 guiones · 0 audios", out.getvalue())
+
+    def test_duracion_del_mp3(self):
+        # Frame MPEG-1 Layer III a 128 kbps: 16.000 bytes ≈ 1 segundo.
+        frame = bytes([0xFF, 0xFB, 0x90, 0x00])
+        audio = frame + b"\x00" * (16000 * 3 - 4)
+        self.assertEqual(mp3_duracion_seg(audio), 3)
+        self.assertIsNone(mp3_duracion_seg(b"no es mp3"))
+
+        class _TTS(_StubTTS):
+            def synthesize(self, text):
+                self.calls += 1
+                return audio
+
+        self._run(tts=_TTS())
+        uno = self._data()["lessons"][0]
+        self.assertEqual(uno["audio_meta"]["duracion_seg"], 3)
+        rec = next(r for r in uno["recursos"] if r["tipo"] == "audio")
+        self.assertEqual(rec["meta"]["duracion_seg"], 3)
 
 
 class OpenAITTSTests(TestCase):

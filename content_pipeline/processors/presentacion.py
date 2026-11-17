@@ -95,3 +95,48 @@ def componer(codigo: str, urls: dict[str, str], carpeta: Path = CARPETA) -> dict
     return {"nombre": LECCION_NOMBRE, "contenido": contenido, "recursos": recursos,
             "fuentes": list(meta["fuentes"]), "licencia": meta.get("licencia") or codigo}
 
+
+
+# ---------------------------------------------------------------------------
+# Audio de la presentación (``presentacion_curso --audio``)
+# ---------------------------------------------------------------------------
+# ``audio.json`` (versionado, como ``medios.json``) guarda por licencia el guion y la
+# URL del audio, más la huella del texto con que se generó. Así prod enlaza el audio
+# sin claves de TTS, y un cambio en los .md lo marca como desactualizado.
+
+def audio_cache(carpeta: Path | None = None) -> dict[str, dict[str, Any]]:
+    p = (carpeta or CARPETA) / "audio.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def guardar_audio_cache(datos: dict[str, dict[str, Any]], carpeta: Path | None = None) -> Path:
+    p = (carpeta or CARPETA) / "audio.json"
+    p.write_text(json.dumps(datos, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return p
+
+
+def hash_texto(spec: dict[str, Any]) -> str:
+    from content_pipeline.media.narration import content_hash
+
+    return content_hash(spec["contenido"])
+
+
+def audio_vigente(spec: dict[str, Any], carpeta: Path | None = None) -> tuple[dict[str, Any] | None, bool]:
+    """``(entrada, vigente)`` del audio de la licencia de ``spec`` en ``audio.json``."""
+    entrada = audio_cache(carpeta).get(str(spec["licencia"]))
+    if not entrada:
+        return None, False
+    return entrada, entrada.get("hash_texto") == hash_texto(spec)
+
+
+def aplicar_audio(spec: dict[str, Any], entrada: dict[str, Any]) -> dict[str, Any]:
+    """Agrega a ``spec`` la transcripción y el recurso de narración de ``entrada``."""
+    meta = {"archivo": entrada.get("archivo", "")}
+    if entrada.get("duracion_seg"):
+        meta["duracion_seg"] = entrada["duracion_seg"]
+    spec = {**spec, "transcripcion": entrada.get("transcripcion", "")}
+    spec["recursos"] = [r for r in spec.get("recursos") or [] if r.get("tipo") != "audio"] + [{
+        "tipo": "audio", "rol": "narracion", "clave": "audio", "url": entrada["url"],
+        "orden": 1000, "titulo": "Narración de la lección", "meta": meta,
+    }]
+    return spec

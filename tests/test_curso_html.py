@@ -184,6 +184,69 @@ class PresentacionTests(TestCase):
         self.assertTrue(Leccion.objects.filter(id=pres.id).exists())
         self.assertFalse(Leccion.objects.filter(id=self.l2.id).exists())
 
+    def _entrada(self, spec, **extra):
+        return {"hash_texto": P.hash_texto(spec), "transcripcion": "Guion de la presentación.",
+                "url": "https://m.example/presentacion/abc.mp3", "archivo": "presentacion/abc.mp3",
+                "provider": "stub", "voz": "v1", "duracion_seg": 300, **extra}
+
+    def test_audio_vigente_se_enlaza_al_importar(self):
+        spec = P.componer("B", self.urls, self.carpeta)
+        P.guardar_audio_cache({"B": self._entrada(spec)}, self.carpeta)
+        entrada, vigente = P.audio_vigente(spec, self.carpeta)
+        self.assertTrue(vigente)
+        importar_presentacion(self.curso, P.aplicar_audio(spec, entrada))
+        pres = Leccion.objects.get(curso=self.curso, unidad__orden=0)
+        self.assertEqual(pres.transcripcion, "Guion de la presentación.")
+        self.assertEqual(pres.url_audio, "https://m.example/presentacion/abc.mp3")
+        self.assertEqual(pres.recursos.get(clave="audio").meta["duracion_seg"], 300)
+        # Re-importar sin audio (texto cambiado) conserva la narración publicada.
+        importar_presentacion(self.curso, spec)
+        pres.refresh_from_db()
+        self.assertEqual(pres.url_audio, "https://m.example/presentacion/abc.mp3")
+        self.assertEqual(pres.transcripcion, "Guion de la presentación.")
+
+    def test_audio_con_texto_cambiado_no_esta_vigente(self):
+        spec = P.componer("B", self.urls, self.carpeta)
+        P.guardar_audio_cache({"B": self._entrada(spec, hash_texto="otro")}, self.carpeta)
+        entrada, vigente = P.audio_vigente(spec, self.carpeta)
+        self.assertIsNotNone(entrada)
+        self.assertFalse(vigente)
+
+    def test_comando_audio_genera_y_reutiliza(self):
+        from io import StringIO
+        from unittest.mock import patch
+
+        from content_pipeline.media.narration import NarrationResult
+        from content_pipeline.media.storage import LocalStorage
+
+        class _TTS:
+            name, voice_id, model = "stub", "v1", "m"
+            calls = 0
+
+            def synthesize(self, text):
+                _TTS.calls += 1
+                return b"ID3audio"
+
+            def extension(self):
+                return "mp3"
+
+        cache = {}
+        storage = LocalStorage(media_dir=self.carpeta / "audio", base_url="https://m.example/a/")
+        with patch.object(P, "audio_cache", lambda carpeta=None: dict(cache)), \
+             patch.object(P, "guardar_audio_cache", lambda datos, carpeta=None: cache.update(datos) or "audio.json"), \
+             patch("content_pipeline.media.tts.get_tts_provider", return_value=_TTS()), \
+             patch("content_pipeline.media.storage.get_audio_storage", return_value=storage), \
+             patch("content_pipeline.llm.client.LLMClient.is_available", lambda: True), \
+             patch("content_pipeline.media.narration.build_narration_script_meta",
+                   return_value=NarrationResult("Guion locutado.")) as narr:
+            for _ in range(2):
+                call_command("presentacion_curso", "--curso", "B", "--audio", stdout=StringIO(), stderr=StringIO())
+        self.assertEqual((narr.call_count, _TTS.calls), (1, 1))     # la 2.ª corrida reutiliza
+        self.assertEqual(cache["B"]["transcripcion"], "Guion locutado.")
+        pres = Leccion.objects.get(curso=self.curso, unidad__orden=0)
+        self.assertEqual(pres.url_audio, cache["B"]["url"])
+        self.assertTrue(cache["B"]["archivo"].startswith("presentacion/"))
+
 
 class ImagenBancoTests(TestCase):
     def test_imagen_se_guarda_y_no_entra_al_quiz_de_unidad(self):

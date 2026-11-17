@@ -214,3 +214,72 @@ def tts_available(name: str | None = None) -> bool:
         return True
     except TTSError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Utilidades compartidas por generate_media y presentacion_curso
+# ---------------------------------------------------------------------------
+
+# Precio aproximado en USD por 1.000 caracteres sintetizados (solo para estimar;
+# ajustar por env según el plan contratado).
+_USD_1K_DEFAULT = {"elevenlabs": 0.18, "openai": 0.017}
+
+
+def usd_por_1k(provider_name: str) -> float | None:
+    """Precio estimado por 1k caracteres (`TTS_USD_1K_<PROVIDER>` o el default)."""
+    raw = _conf(f"TTS_USD_1K_{provider_name.upper()}", "")
+    try:
+        return float(raw) if str(raw).strip() else _USD_1K_DEFAULT.get(provider_name)
+    except ValueError:
+        return _USD_1K_DEFAULT.get(provider_name)
+
+
+def audio_hash(script: str, provider) -> str:
+    """Huella del audio: mismo guion + proveedor + voz + modelo ⇒ mismo archivo."""
+    import hashlib
+
+    base = "|".join([
+        (script or "").strip(),
+        getattr(provider, "name", ""),
+        str(getattr(provider, "voice_id", "")),
+        str(getattr(provider, "model", "")),
+    ])
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def audio_filename(codigo: str, script: str, provider) -> str:
+    """``{codigo}/{hash}.{ext}``: re-correr no re-sintetiza; otro guion/voz ⇒ otro archivo."""
+    from django.utils.text import slugify
+
+    carpeta = slugify(codigo or "curso") or "curso"
+    return f"{carpeta}/{audio_hash(script, provider)}.{provider.extension()}"
+
+
+# Bitrates MPEG-1 / MPEG-2(.5) Layer III en kbps (índice 1-14 del header).
+_BITRATES_V1 = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+_BITRATES_V2 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
+
+
+def mp3_duracion_seg(data: bytes) -> int | None:
+    """Duración aproximada de un MP3 (bitrate del primer frame × tamaño).
+
+    Ambos proveedores entregan MP3 de bitrate constante; los tramos concatenados
+    comparten bitrate, así que basta el primer frame. ``None`` si no se reconoce.
+    """
+    if not data:
+        return None
+    i = 0
+    if data[:3] == b"ID3" and len(data) >= 10:
+        size = ((data[6] & 0x7F) << 21) | ((data[7] & 0x7F) << 14) | ((data[8] & 0x7F) << 7) | (data[9] & 0x7F)
+        i = 10 + size
+    limite = min(len(data) - 4, i + 64 * 1024)
+    while i < limite:
+        if data[i] == 0xFF and (data[i + 1] & 0xE0) == 0xE0:
+            version = (data[i + 1] >> 3) & 0x03      # 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+            layer = (data[i + 1] >> 1) & 0x03        # 1 = Layer III
+            idx = (data[i + 2] >> 4) & 0x0F
+            if layer == 1 and version != 1 and 0 < idx < 15:
+                kbps = (_BITRATES_V1 if version == 3 else _BITRATES_V2)[idx]
+                return max(1, round((len(data) - i) * 8 / (kbps * 1000)))
+        i += 1
+    return None

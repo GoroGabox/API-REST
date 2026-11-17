@@ -36,18 +36,26 @@ def _serialize_content(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _transcripcion(lesson: dict[str, Any]) -> str:
+    valor = lesson.get("transcripcion")
+    return valor if isinstance(valor, str) and valor.strip() else ""
+
+
 def _lesson_defaults(lesson: dict[str, Any], categoria: Categoria) -> dict[str, Any]:
-    return {
+    defaults = {
         "categoria": categoria,
         "tipo": lesson.get("tipo", "texto"),
         "descripcion": lesson.get("descripcion", ""),
         "contenido": _serialize_content(lesson.get("contenido", "")),
-        "transcripcion": lesson.get("transcripcion", ""),
         "duracion_min": int(lesson.get("duracion_min") or 0),
         "url_video": lesson.get("url_video", "http://placeholder.url") or "http://placeholder.url",
         "url_audio": lesson.get("url_audio", "http://placeholder.url") or "http://placeholder.url",
         "url_pdf": lesson.get("url_pdf", "") or "",
     }
+    # Un JSON sin guion no vacía la transcripción publicada (en creación queda "").
+    if _transcripcion(lesson):
+        defaults["transcripcion"] = _transcripcion(lesson)
+    return defaults
 
 
 _FIGURA_META = ("pie", "alt", "pagina", "ancho", "alto", "origen", "mapeo", "hash")
@@ -112,6 +120,10 @@ def _sync_recursos(leccion: Leccion, lesson: dict[str, Any], summary: "ImportSum
     stale = LeccionRecurso.objects.filter(leccion=leccion).exclude(clave__in=keep)
     if not todo:
         stale = stale.filter(rol__in=roles) if roles else stale.none()
+    elif not any(r.get("tipo") == "audio" for r in items):
+        # Un JSON sin audio nunca borra la narración publicada (el audio se genera y
+        # publica aparte con ``generate_media`` + ``import_course --solo-audio``).
+        stale = stale.exclude(rol="narracion")
     n = stale.count()
     if n:
         for obj in stale:          # uno a uno: dispara la señal del espejo
@@ -292,6 +304,83 @@ def import_generated_course(
     summary = import_a2_course(manifest, lessons, dry_run=dry_run, prune=prune)
     curso = Curso.objects.get(codigo=manifest["curso"]["codigo"])
     return summary, curso
+
+
+def _audios_de(lesson: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recursos de narración del JSON (``recursos`` audio o ``url_audio`` real)."""
+    items, _todo, _roles = _recursos_spec(lesson)
+    return [r for r in items if r.get("tipo") == "audio"]
+
+
+def import_audio_curso(
+    manifest: dict[str, Any],
+    lessons: list[dict[str, Any]],
+    dry_run: bool = False,
+) -> tuple[ImportSummary, list[str]]:
+    """Lleva SOLO el audio de un curso ya importado (``import_course --solo-audio``).
+
+    Por cada lección del JSON que ya exista (identidad del import: curso + unidad +
+    posición + nombre) actualiza ``transcripcion`` (si viene no vacía) y hace upsert
+    del recurso audio/narración (por clave) → espejo ``url_audio``. No toca texto,
+    figuras, quiz, fuentes, unidades ni avance de alumnos. Devuelve el resumen y las
+    lecciones del JSON que no existen en la BD.
+    """
+    summary = ImportSummary(dry_run=dry_run)
+    codigo = manifest["curso"]["codigo"]
+    curso = Curso.objects.filter(codigo=codigo).first()
+    if curso is None:
+        raise ValueError(f"El curso {codigo} no existe en la BD: importalo completo primero.")
+    no_encontradas: list[str] = []
+    with transaction.atomic():
+        for lesson in lessons:
+            ref = f"U{lesson.get('unidad_orden')}.{lesson.get('posicion')} «{lesson.get('nombre')}»"
+            leccion = Leccion.objects.filter(
+                curso=curso, unidad__orden=int(lesson["unidad_orden"]),
+                posicion=int(lesson["posicion"]), nombre=lesson["nombre"],
+            ).first()
+            if leccion is None:
+                no_encontradas.append(ref)
+                summary.add("leccion_no_encontrada")
+                continue
+            texto = _transcripcion(lesson)
+            audios = _audios_de(lesson)
+            if not texto and not audios:
+                summary.add("leccion_sin_audio")
+                continue
+            if texto:
+                if texto != leccion.transcripcion:
+                    summary.add("transcripcion_update")
+                    if not dry_run:
+                        leccion.transcripcion = texto
+                        leccion.save(update_fields=["transcripcion"])
+                else:
+                    summary.add("transcripcion_igual")
+            for r in audios:
+                if not r.get("url"):
+                    summary.add("recurso_sin_url")
+                    continue
+                clave = str(r["clave"])[:64]
+                actual = LeccionRecurso.objects.filter(leccion=leccion, clave=clave).first()
+                valores = {
+                    "tipo": "audio",
+                    "rol": r.get("rol") or "narracion",
+                    "url": r["url"],
+                    "orden": int(r.get("orden") or 0),
+                    "titulo": str(r.get("titulo") or "")[:255],
+                    "meta": r.get("meta") or {},
+                }
+                if actual is None:
+                    summary.add("recurso_create")
+                elif any(getattr(actual, k) != v for k, v in valores.items()):
+                    summary.add("recurso_update")
+                else:
+                    summary.add("recurso_igual")
+                    continue
+                if not dry_run:
+                    LeccionRecurso.objects.update_or_create(leccion=leccion, clave=clave, defaults=valores)
+            if not dry_run:
+                sync_media_mirror(leccion)
+    return summary, no_encontradas
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +592,7 @@ def importar_presentacion(curso: Curso, leccion_spec: dict[str, Any], dry_run: b
             "descripcion": "Qué necesitas para postular a la licencia y cómo son los exámenes.",
             "duracion_min": leccion_spec.get("duracion_min") or 15,
             "recursos": leccion_spec.get("recursos") or [],
+            "transcripcion": leccion_spec.get("transcripcion") or "",
         }
         leccion = Leccion.objects.filter(curso=curso, unidad=unidad, posicion=1).first()
         if leccion is None:

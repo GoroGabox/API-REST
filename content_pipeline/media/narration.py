@@ -10,6 +10,7 @@ los guiones antes de pagar el TTS.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -48,6 +49,15 @@ Contenido (Markdown):
 Devuelve el guion locutado.
 """
 
+# Lecciones largas se locutan por tramos (secciones "## " agrupadas): una sola
+# llamada truncaba las lecciones de ~20k caracteres.
+NARRATION_CONTINUACION = """\
+Este contenido es la CONTINUACIÓN (parte {parte} de {total}) de una lección cuyo guion
+ya comenzó: no saludes, no presentes la lección ni la resumas desde el inicio;
+continúa con naturalidad desde este tramo.
+"""
+TRAMO_MAX_CHARS = 7000
+
 # Tokens de salida: una lección ronda 7-8k chars (~2.5k tokens). Si se trunca,
 # se reintenta una vez con el tope mayor.
 MAX_TOKENS = 4000
@@ -75,6 +85,42 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
+def split_sections(contenido: str, max_chars: int = TRAMO_MAX_CHARS) -> list[str]:
+    """Agrupa las secciones ``## `` del Markdown en tramos de hasta ``max_chars``.
+
+    Una sección que sola excede el tope queda como su propio tramo (se parte por
+    párrafos si hace falta). Texto corto → un solo tramo.
+    """
+    contenido = (contenido or "").strip()
+    if len(contenido) <= max_chars:
+        return [contenido] if contenido else []
+    partes = re.split(r"(?m)^(?=##\s)", contenido)
+    piezas: list[str] = []
+    for parte in partes:
+        if len(parte) <= max_chars:
+            piezas.append(parte)
+            continue
+        actual = ""
+        for parrafo in re.split(r"\n{2,}", parte):
+            if actual and len(actual) + len(parrafo) + 2 > max_chars:
+                piezas.append(actual)
+                actual = parrafo
+            else:
+                actual = f"{actual}\n\n{parrafo}" if actual else parrafo
+        if actual:
+            piezas.append(actual)
+    tramos: list[str] = []
+    for pieza in piezas:
+        pieza = pieza.strip()
+        if not pieza:
+            continue
+        if tramos and len(tramos[-1]) + len(pieza) + 2 <= max_chars:
+            tramos[-1] = f"{tramos[-1]}\n\n{pieza}"
+        else:
+            tramos.append(pieza)
+    return tramos
+
+
 def build_narration_script_meta(
     contenido: str,
     *,
@@ -89,19 +135,27 @@ def build_narration_script_meta(
     if client is None and not LLMClient.is_available():
         return NarrationResult(strip_markdown(contenido))
     client = client or LLMClient()
-    user = NARRATION_USER.format(nombre=nombre, contenido=strip_markers(contenido))
-    resp = None
-    for max_tokens in (MAX_TOKENS, MAX_TOKENS_RETRY):
-        resp = client.complete_meta(
-            system=NARRATION_SYSTEM,
-            user=user,
-            max_tokens=max_tokens,
-            model=model or draft_model(),
-            temperature=0.3,
-        )
-        if not resp.truncated:
-            break
-    return NarrationResult(resp.text.strip(), truncado=resp.truncated)
+    tramos = split_sections(strip_markers(contenido))
+    textos: list[str] = []
+    truncado = False
+    for k, tramo in enumerate(tramos, start=1):
+        user = NARRATION_USER.format(nombre=nombre, contenido=tramo)
+        if k > 1:
+            user = NARRATION_CONTINUACION.format(parte=k, total=len(tramos)) + "\n" + user
+        resp = None
+        for max_tokens in (MAX_TOKENS, MAX_TOKENS_RETRY):
+            resp = client.complete_meta(
+                system=NARRATION_SYSTEM,
+                user=user,
+                max_tokens=max_tokens,
+                model=model or draft_model(),
+                temperature=0.3,
+            )
+            if not resp.truncated:
+                break
+        textos.append(resp.text.strip())
+        truncado = truncado or resp.truncated
+    return NarrationResult("\n\n".join(t for t in textos if t), truncado=truncado)
 
 
 def build_narration_script(
@@ -142,6 +196,12 @@ def audit_script(script: str, contenido: str, *, truncado: bool = False) -> dict
         "ratio_largo": ratio,
         "corto": ratio < RATIO_MIN,
     }
+
+
+def content_hash(contenido) -> str:
+    """Huella del texto locutable de la lección: si cambia, el guion quedó obsoleto."""
+    texto = contenido if isinstance(contenido, str) else ""
+    return hashlib.sha1(strip_markers(texto).strip().encode("utf-8")).hexdigest()[:16]
 
 
 def has_findings(audit: dict | None) -> bool:

@@ -287,20 +287,30 @@ python manage.py clasificar_ejercicios --aplicar out/ejercicios/clasif_b.json --
 python manage.py clasificar_ejercicios --curso B --lecciones --course-json out/b_pub_v4.json --out out/b_pub_v5.json
 ```
 
-Flujo vivo — audio de lecciones (JSON del curso → guion → TTS → storage). `generate_media` no toca la BD; guarda el JSON **tras cada lección** (re-correr retoma donde quedó; no rehace guiones ni audios existentes salvo `--rehacer-guion` / `--overwrite`):
+Flujo vivo — audio de lecciones (JSON del curso → guion → TTS → storage). Es un paso estándar de todo curso, **tras `publish_media` y antes de `import_course`** (o después, con `--solo-audio`). `generate_media` no toca la BD; guarda el JSON **tras cada lección** (re-correr retoma donde quedó y no rehace guiones vigentes ni audios ya enlazados salvo `--rehacer-guion` / `--overwrite`):
 ```powershell
-# Fase 1 — guiones (Haiku, barato, sin TTS): `transcripcion` + `audio_meta` por lección
+# 0 — Cuánto falta y cuánto cuesta (guiones, audios y caracteres pendientes; USD aprox.). No escribe.
+python manage.py generate_media --file out/c/c_pub.json --solo-estimar --provider elevenlabs
+# 1 — Guiones (Haiku, barato, sin TTS): `transcripcion` + `audio_meta` por lección
 #   (auditoría REPORTE: cifras_nuevas vs la lección, truncado con reintento a 8k tokens, ratio_largo/corto)
-#   + resumen top-level `auditoria_audio`. Revisar/editar `transcripcion` a mano antes de pagar TTS.
-python manage.py generate_media --file out/a4.json --out out/a4_audio.json --solo-guion
-# Fase 2 — TTS solo sobre guiones existentes (--estricto salta los que tienen hallazgos)
-python manage.py generate_media --file out/a4_audio.json --solo-audio --provider openai --storage s3
-python manage.py import_course --file out/a4_audio.json
+#   + resumen top-level `auditoria_audio`. Revisar a mano las lecciones con hallazgos y 2-3 al azar.
+python manage.py generate_media --file out/c/c_pub.json --out out/c/c_audio.json --solo-guion
+# 2 — TTS solo sobre guiones vigentes (--estricto salta los que tienen hallazgos). Probar voz con --limit 1.
+python manage.py generate_media --file out/c/c_audio.json --solo-audio --provider elevenlabs --storage s3 --estricto
+# 3 — Llevar SOLO el audio a un curso ya importado (transcripción + recurso narración; no toca nada más)
+python manage.py import_course --file out/c/c_audio.json --solo-audio --dry-run
 ```
+- **Nombre por contenido**: `{codigo}/{sha1(guion|proveedor|voz|modelo)[:16]}.mp3` (`tts.audio_filename`). Re-correr no re-sintetiza; otro guion o voz = otro archivo (la prueba con OpenAI y el definitivo con ElevenLabs conviven).
+- **Guion obsoleto**: `audio_meta.hash_contenido` = huella del texto de la lección (`narration.content_hash`). Si el texto cambió (corrección posterior), el guion se rehace solo para esa lección; `--solo-audio` no sintetiza un guion obsoleto. `auditoria_audio.obsoletas` los lista.
+- **No se locutan** las lecciones `anexo` ni las de texto plano < 200 caracteres (`auditoria_audio.omitidas`).
+- **Lecciones largas** (> 7.000 caracteres sin Markdown) se locutan por tramos de secciones `## ` (`narration.split_sections`; desde el 2.º tramo el prompt pide continuar sin saludar) y se auditan completas.
+- `audio_meta` guarda `provider`, `voz`, `modelo`, `archivo`, `hash_audio` y `duracion_seg` (también en `meta` del recurso; `tts.mp3_duracion_seg`, por bitrate del primer frame). Precio estimado por 1k caracteres: `TTS_USD_1K_ELEVENLABS` / `TTS_USD_1K_OPENAI` (defaults aproximados en `tts.py`).
+- **Import seguro**: un JSON sin audio **nunca borra** la narración publicada ni vacía `transcripcion` (re-importar `*_pub.json` viejo es seguro). Para reemplazar el audio, importar un JSON que traiga el nuevo recurso.
+- **Unidad 0** («Antes de empezar»): `presentacion_curso --curso B --audio --provider elevenlabs --storage s3` (local, con claves) redacta guion + audio por licencia y lo guarda en `content_pipeline/presentaciones/audio.json` (**commitear**; huella del texto + URL). Sin `--audio` (p. ej. en prod) se enlaza el de `audio.json` si el texto no cambió; si cambió, avisa y conserva el publicado. `--rehacer-audio` fuerza.
 - Módulos: `content_pipeline/media/{narration,tts,storage}.py`. Sin `--solo-*` hace ambas fases en una pasada.
 - **Providers TTS** (`--provider` / `TTS_PROVIDER`): `elevenlabs` (mejor voz; `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`) y `openai` (barato, para iterar; `OPENAI_API_KEY`, `OPENAI_TTS_MODEL`=gpt-4o-mini-tts, `OPENAI_TTS_VOICE`=coral). Reintentos con backoff ante 429/5xx.
 - **Storage** (`--storage` / `MEDIA_STORAGE`): `local` (MEDIA_ROOT + `--media-dir`/`--base-url`, dev) o `s3` (S3/Cloudflare R2 vía boto3: `MEDIA_S3_BUCKET`, `MEDIA_S3_ENDPOINT_URL`, `MEDIA_S3_REGION`, `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY`, `MEDIA_S3_PUBLIC_BASE_URL`; los nombres viejos `AUDIO_STORAGE`/`AUDIO_S3_*` valen como alias). Producción = `s3` (Railway tiene FS efímero). Solo los comandos locales suben al bucket; el backend desplegado no necesita estas variables: guarda y entrega las URLs públicas, y los clientes cargan los medios directo desde el bucket (dominio propio, p. ej. `media.auto-test.cl`; `r2.dev` solo para pruebas).
-- Volumen: un curso A4 ≈ 76 lecciones × ~7k chars ≈ **520k caracteres de TTS** — el comando imprime la estimación antes de sintetizar. Probar voz con `--limit 1`.
+- Volumen (texto de lecciones): B ≈ 148k caracteres, A4 ≈ 512k, C ≈ 59k, D ≈ 61k. ElevenLabs multilingual v2 ≈ 1 crédito por carácter.
 
 Figuras del libro (PDF/Word → lección). Para cursos nuevos se extraen en `plan_course` (fase 1, paso 6) y el redactor las inserta con marcadores; la subida es `publish_media`. Para cursos **ya generados** (sin marcadores) `extract_images` las agrega como recursos (galería de no referenciadas):
 ```powershell
