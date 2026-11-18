@@ -5,13 +5,18 @@ configuración: ElevenLabs (mejor voz) u OpenAI (barato); mañana Azure/Polly si
 pipeline. El generador de media solo depende de la interfaz `TTSProvider`.
 
 Config (settings o entorno):
-    TTS_PROVIDER          -> 'elevenlabs' (default) | 'openai'
+    TTS_PROVIDER          -> 'elevenlabs' (default) | 'openai' | 'azure'
     ELEVENLABS_API_KEY    -> API key
     ELEVENLABS_VOICE_ID   -> id de la voz
     ELEVENLABS_MODEL      -> 'eleven_multilingual_v2' (default)
     OPENAI_API_KEY        -> API key (proveedor barato, para iterar)
     OPENAI_TTS_MODEL      -> 'gpt-4o-mini-tts' (default)
     OPENAI_TTS_VOICE      -> 'coral' (default)
+    AZURE_SPEECH_KEY      -> clave del recurso Speech (voces nativas es-CL)
+    AZURE_SPEECH_REGION   -> región del recurso (p. ej. 'brazilsouth')
+    AZURE_TTS_VOICE       -> 'es-CL-CatalinaNeural' (default) | 'es-CL-LorenzoNeural'
+    AZURE_TTS_FORMAT      -> 'audio-24khz-96kbitrate-mono-mp3' (default)
+    AZURE_TTS_RATE        -> '0%' (default), p. ej. '-5%' más pausado
 """
 from __future__ import annotations
 
@@ -75,15 +80,18 @@ _RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _RETRIES = 3
 
 
-def _post_with_retry(url: str, *, headers: dict, payload: dict, label: str) -> bytes:
+def _post_with_retry(url: str, *, headers: dict, payload: dict | None = None, label: str,
+                     data: bytes | None = None) -> bytes:
+    """POST con reintentos. ``payload`` va como JSON; ``data`` como cuerpo crudo (SSML)."""
     import time
 
     import requests
 
+    body = {"data": data} if data is not None else {"json": payload}
     last = ""
     for attempt in range(_RETRIES + 1):
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=180)
+            resp = requests.post(url, headers=headers, timeout=180, **body)
         except requests.RequestException as exc:
             last = f"{label} red: {exc}"
         else:
@@ -193,9 +201,72 @@ class OpenAITTS:
         return b"".join(self._synthesize_chunk(c) for c in chunks)
 
 
+class AzureTTS:
+    """Proveedor Azure AI Speech (REST + SSML). Devuelve MP3. Voces nativas de Chile.
+
+    Config: AZURE_SPEECH_KEY, AZURE_SPEECH_REGION (p. ej. ``brazilsouth``),
+    AZURE_TTS_VOICE (def. es-CL-CatalinaNeural; también es-CL-LorenzoNeural),
+    AZURE_TTS_FORMAT (def. audio-24khz-96kbitrate-mono-mp3), AZURE_TTS_RATE (def. 0%).
+    ``model`` = formato de salida: entra al hash del archivo de audio.
+    """
+
+    name = "azure"
+    max_chars = 3000
+    DEFAULT_VOICE = "es-CL-CatalinaNeural"
+    DEFAULT_FORMAT = "audio-24khz-96kbitrate-mono-mp3"
+
+    def __init__(self, *, api_key: str | None = None, region: str | None = None,
+                 voice_id: str | None = None, model: str | None = None):
+        self.api_key = api_key or _conf("AZURE_SPEECH_KEY")
+        self.region = (region or _conf("AZURE_SPEECH_REGION") or "").strip()
+        self.voice_id = voice_id or _conf("AZURE_TTS_VOICE", "") or self.DEFAULT_VOICE
+        self.model = model or _conf("AZURE_TTS_FORMAT", "") or self.DEFAULT_FORMAT
+        self.rate = (_conf("AZURE_TTS_RATE", "") or "0%").strip()
+        if not self.api_key:
+            raise TTSError("Falta AZURE_SPEECH_KEY (recurso Speech en el portal de Azure).")
+        if not self.region:
+            raise TTSError("Falta AZURE_SPEECH_REGION (región del recurso Speech, p. ej. brazilsouth).")
+
+    def extension(self) -> str:
+        return "mp3"
+
+    def _lang(self) -> str:
+        # "es-CL-CatalinaNeural" → "es-CL"
+        partes = self.voice_id.split("-")
+        return "-".join(partes[:2]) if len(partes) >= 3 else "es-CL"
+
+    def _ssml(self, text: str) -> str:
+        """Tramo como SSML. Punto único para agregar un léxico de pronunciación."""
+        from xml.sax.saxutils import escape, quoteattr
+
+        return (
+            f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{self._lang()}">'
+            f"<voice name={quoteattr(self.voice_id)}><prosody rate={quoteattr(self.rate)}>"
+            f"{escape(text)}</prosody></voice></speak>"
+        )
+
+    def _synthesize_chunk(self, text: str) -> bytes:
+        headers = {
+            "Ocp-Apim-Subscription-Key": self.api_key,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": self.model,
+            "User-Agent": "autotest-tts",
+        }
+        url = f"https://{self.region}.tts.speech.microsoft.com/cognitiveservices/v1"
+        return _post_with_retry(url, headers=headers, data=self._ssml(text).encode("utf-8"),
+                                label="Azure TTS")
+
+    def synthesize(self, text: str) -> bytes:
+        chunks = _chunk_text(text, self.max_chars)
+        if not chunks:
+            raise TTSError("Texto vacío para sintetizar.")
+        return b"".join(self._synthesize_chunk(c) for c in chunks)
+
+
 _PROVIDERS = {
     "elevenlabs": ElevenLabsTTS,
     "openai": OpenAITTS,
+    "azure": AzureTTS,
 }
 
 
@@ -223,7 +294,8 @@ def tts_available(name: str | None = None) -> bool:
 # Precio aproximado en USD por 1.000 caracteres sintetizados (solo para estimar;
 # ajustar por env según el plan contratado). ElevenLabs API (nov. 2026): 0,08 por
 # 1k en multilingual v2 / v3 / v4; 0,04 en Flash/Turbo; igual en todos los planes.
-_USD_1K_DEFAULT = {"elevenlabs": 0.08, "openai": 0.017}
+# Azure neural: ~US$15-16 por 1M (el nivel F0 trae 500k caracteres gratis al mes).
+_USD_1K_DEFAULT = {"elevenlabs": 0.08, "openai": 0.017, "azure": 0.016}
 
 
 def usd_por_1k(provider_name: str) -> float | None:

@@ -123,7 +123,7 @@ class Command(BaseCommand):
         parser.add_argument("--estricto", action="store_true",
                             help="No sintetiza lecciones cuyo guion tiene hallazgos (cifras nuevas/truncado/corto).")
         parser.add_argument("--provider", default=None,
-                            help="Proveedor TTS: elevenlabs | openai (default: TTS_PROVIDER).")
+                            help="Proveedor TTS: elevenlabs | openai | azure (default: TTS_PROVIDER).")
         parser.add_argument("--voice", default=None, help="Override del id de voz del proveedor.")
         parser.add_argument("--storage", default=None,
                             help="Destino de los audios: local | s3 (default: MEDIA_STORAGE o local).")

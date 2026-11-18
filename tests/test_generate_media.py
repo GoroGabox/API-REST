@@ -25,7 +25,15 @@ from content_pipeline.media.narration import (
     split_sections,
 )
 from content_pipeline.media.storage import S3Storage
-from content_pipeline.media.tts import OpenAITTS, TTSError, _chunk_text, mp3_duracion_seg
+from content_pipeline.media.tts import (
+    AzureTTS,
+    OpenAITTS,
+    TTSError,
+    _chunk_text,
+    audio_hash,
+    get_tts_provider,
+    mp3_duracion_seg,
+)
 
 MOD = "schools.management.commands.generate_media."
 
@@ -372,6 +380,71 @@ class OpenAITTSTests(TestCase):
         with patch("content_pipeline.media.tts._conf", return_value=""):
             with self.assertRaises(TTSError):
                 OpenAITTS()
+
+
+class AzureTTSTests(TestCase):
+    def _tts(self, **kw):
+        return AzureTTS(api_key="k", region="brazilsouth", **kw)
+
+    def test_trocea_y_envia_ssml(self):
+        calls = []
+
+        class _Resp:
+            status_code = 200
+            content = b"MP3"
+
+        def fake_post(url, data=None, headers=None, timeout=None):
+            calls.append((url, data.decode("utf-8"), headers))
+            return _Resp()
+
+        tts = self._tts()
+        text = " ".join(f"Oración número {i} de la Ley 18.290 & <otras>." for i in range(300))
+        with patch("requests.post", fake_post):
+            audio = tts.synthesize(text)
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(audio, b"MP3" * len(calls))
+        url, ssml, headers = calls[0]
+        self.assertEqual(url, "https://brazilsouth.tts.speech.microsoft.com/cognitiveservices/v1")
+        self.assertEqual(headers["Ocp-Apim-Subscription-Key"], "k")
+        self.assertEqual(headers["Content-Type"], "application/ssml+xml")
+        self.assertEqual(headers["X-Microsoft-OutputFormat"], "audio-24khz-96kbitrate-mono-mp3")
+        # SSML bien formado, con voz, idioma, ritmo y el texto escapado.
+        import xml.etree.ElementTree as ET
+        raiz = ET.fromstring(ssml)
+        self.assertEqual(raiz.get("{http://www.w3.org/XML/1998/namespace}lang"), "es-CL")
+        ns = "{http://www.w3.org/2001/10/synthesis}"
+        voz = raiz.find(f"{ns}voice")
+        self.assertEqual(voz.get("name"), "es-CL-CatalinaNeural")
+        prosodia = voz.find(f"{ns}prosody")
+        self.assertEqual(prosodia.get("rate"), "0%")
+        self.assertIn("& <otras>.", prosodia.text)
+        self.assertLessEqual(len(prosodia.text), 3000)
+
+    def test_voz_y_formato_cambian_el_hash(self):
+        catalina, lorenzo = self._tts(), self._tts(voice_id="es-CL-LorenzoNeural")
+        self.assertNotEqual(audio_hash("Guion.", catalina), audio_hash("Guion.", lorenzo))
+        hd = self._tts(model="audio-48khz-192kbitrate-mono-mp3")
+        self.assertNotEqual(audio_hash("Guion.", catalina), audio_hash("Guion.", hd))
+        self.assertEqual(lorenzo._lang(), "es-CL")
+
+    def test_sin_key_o_region_falla(self):
+        with patch("content_pipeline.media.tts._conf", return_value=""):
+            with self.assertRaises(TTSError):
+                AzureTTS(region="brazilsouth")
+            with self.assertRaises(TTSError):
+                AzureTTS(api_key="k")
+
+    def test_proveedor_registrado(self):
+        with patch("content_pipeline.media.tts._conf",
+                   side_effect=lambda n, d="": {"AZURE_SPEECH_KEY": "k", "AZURE_SPEECH_REGION": "eastus"}.get(n, d)):
+            tts = get_tts_provider("azure")
+        self.assertEqual((tts.name, tts.voice_id, tts.region), ("azure", "es-CL-CatalinaNeural", "eastus"))
+
+    def test_duracion_mp3_mpeg2_24khz_96kbps(self):
+        # Header MPEG-2 Layer III, 96 kbps (índice 10 de la tabla V2), 24 kHz.
+        frame = bytes([0xFF, 0xF3, 0xA4, 0x00])
+        audio = frame + b"\x00" * (12000 * 5 - 4)          # 96 kbps = 12.000 bytes/s
+        self.assertEqual(mp3_duracion_seg(audio), 5)
 
 
 class S3StorageTests(TestCase):

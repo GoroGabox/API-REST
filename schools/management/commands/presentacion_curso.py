@@ -40,7 +40,7 @@ class Command(BaseCommand):
         parser.add_argument("--mostrar", action="store_true", help="Imprime el Markdown armado.")
         parser.add_argument("--audio", action="store_true",
                             help="Genera (si falta o cambió el texto) guion + audio y lo guarda en presentaciones/audio.json.")
-        parser.add_argument("--provider", default=None, help="Proveedor TTS con --audio: elevenlabs | openai.")
+        parser.add_argument("--provider", default=None, help="Proveedor TTS con --audio: elevenlabs | openai | azure.")
         parser.add_argument("--voice", default=None, help="Override del id de voz (con --audio).")
         parser.add_argument("--rehacer-audio", action="store_true",
                             help="Con --audio, rehace guion y audio aunque estén vigentes.")

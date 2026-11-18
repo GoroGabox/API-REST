@@ -210,7 +210,7 @@ COURSE_LLM_MODEL_DRAFT = os.environ.get('COURSE_LLM_MODEL_DRAFT', 'claude-haiku-
 
 # ============================================================================
 # Media (TTS) para audio-cursos — agnóstico al proveedor (como el email).
-# El comando `generate_media` sintetiza la voz de las lecciones: ElevenLabs u OpenAI.
+# El comando `generate_media` sintetiza la voz de las lecciones: ElevenLabs, OpenAI o Azure.
 # Sin credenciales, el comando avisa y no corre (no rompe el resto del sistema).
 # ============================================================================
 TTS_PROVIDER = os.environ.get('TTS_PROVIDER', 'elevenlabs')
@@ -222,6 +222,12 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_TTS_MODEL = os.environ.get('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
 OPENAI_TTS_VOICE = os.environ.get('OPENAI_TTS_VOICE', 'coral')
 OPENAI_TTS_INSTRUCTIONS = os.environ.get('OPENAI_TTS_INSTRUCTIONS', '')
+# Azure AI Speech: voces nativas de Chile (TTS_PROVIDER=azure o --provider azure).
+AZURE_SPEECH_KEY = os.environ.get('AZURE_SPEECH_KEY', '')
+AZURE_SPEECH_REGION = os.environ.get('AZURE_SPEECH_REGION', '')
+AZURE_TTS_VOICE = os.environ.get('AZURE_TTS_VOICE', 'es-CL-CatalinaNeural')
+AZURE_TTS_FORMAT = os.environ.get('AZURE_TTS_FORMAT', 'audio-24khz-96kbitrate-mono-mp3')
+AZURE_TTS_RATE = os.environ.get('AZURE_TTS_RATE', '0%')
 
 # Medios de cursos (audios, figuras, PDFs de páginas): 'local' (MEDIA_ROOT) o 's3'
 # (bucket S3/R2 con URL pública; Railway tiene FS efímero). Solo los usan los comandos
