@@ -67,8 +67,11 @@ def medios(carpeta: Path = CARPETA) -> dict[str, str]:
 def componer(codigo: str, urls: dict[str, str], carpeta: Path = CARPETA) -> dict[str, Any]:
     """Lección lista para importar: ``{nombre, contenido, recursos, fuentes, licencia}``."""
     meta, cuerpo = leer(archivo_licencia(codigo, carpeta))
-    decl = (carpeta / "comun_declaracion.md").read_text(encoding="utf-8").strip()
-    faq = (carpeta / "comun_salud_faq.md").read_text(encoding="utf-8").strip()
+    # `tratamiento: usted` (cursos profesionales, cuyas guías tratan de «usted») usa la
+    # variante de las partes comunes; sin el campo, «tú».
+    suf = "_usted" if str(meta.get("tratamiento", "")).strip().lower() == "usted" else ""
+    decl = (carpeta / f"comun_declaracion{suf}.md").read_text(encoding="utf-8").strip()
+    faq = (carpeta / f"comun_salud_faq{suf}.md").read_text(encoding="utf-8").strip()
     faq = faq.replace("{{renovacion}}", str(meta["renovacion"]).strip())
     if "{{declaracion}}" in cuerpo:
         cuerpo = cuerpo.replace("{{declaracion}}", decl)

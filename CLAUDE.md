@@ -239,6 +239,22 @@ python manage.py import_course --file out/a4/a4_pub.json --prune --dry-run   # e
 python manage.py import_ejercicios --file out/a4/ejercicios_a4.json --curso A4
 ```
 
+Flujo MATERIAL DE ESTUDIO — cursos profesionales A2, A3, A4 y A5 (ZIP con un Word de 7 módulos + práctica de test):
+```powershell
+# Material: H1 «Introducción al curso» → content_pipeline/presentaciones/<COD>.md (unidad 0, sin «Cómo está organizado el curso»);
+# «MÓDULO N» + H1 = unidad; «Horas de este módulo» → descripción; presentación + «Objetivos del módulo» → ## Introducción de la 1.ª lección;
+# H2 «Unidad N · …» = lección (Tiempo estimado → minutos; H3 → ###, H4 → negrita; Recuerde/Importante/Atención → recuadros con viñetas;
+# «Preguntas para repasar» → ## Actividad breve; filas [imagen | texto] de señales → figura con pie + su texto); «Ideas clave del módulo N» → lección anexo.
+# Banco: «…CON_RESPUESTAS.docx» = 50 tests × 20 por módulo; correcta = letra en círculo (ⓐ-ⓓ); «· Cuestionario CONASET» → fuente oficial;
+# se deduplica por enunciado + alternativas y se compara con el «Banco de N preguntas» declarado; correcta distinta entre tests → diferir.
+# Páginas: cada lección se alinea con libro_pro.pdf por afinidad de vocabulario (material_docx.paginas_libro, sin IA; cobertura < 0,5 = revisar).
+# La IA (Haiku) agrega Objetivo/Puntos clave/Resumen y clasifica el banco (~US$0,7 por curso).
+python manage.py build_curso_material --zip "C:/…/Curso_A4_Clase_A4.zip" --codigo A4 --nombre "Curso Profesional Clase A4" --precio 6990 `
+  --is-profesional --libro libro_pro.pdf --out out/prof/A4/a4.json --ejercicios out/prof/A4/ejercicios_a4.json --publicar-imagenes s3
+# Luego clasificar_ejercicios --lecciones → publish_media --paginas-libro --contenido libro_pro.pdf → import_course → import_ejercicios --curso → presentacion_curso.
+```
+- Módulo `content_pipeline/processors/material_docx.py` (reutiliza `guia_docx`); tests `tests/test_material_docx.py`. El quiz de cada módulo no cita el libro: remite a sus lecciones (`quiz_remite_lecciones`: una fuente «Lección N · nombre» por lección y «Repasa: …» en la descripción). Las licencias comparten gran parte del banco: `import_ejercicios` solo agrega el vínculo a la unidad del otro curso.
+
 Flujo CURSO HTML — conversión fiel de un curso interactivo (usado en C y D):
 ```powershell
 # El HTML guarda todo en su <script>: MODULES (intro|core|extra), SVG (láminas, fig(k,pie)), SIGNS (webp) y el banco Q
@@ -256,7 +272,7 @@ python manage.py build_curso_html --html out/cd/zip/Curso-Licencia-Clase-C.html 
 ### Presentación inicial «Antes de empezar» (`presentacion_curso`)
 
 Todo curso lleva una **unidad 0 «Antes de empezar»** con la lección de lectura «Requisitos y exámenes» (qué habilita la licencia, requisitos, declaración jurada, camino, examen teórico y práctico, qué llevar, salud, preguntas frecuentes).
-- Fuente en `content_pipeline/presentaciones/`: `<LICENCIA>.md` (front matter `licencia`, `renovacion`, `fuentes`; `C1` usa `C.md`) + `comun_declaracion.md` (en `{{declaracion}}`, o antes de «### El camino a la licencia») + `comun_salud_faq.md` (en `{{salud_faq}}`, o al final) + `medios.json` (URLs en R2 de los 2 PDF de las declaraciones). Armado en `content_pipeline/processors/presentacion.py`.
+- Fuente en `content_pipeline/presentaciones/`: `<LICENCIA>.md` (front matter `licencia`, `renovacion`, `fuentes` y opcional `tratamiento: usted` —A2–A5, cuyas guías tratan de «usted»: usa `comun_declaracion_usted.md` / `comun_salud_faq_usted.md`; sin el campo, las versiones en «tú»—; `C1` usa `C.md`) + `comun_declaracion.md` (en `{{declaracion}}`, o antes de «### El camino a la licencia») + `comun_salud_faq.md` (en `{{salud_faq}}`, o al final) + `medios.json` (URLs en R2 de los 2 PDF de las declaraciones). Armado en `content_pipeline/processors/presentacion.py`.
 - `python manage.py presentacion_curso --curso B [--curso A4…] [--dry-run] [--mostrar]` (sin IA, idempotente; `content_pipeline.exporters.django_importer.importar_presentacion`): upsert de la unidad 0 + lección (posición 1); a los alumnos que ya completaron las demás lecciones les marca también esta (no pierden la elegibilidad del examen final). `--subir-medios --storage s3 --pdf-dir …` sube los PDF y reescribe `medios.json` (una vez, desde local).
 - Los PDF van como enlaces en el texto, no como recursos `pdf/descarga` (el espejo los copiaría a `url_pdf`).
 - `import_course --prune` **no borra la unidad 0** (`ORDEN_PRESENTACION`), aunque el JSON del curso no la traiga.

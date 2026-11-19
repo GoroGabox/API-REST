@@ -627,7 +627,9 @@ _SYSTEM_SECCION = (
     "normas ni consejos que no estén en ese texto. Conserva las cifras y términos tal como aparecen. "
     "Responde solo con el contenido de la sección, sin título."
 )
-_ORDEN_SECCIONES = ("## Objetivo", "## Desarrollo", "## Aplicación práctica", "## Puntos clave",
+# Orden canónico de las secciones (el mismo de llm_lesson_writer._REQUIRED_SECTIONS + Fuente).
+_ORDEN_SECCIONES = ("## Objetivo", "## Introducción", "## Desarrollo", "## Aplicación práctica",
+                    "## Puntos clave", "## Ejemplo aplicado", "## Errores frecuentes", "## Actividad breve",
                     "## Resumen", "## Fuente")
 
 

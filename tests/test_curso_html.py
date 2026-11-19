@@ -132,7 +132,8 @@ class PresentacionTests(TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.carpeta = Path(self.tmp.name)
-        for nombre in ("comun_declaracion.md", "comun_salud_faq.md"):
+        for nombre in ("comun_declaracion.md", "comun_salud_faq.md",
+                       "comun_declaracion_usted.md", "comun_salud_faq_usted.md"):
             shutil.copy(P.CARPETA / nombre, self.carpeta / nombre)
         (self.carpeta / "B.md").write_text(
             '---\nlicencia: B\nrenovacion: "Cada 6 años."\nfuentes:\n  - "Ley 18.290"\n---\n'
@@ -156,6 +157,17 @@ class PresentacionTests(TestCase):
         self.assertIn("**¿Cada cuánto se renueva?**\n\nCada 6 años.", c)
         self.assertTrue(c.rstrip().endswith("- Ley 18.290"))
         self.assertEqual(P.archivo_licencia("B1", self.carpeta).name, "B.md")
+        self.assertIn("### Si tienes alguna condición de salud", c)        # sin `tratamiento`: «tú»
+
+    def test_componer_con_tratamiento_usted(self):
+        (self.carpeta / "A4.md").write_text(
+            '---\nlicencia: A4\ntratamiento: usted\nrenovacion: "Cada 4 años."\nfuentes:\n  - "Guía A4"\n---\n'
+            "Bienvenido.\n\n{{declaracion}}\n\n{{salud_faq}}\n", encoding="utf-8")
+        c = P.componer("A4", self.urls, self.carpeta)["contenido"]
+        self.assertIn("### Si tiene alguna condición de salud", c)
+        self.assertIn("Es un documento que usted firma", c)
+        for tu in ("Si tienes", "firmas en", "consulta antes", "Puedes usar", "tu Dirección"):
+            self.assertNotIn(tu, c)
 
     def test_importar_idempotente_con_avance_y_prune(self):
         completo = make_user("c@a.com", is_estudiante=True)
