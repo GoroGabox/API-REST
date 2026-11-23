@@ -297,7 +297,7 @@ SERVER_EMAIL = EMAIL_HOST_USER or DEFAULT_FROM_EMAIL
 
 # Destinatarios de los reportes de error 500 (django.utils.log.AdminEmailHandler).
 # Formato env ADMINS: coma-separado, cada uno "Nombre <correo>" o solo "correo".
-#   ADMINS=Gabriel <alfons.diaz97@gmail.com>,ops@auto-test.cl
+#   ADMINS=Gabriel <gabrieldiaz@gamalabs.cl>,soporte@auto-test.cl
 def _parse_admins(raw):
     admins = []
     for item in raw.split(','):
