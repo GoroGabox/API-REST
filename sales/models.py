@@ -129,6 +129,16 @@ class AccessKey(models.Model):
     )
     dias = models.PositiveIntegerField(null=True, blank=True)
     llaves = models.PositiveIntegerField(default=0)
+    # Llaves asignadas por un director a un estudiante (origen 'key', sin
+    # `escuela`): `llaves` = total cobrado (activación + extensiones) y
+    # `cobrada_a` = escuela que pagó. Si el estudiante nunca abrió el curso
+    # (`usada_en` null) y la llave venció, `devolver_llaves_no_usadas` devuelve
+    # esas llaves al saldo y marca `devuelta_en` (ver sales/services.py).
+    cobrada_a = models.ForeignKey(
+        'schools.Escuela', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    usada_en = models.DateTimeField(null=True, blank=True)
+    devuelta_en = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"Key {self.key}"
@@ -304,7 +314,8 @@ class MovimientoLlaves(models.Model):
     """Uso de llaves del saldo de una escuela (consumo para el análisis comercial).
 
     `cantidad` negativa = llaves gastadas (activar/extender alumnos, generar
-    códigos); positiva = devueltas (anular un código). Las compras viven en
+    códigos); positiva = devueltas (anular un código, llave asignada que el
+    alumno nunca usó). Las compras viven en
     `Venta` y los ajustes manuales del admin no se registran aquí.
     """
     MOTIVOS = [
@@ -312,6 +323,7 @@ class MovimientoLlaves(models.Model):
         ('extension', 'Extensión'),
         ('codigos', 'Códigos'),
         ('anulacion', 'Anulación de código'),
+        ('devolucion', 'Llave no usada'),
     ]
 
     escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='movimientos_llaves')

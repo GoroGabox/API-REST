@@ -737,6 +737,9 @@ class CursoViewSet(viewsets.ModelViewSet):
             # al abrir el curso, para que cuente en su avance y en "mis cursos".
             from sales.suscripciones import asegurar_inscripcion_cupo
             asegurar_inscripcion_cupo(user, curso)
+            # Abrir el curso = usar la llave: ya no se devuelve al vencer.
+            from sales.services import marcar_uso_llave
+            marcar_uso_llave(user, curso)
         lecciones_ordenadas = Leccion.objects.select_related('categoria').order_by('posicion', 'id')
         unidades = (
             Unidad.objects.filter(curso=curso)

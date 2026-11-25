@@ -55,6 +55,9 @@ class LicenciaListView(APIView):
             )
         except services.OfflineError as exc:
             return _error(exc)
+        # Descargar el curso cuenta como uso de la llave (no se devuelve al vencer).
+        from sales.services import marcar_uso_llave
+        marcar_uso_llave(request.user, lic.curso_id)
         return Response({
             **services.licencia_firmada(lic, valid_until, ahora),
             'cek': base64.b64encode(crypto.cek(lic)).decode(),

@@ -373,7 +373,7 @@ def inscripcion_previa(estudiante, curso):
 
 
 def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escuela=None,
-                       contar_seat=False, escuela=None):
+                       contar_seat=False, escuela=None, llaves_cobradas=0, escuela_cobro=None):
     """Crea AccessKey + EstudianteCurso según el origen ('seat' | 'key').
 
     'seat': el estudiante ya debe tener (o recibe aquí, con `contar_seat=True`,
@@ -381,7 +381,9 @@ def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escue
     y no vence (el acceso lo decide el cupo). 'key': acceso por `days` días.
     Si el estudiante ya tenía una inscripción sin acceso vigente, se le asigna
     la llave nueva (unique estudiante+curso). El llamador debe rechazar antes
-    el caso con acceso vigente (`inscripcion_previa`).
+    el caso con acceso vigente (`inscripcion_previa`). `llaves_cobradas` /
+    `escuela_cobro` registran lo que pagó el director (se devuelven si el alumno
+    nunca abre el curso; ver `devolver_llaves_no_usadas`).
     """
     with transaction.atomic():
         if resolved_source == "seat":
@@ -399,6 +401,8 @@ def asignar_por_source(estudiante, curso, days, resolved_source, decrement_escue
             access_key = AccessKey.objects.create(
                 valid_until=timezone.now() + timedelta(days=days),
                 origen="key",
+                llaves=llaves_cobradas or 0,
+                cobrada_a=escuela_cobro if llaves_cobradas else None,
             )
         previa, _ = inscripcion_previa(estudiante, curso)
         if previa is not None:
@@ -439,7 +443,121 @@ def activar_curso_para_estudiante(*, estudiante, curso, days, source, es_admin, 
         raise SinSaldoError(mensaje_sin_saldo(source, keys_needed))
     decrementar_saldo(escuela_locked, resolved, keys_needed, estudiante)
     escuela_locked.save()
-    return asignar_por_source(estudiante, curso, days, resolved, escuela=escuela_locked)
+    cobro = {'llaves_cobradas': keys_needed, 'escuela_cobro': escuela_locked} if resolved == 'key' else {}
+    return asignar_por_source(estudiante, curso, days, resolved, escuela=escuela_locked, **cobro)
+
+
+# ============================================================
+# Devolución de llaves asignadas que el estudiante nunca usó
+# ------------------------------------------------------------
+# Una llave asignada por un director (origen 'key', `llaves` > 0, `cobrada_a`)
+# cuyo estudiante nunca abrió el curso (`usada_en` null, sin avance) y que ya
+# venció devuelve sus llaves al saldo de la escuela que pagó. No aplica a
+# estudiantes sin escuela, compras, cupos ni códigos canjeables.
+# ============================================================
+
+def marcar_uso_llave(estudiante, curso):
+    """Marca como usada (primera apertura del curso) la llave de la inscripción."""
+    if not getattr(estudiante, 'pk', None):
+        return 0
+    return AccessKey.objects.filter(
+        estudiantecurso__estudiante_id=estudiante.pk,
+        estudiantecurso__curso_id=getattr(curso, 'pk', curso),
+        usada_en__isnull=True,
+    ).update(usada_en=timezone.now())
+
+
+def llaves_devolvibles(now=None, escuela_id=None):
+    """QuerySet de llaves asignadas, vencidas, cobradas y nunca usadas."""
+    from django.db.models import Exists, OuterRef
+    from accounts.models import EstudianteLeccion, Prueba
+    now = now or timezone.now()
+    # Red de seguridad para llaves previas a `usada_en`: cualquier avance del
+    # alumno en el curso (lección completada o prueba) cuenta como uso.
+    avance = EstudianteLeccion.objects.filter(
+        estudiante_id=OuterRef('estudiante_id'), leccion__curso_id=OuterRef('curso_id'),
+    )
+    pruebas = Prueba.objects.filter(
+        estudiante_id=OuterRef('estudiante_id'), curso_id=OuterRef('curso_id'),
+    )
+    inscripciones = (
+        EstudianteCurso.objects
+        .filter(access_key_id__origen='key', access_key_id__escuela__isnull=True,
+                access_key_id__llaves__gt=0, access_key_id__cobrada_a__isnull=False,
+                access_key_id__devuelta_en__isnull=True, access_key_id__usada_en__isnull=True,
+                access_key_id__valid_until__isnull=False, access_key_id__valid_until__lt=now,
+                estudiante_id__escuela__isnull=False)
+        .exclude(Exists(avance))
+        .exclude(Exists(pruebas))
+    )
+    if escuela_id is not None:
+        inscripciones = inscripciones.filter(access_key_id__cobrada_a_id=escuela_id)
+    return AccessKey.objects.filter(pk__in=inscripciones.values('access_key_id'))
+
+
+def devolver_llaves_no_usadas(now=None, escuela_id=None, dry_run=False, avisar=True):
+    """Devuelve al saldo las llaves vencidas que el estudiante nunca usó.
+
+    Idempotente (`devuelta_en`). Por llave: suma `llaves` a `cobrada_a.basic_key`,
+    registra `MovimientoLlaves(+llaves, 'devolucion')` y la deja `revoked`. La
+    inscripción se conserva: activar de nuevo el curso la reutiliza. Devuelve
+    [{access_key_id, escuela_id, llaves, estudiante, curso}]; con `dry_run`
+    solo lista.
+    """
+    now = now or timezone.now()
+    resultados = []
+    ids = list(llaves_devolvibles(now, escuela_id).values_list('pk', flat=True))
+    for pk in ids:
+        with transaction.atomic():
+            ak = (AccessKey.objects.select_for_update()
+                  .filter(pk=pk, devuelta_en__isnull=True, usada_en__isnull=True).first())
+            if ak is None or not ak.llaves or not ak.cobrada_a_id:
+                continue
+            ec = (EstudianteCurso.objects.select_related('estudiante_id', 'curso_id')
+                  .filter(access_key_id=ak).first())
+            if ec is None or not ec.estudiante_id.escuela_id:
+                continue
+            est = ec.estudiante_id
+            resultados.append({
+                'access_key_id': str(ak.pk), 'escuela_id': ak.cobrada_a_id, 'llaves': ak.llaves,
+                'estudiante': f"{est.nombre} {est.apellido}".strip() or est.email,
+                'curso': ec.curso_id.nombre,
+            })
+            if dry_run:
+                continue
+            Escuela.objects.filter(pk=ak.cobrada_a_id).update(basic_key=F('basic_key') + ak.llaves)
+            registrar_movimiento_llaves(ak.cobrada_a_id, ak.llaves, 'devolucion')
+            ak.status = 'revoked'
+            ak.devuelta_en = now
+            ak.save(update_fields=['status', 'devuelta_en'])
+    if resultados and avisar and not dry_run:
+        _avisar_devolucion(resultados)
+    return resultados
+
+
+def _avisar_devolucion(resultados):
+    """Aviso in-app (best-effort) a los directores de cada escuela."""
+    from collections import defaultdict
+    from accounts.models import Usuario
+    from accounts.notifications import notificar
+    por_escuela = defaultdict(list)
+    for r in resultados:
+        por_escuela[r['escuela_id']].append(r)
+    for escuela_id, filas in por_escuela.items():
+        total = sum(f['llaves'] for f in filas)
+        detalle = "; ".join(f"{f['estudiante']} ({f['curso']})" for f in filas[:10])
+        if len(filas) > 10:
+            detalle += f" y {len(filas) - 10} más"
+        mensaje = (
+            f"Volvieron {total} llave(s) a tu saldo: estos estudiantes no abrieron el curso "
+            f"antes de que venciera su acceso: {detalle}."
+        )
+        for director in Usuario.objects.filter(escuela_id=escuela_id, is_director=True):
+            try:
+                notificar(director, 'info', 'Llaves devueltas', mensaje,
+                          data={'llaves': total, 'access_keys': [f['access_key_id'] for f in filas]})
+            except Exception:  # noqa: BLE001 — el aviso no debe deshacer la devolución
+                logger.exception("No se pudo avisar la devolución de llaves a %s", director.pk)
 
 
 def _aplicar_efectos_a_escuela(escuela_id: int, producto, is_director: bool):

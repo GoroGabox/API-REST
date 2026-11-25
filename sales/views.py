@@ -801,7 +801,9 @@ class ActivarCursoView(APIView):
             except SinSaldoError as e:
                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
             escuela.save()
-            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None)
+            cobro = ({'llaves_cobradas': keys_needed, 'escuela_cobro': escuela}
+                     if resolved_source == 'key' else {})
+            access_key = _asignar_por_source(user, curso, days, resolved_source, decrement_escuela=None, **cobro)
 
         return Response({
             "message": "Clave activada con éxito.",
@@ -953,7 +955,10 @@ class SolicitudAccesoViewSet(mixins.ListModelMixin,
                 except SinSaldoError as e:
                     return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
                 escuela.save()
-                access_key = _asignar_por_source(estudiante, curso, days, resolved_source, escuela=escuela)
+                cobro = ({'llaves_cobradas': keys_needed, 'escuela_cobro': escuela}
+                         if resolved_source == 'key' else {})
+                access_key = _asignar_por_source(estudiante, curso, days, resolved_source, escuela=escuela,
+                                                 **cobro)
 
         # Vincula la escuela si el estudiante no la tenía (flujo escuela+curso).
         if not estudiante.escuela_id:
@@ -1112,6 +1117,15 @@ class ExtenderLlaveView(APIView):
                 registrar_movimiento_llaves(escuela_locked.pk, -keys_needed, 'extension')
 
             now = timezone.now()
+            if is_director(request.user):
+                # Registra lo cobrado para poder devolverlo si el alumno nunca
+                # abre el curso. Una llave ya devuelta parte de cero.
+                if access_key.devuelta_en:
+                    access_key.llaves = keys_needed
+                    access_key.devuelta_en = None
+                else:
+                    access_key.llaves = (access_key.llaves or 0) + keys_needed
+                access_key.cobrada_a_id = escuela_locked.pk
             if access_key.valid_until and access_key.valid_until >= now:
                 # Aún activa: sumar a la fecha actual de expiración.
                 access_key.valid_until = access_key.valid_until + timedelta(days=days)
@@ -1136,7 +1150,9 @@ class RevocarLlaveView(APIView):
     """POST /api/v1/sales/revocar_llave/ {access_key_id}
 
     Revoca una AccessKey (status='revoked'), retirando el acceso del estudiante
-    al curso. NO reembolsa el saldo de la escuela (la llave ya fue consumida).
+    al curso. NO reembolsa el saldo de la escuela al revocar; si el alumno nunca
+    abrió el curso, las llaves vuelven al saldo cuando la llave vence
+    (`services.devolver_llaves_no_usadas`).
     Si la llave es de origen 'seat', libera además el cupo (decrementa
     *_seats_used) para que vuelva al pool disponible.
 
