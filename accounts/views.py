@@ -665,7 +665,8 @@ class GenerarPruebaView(APIView):
         # Selección de preguntas: el examen final SOLO usa preguntas del curso;
         # el resto usa el banco general (round-robin / por categoría).
         if es_examen_final:
-            ejercicios, error = accounts_services.seleccionar_ejercicios_de_curso(curso)
+            ejercicios, error = accounts_services.seleccionar_ejercicios_de_curso(
+                curso, escuela_id=request.user.escuela_id)
         else:
             ejercicios, error = accounts_services.seleccionar_ejercicios(tipo, categoria_id)
         if error:
@@ -1319,23 +1320,25 @@ class ProgresoEstudiantesView(APIView):
 
         todos_cursos = {c for cs in cursos_por_estudiante.values() for c in cs}
 
-        # Lecciones por curso → contar una sola vez.
-        lecciones_por_curso = defaultdict(int)
-        leccion_pk_por_curso = defaultdict(set)
-        for curso_pk, leccion_pk in Leccion.objects.filter(curso_id__in=todos_cursos).values_list("curso_id", "id"):
-            lecciones_por_curso[curso_pk] += 1
-            leccion_pk_por_curso[curso_pk].add(leccion_pk)
+        # Lecciones por curso según el plan de estudio de la escuela (o el
+        # curso base) → contar una sola vez.
+        from schools.plan_estudio import lecciones_visibles_por_curso
+        leccion_pk_por_curso = {
+            c: set(ids) for c, ids in lecciones_visibles_por_curso(todos_cursos, int(escuela_id)).items()
+        }
+        lecciones_por_curso = {c: len(ids) for c, ids in leccion_pk_por_curso.items()}
+        curso_de_leccion = {lid: c for c, ids in leccion_pk_por_curso.items() for lid in ids}
 
         # Lecciones vistas distintas (estudiante, curso, leccion) en una sola consulta.
         vistas_qs = (
             EstudianteLeccion.objects
-            .filter(estudiante_id__in=estudiante_ids, curso_id__in=todos_cursos)
-            .values_list("estudiante_id", "curso_id", "leccion_id")
+            .filter(estudiante_id__in=estudiante_ids, leccion_id__in=list(curso_de_leccion))
+            .values_list("estudiante_id", "leccion_id")
             .distinct()
         )
         vistas_por_estudiante_curso = defaultdict(set)
-        for est_pk, curso_pk, leccion_pk in vistas_qs:
-            vistas_por_estudiante_curso[(est_pk, curso_pk)].add(leccion_pk)
+        for est_pk, leccion_pk in vistas_qs:
+            vistas_por_estudiante_curso[(est_pk, curso_de_leccion[leccion_pk])].add(leccion_pk)
 
         # Solo el examen final del curso mide progreso: la práctica del
         # Gimnasio se registra pero no cuenta aquí.

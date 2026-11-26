@@ -529,7 +529,19 @@ class CursosDisponiblesParaUsuarioView(APIView):
         # Anotamos cantidad_lecciones para que el cliente calcule progreso sin
         # un fetch extra por curso (Leccion.curso es FK sin related_name → 'leccion').
         from django.db.models import Count
-        cursos = Curso.objects.annotate(cantidad_lecciones=Count('leccion')).prefetch_related('planes')
+        from django.db.models import Q
+        cursos = list(
+            Curso.objects.annotate(cantidad_lecciones=Count('leccion', filter=Q(leccion__escuela__isnull=True)))
+            .prefetch_related('planes')
+        )
+        # Con plan de estudio activo de su escuela, el total sale del plan.
+        from schools.models import PlanEstudio
+        from schools.plan_estudio import lecciones_visibles_ids
+        con_plan = set(PlanEstudio.objects.filter(escuela_id=user.escuela_id, estado='activo')
+                       .values_list('curso_id', flat=True)) if user.escuela_id else set()
+        for c in cursos:
+            if c.id in con_plan:
+                c.cantidad_lecciones = len(lecciones_visibles_ids(c.id, user.escuela_id))
 
         serializer = CursoDisponibleSerializer(
             cursos,

@@ -84,6 +84,17 @@ class LeccionSerializer(serializers.ModelSerializer):
             'url_video', 'url_audio', 'url_pdf',
         ]
 
+    def to_representation(self, instance):
+        return _nombre_plan(self, instance, super().to_representation(instance))
+
+
+def _nombre_plan(serializer, instance, data):
+    """Renombre del plan de estudio de la escuela (``context['nombres_plan']``)."""
+    nombre = (serializer.context or {}).get('nombres_plan', {}).get(instance.id)
+    if nombre:
+        data['nombre'] = nombre
+    return data
+
 
 def _url_media(url):
     """URL de un medio de lección tal como se entrega al cliente.
@@ -153,7 +164,7 @@ class LeccionDetalleSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         for campo in ('url_video', 'url_audio', 'url_pdf'):
             data[campo] = _url_media(data.get(campo))
-        return data
+        return _nombre_plan(self, instance, data)
 
 
 class UnidadSerializer(serializers.ModelSerializer):

@@ -25,6 +25,7 @@ from .views import (
 # consistencia con el spec del frontend.
 from sales.views import SubscriptionStatusView, SubscriptionSeatsView
 from . import equipo
+from . import views_plan_estudio as vpe
 
 router = DefaultRouter()
 router.register(r'schools', EscuelaViewSet)
@@ -98,5 +99,30 @@ urlpatterns = [
     path("equipo/miembros/<int:user_id>/", equipo.MiembroView.as_view(), name="equipo_miembro"),
     path("equipo/sedes/", equipo.SedesView.as_view(), name="equipo_sedes"),
     path("equipo/sedes/<int:sede_id>/", equipo.SedesView.as_view(), name="equipo_sede"),
+    # Planes de estudio por escuela (director; admin con ?escuela=).
+    path("planes-estudio/", vpe.PlanesEstudioView.as_view(), name="planes_estudio"),
+    path("planes-estudio/<int:plan_id>/", vpe.PlanEstudioDetalleView.as_view(), name="plan_estudio"),
+    path("planes-estudio/<int:plan_id>/activar/",
+         vpe.PlanEstudioEstadoView.as_view(accion='activar'), name="plan_estudio_activar"),
+    path("planes-estudio/<int:plan_id>/desactivar/",
+         vpe.PlanEstudioEstadoView.as_view(accion='desactivar'), name="plan_estudio_desactivar"),
+    path("planes-estudio/<int:plan_id>/ops/", vpe.PlanEstudioOpsView.as_view(), name="plan_estudio_ops"),
+    path("planes-estudio/<int:plan_id>/historial/",
+         vpe.PlanEstudioHistorialView.as_view(), name="plan_estudio_historial"),
+    path("planes-estudio/<int:plan_id>/lecciones/",
+         vpe.PlanLeccionesPropiasView.as_view(), name="plan_estudio_lecciones"),
+    path("planes-estudio/<int:plan_id>/lecciones/<int:leccion_id>/",
+         vpe.PlanLeccionesPropiasView.as_view(), name="plan_estudio_leccion"),
+    path("planes-estudio/<int:plan_id>/lecciones/<int:leccion_id>/recursos/",
+         vpe.PlanLeccionRecursosView.as_view(), name="plan_estudio_recursos"),
+    path("planes-estudio/<int:plan_id>/lecciones/<int:leccion_id>/recursos/<int:recurso_id>/",
+         vpe.PlanLeccionRecursosView.as_view(), name="plan_estudio_recurso"),
+    # Admin: costo de mantención de los planes por escuela.
+    path("admin/mantencion/", vpe.MantencionView.as_view(), name="mantencion"),
+    path("admin/mantencion/<int:escuela_id>/", vpe.MantencionEscuelaView.as_view(), name="mantencion_escuela"),
+    path("admin/mantencion/<int:escuela_id>/costos/",
+         vpe.MantencionCostosView.as_view(), name="mantencion_costos"),
+    path("admin/mantencion/<int:escuela_id>/costos/<int:costo_id>/",
+         vpe.MantencionCostosView.as_view(), name="mantencion_costo"),
     *router.urls,
 ]

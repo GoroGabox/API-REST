@@ -9,8 +9,8 @@ from django.utils import timezone
 
 from content_pipeline.media.storage import url_firmada
 from sales.services import vencimiento_acceso
-from schools.models import Curso, Leccion, Unidad
-from schools.serializers import CursoSerializer, LeccionDetalleSerializer, UnidadSerializer
+from schools.models import Curso, Leccion
+from schools.serializers import CursoSerializer, LeccionDetalleSerializer
 
 from . import crypto
 from .models import DispositivoOffline, LicenciaOffline, _sal
@@ -203,12 +203,19 @@ def manifiesto(curso: Curso, request=None) -> dict:
     que aparece en ``lecciones`` (para reemplazarla por el archivo local).
     """
     ctx = {'request': request} if request else {}
-    lecciones = list(
-        Leccion.objects.filter(curso=curso)
-        .select_related('unidad').prefetch_related('recursos')
-        .order_by('unidad__orden', 'posicion', 'id')
-    )
-    unidades = Unidad.objects.filter(curso=curso).prefetch_related('lecciones').order_by('orden', 'id')
+    # Estructura según el plan de estudio activo de la escuela del alumno (o el
+    # curso base): mismas unidades/lecciones que ve en línea, propias incluidas.
+    from schools.plan_estudio import estructura, serializar_estructura
+    user = getattr(request, 'user', None)
+    est = estructura(curso.id, getattr(user, 'escuela_id', None), sueltas=True)
+    unidades_data = serializar_estructura(est, curso.id)
+    por_id = {
+        lec.id: lec for lec in Leccion.objects.filter(
+            id__in=[lp.leccion.id for u in est for lp in u.lecciones],
+        ).select_related('unidad').prefetch_related('recursos')
+    }
+    lecciones = [por_id[lp.leccion.id] for u in est for lp in u.lecciones if lp.leccion.id in por_id]
+    ubicacion = {d['id']: d for u in unidades_data for d in u['lecciones']}
 
     archivos = []
     for lec in lecciones:
@@ -236,10 +243,16 @@ def manifiesto(curso: Curso, request=None) -> dict:
                 'bytes': None, 'hash': None,
             })
 
+    lecciones_data = LeccionDetalleSerializer(lecciones, many=True, context=ctx).data
+
     return {
         'curso': CursoSerializer(curso, context=ctx).data,
-        'unidades': UnidadSerializer(unidades, many=True, context=ctx).data,
-        'lecciones': LeccionDetalleSerializer(lecciones, many=True, context=ctx).data,
+        'unidades': [u for u in unidades_data if u['id'] is not None],
+        'lecciones': [
+            {**d, **{k: ubicacion[d['id']][k] for k in ('nombre', 'posicion', 'unidad', 'unidad_orden',
+                                                       'unidad_nombre')}}
+            for d in lecciones_data
+        ],
         'archivos': archivos,
         'url_expira_seg': URL_EXPIRA_SEG,
         'version': _iso(timezone.now()),

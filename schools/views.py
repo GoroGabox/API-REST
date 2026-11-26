@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.db.models import Prefetch, Count
+from django.db.models import Prefetch, Count, Q
 from django.http import StreamingHttpResponse, HttpResponse
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
@@ -208,18 +208,23 @@ class ProgresoEstudianteDetalleView(APIView):
         )
         curso_ids = [ec.curso_id_id for ec in inscripciones]
 
-        # Batch queries por curso para minimizar N+1.
+        # Lecciones de cada curso según el plan de estudio de la escuela del
+        # alumno (orden, nombres y ocultas del plan; sin plan, el curso base).
+        from .plan_estudio import estructura
         lecciones_por_curso = {}
-        for l in Leccion.objects.filter(curso_id__in=curso_ids):
-            lecciones_por_curso.setdefault(l.curso_id, []).append(l)
+        for cid in curso_ids:
+            lecciones_por_curso[cid] = [
+                (u, pos, lp) for u in estructura(cid, estudiante.escuela_id, sueltas=True)
+                for pos, lp in enumerate(u.lecciones, start=1)
+            ]
+        todas = [lp.leccion.id for lecs in lecciones_por_curso.values() for (_, _, lp) in lecs]
 
         completadas = set(
             EstudianteLeccion.objects
-            .filter(estudiante=estudiante, curso_id__in=curso_ids)
-            .values_list("curso_id", "leccion_id", "updated_at")
+            .filter(estudiante=estudiante, leccion_id__in=todas)
+            .values_list("leccion_id", "updated_at")
         )
-        fecha_leccion = {(c, l): t for (c, l, t) in completadas}
-        set_completadas = set((c, l) for (c, l, _) in completadas)
+        fecha_leccion = {l: t for (l, t) in completadas}
 
         # Solo el examen final del curso mide progreso; la práctica del
         # Gimnasio se informa aparte (conteo) y no cuenta como avance.
@@ -246,14 +251,14 @@ class ProgresoEstudianteDetalleView(APIView):
             lecs = lecciones_por_curso.get(curso.id, [])
             lecciones_detalle = [
                 {
-                    "id": l.id,
-                    "nombre": l.nombre,
-                    "unidad": l.unidad_id,
-                    "posicion": l.posicion,
-                    "completada": (curso.id, l.id) in set_completadas,
-                    "fecha_completada": fecha_leccion.get((curso.id, l.id)),
+                    "id": lp.leccion.id,
+                    "nombre": lp.nombre,
+                    "unidad": u.id,
+                    "posicion": pos,
+                    "completada": lp.leccion.id in fecha_leccion,
+                    "fecha_completada": fecha_leccion.get(lp.leccion.id),
                 }
-                for l in lecs
+                for (u, pos, lp) in lecs
             ]
             lecciones_completadas = sum(1 for x in lecciones_detalle if x["completada"])
             pruebas = [
@@ -698,7 +703,7 @@ class CursoViewSet(viewsets.ModelViewSet):
     # front recibía total=0 y mostraba siempre 0% "sin comenzar".
     queryset = (
         Curso.objects.all()
-        .annotate(cantidad_lecciones=Count('leccion'))
+        .annotate(cantidad_lecciones=Count('leccion', filter=Q(leccion__escuela__isnull=True)))
         .prefetch_related('planes')
     )
     serializer_class = CursoSerializer
@@ -740,13 +745,14 @@ class CursoViewSet(viewsets.ModelViewSet):
             # Abrir el curso = usar la llave: ya no se devuelve al vencer.
             from sales.services import marcar_uso_llave
             marcar_uso_llave(user, curso)
-        lecciones_ordenadas = Leccion.objects.select_related('categoria').order_by('posicion', 'id')
-        unidades = (
-            Unidad.objects.filter(curso=curso)
-            .prefetch_related(Prefetch('lecciones', queryset=lecciones_ordenadas))
-            .order_by('orden', 'id')
-        )
-        return Response(UnidadSerializer(unidades, many=True).data)
+        # Estructura según el plan de estudio ACTIVO de la escuela (alumno y
+        # director: la suya; admin: ?escuela=<id>); sin plan, el curso base.
+        from .plan_estudio import estructura, serializar_estructura
+        escuela_id = user.escuela_id
+        if is_admin(user):
+            valor = request.query_params.get('escuela')
+            escuela_id = int(valor) if valor and valor.isdigit() else None
+        return Response(serializar_estructura(estructura(curso.id, escuela_id), curso.id))
 
 
 class PlanCursoViewSet(viewsets.ModelViewSet):
@@ -813,12 +819,41 @@ class LeccionViewSet(viewsets.ModelViewSet):
         # con acceso vigente (comprado/llave/cupo no vencido). Admin/director ven
         # todo (curación/preview). Anónimo: nada (además ReadOnlyOrAdmin exige auth).
         user = self.request.user
-        if is_admin(user) or is_director(user):
+        if is_admin(user):
+            return qs
+        # Lecciones propias de una escuela (plan de estudio): solo su escuela.
+        qs = qs.filter(Q(escuela__isnull=True) | Q(escuela_id=user.escuela_id))
+        if is_director(user):
             return qs
         if is_estudiante(user):
             from sales.services import cursos_con_acceso_vigente
-            return qs.filter(curso_id__in=cursos_con_acceso_vigente(user))
+            qs = qs.filter(curso_id__in=cursos_con_acceso_vigente(user))
+            return self._segun_plan(qs, user)
         return qs.none()
+
+    def _segun_plan(self, qs, user):
+        """Con plan de estudio activo de su escuela, el alumno solo ve las
+        lecciones visibles de ese plan (y las propias de su escuela)."""
+        from .models import PlanEstudio
+        from .plan_estudio import lecciones_visibles_ids
+        if not user.escuela_id:
+            return qs.filter(escuela__isnull=True)
+        con_plan = list(PlanEstudio.objects.filter(escuela_id=user.escuela_id, estado='activo')
+                        .values_list('curso_id', flat=True))
+        if not con_plan:
+            return qs.filter(escuela__isnull=True)
+        visibles = [lid for cid in con_plan for lid in lecciones_visibles_ids(cid, user.escuela_id)]
+        return qs.filter(
+            (~Q(curso_id__in=con_plan) & Q(escuela__isnull=True)) | Q(id__in=visibles)
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        user = self.request.user
+        if getattr(user, 'escuela_id', None) and not is_admin(user):
+            from .plan_estudio import nombres_efectivos
+            ctx['nombres_plan'] = nombres_efectivos(Curso.objects.values_list('id', flat=True), user.escuela_id)
+        return ctx
 
     def get_serializer_class(self):
         # Detalle (con contenido + transcripción) en:

@@ -190,7 +190,7 @@ def import_a2_course(
             # posición + nombre), el avance de alumnos en ellas y las unidades sobrantes.
             from django.apps import apps
             claves = {(int(l["unidad_orden"]), int(l["posicion"]), l["nombre"]) for l in lessons}
-            stale = [x.id for x in Leccion.objects.filter(curso=curso_bd).select_related("unidad")
+            stale = [x.id for x in Leccion.objects.filter(curso=curso_bd, escuela__isnull=True).select_related("unidad")
                      if (x.unidad.orden if x.unidad else None, x.posicion, x.nombre) not in claves
                      and (x.unidad is None or x.unidad.orden != ORDEN_PRESENTACION)]
             summary.add("leccion_delete", len(stale))
@@ -276,7 +276,7 @@ def import_a2_course(
 
         if prune:
             # La unidad 0 («Antes de empezar») la gestiona ``presentacion_curso``: no se poda.
-            stale = (Leccion.objects.filter(curso=curso).exclude(id__in=touched_lesson_ids)
+            stale = (Leccion.objects.filter(curso=curso, escuela__isnull=True).exclude(id__in=touched_lesson_ids)
                      .exclude(unidad__orden=ORDEN_PRESENTACION))
             summary.add("leccion_delete", stale.count())
             stale.delete()
@@ -611,7 +611,7 @@ def importar_presentacion(curso: Curso, leccion_spec: dict[str, Any], dry_run: b
                                          pagina_fin=0, tema_regulatorio=LECCION_NOMBRE)
         _sync_recursos(leccion, lesson, summary)
 
-        otras = list(Leccion.objects.filter(curso=curso).exclude(id=leccion.id).values_list("id", flat=True))
+        otras = list(Leccion.objects.filter(curso=curso, escuela__isnull=True).exclude(id=leccion.id).values_list("id", flat=True))
         if otras:
             vistas: dict[int, int] = defaultdict(int)
             for est in EstudianteLeccion.objects.filter(leccion_id__in=otras).values_list("estudiante_id", flat=True):

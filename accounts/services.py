@@ -113,15 +113,33 @@ def seleccionar_ejercicios(tipo: str, categoria_id: Optional[int] = None):
     return ejercicios_final, None
 
 
-def _ejercicios_de_curso_qs(curso):
+def _ejercicios_de_curso_qs(curso, escuela_id=None):
     """Ejercicios del curso: asociados directamente (`curso`), a una de sus
-    lecciones (`leccion__curso`) o a una de sus unidades (`unidades__curso`)."""
-    return (
+    lecciones (`leccion__curso`) o a una de sus unidades (`unidades__curso`).
+
+    Con el plan de estudio activo de `escuela_id`, se excluyen los ejercicios
+    vinculados solo a unidades que ese plan oculta, salvo que así no alcance
+    para un examen completo (entonces se usa el banco entero del curso).
+    """
+    qs = (
         Ejercicio.objects
         .select_related('categoria', 'curso', 'leccion')
         .filter(Q(curso=curso) | Q(leccion__curso=curso) | Q(unidades__curso=curso))
         .distinct()
     )
+    if escuela_id:
+        from schools.models import EjercicioUnidad
+        from schools.plan_estudio import unidades_ocultas_ids
+        ocultas = unidades_ocultas_ids(curso.id if hasattr(curso, 'id') else curso, escuela_id)
+        if ocultas:
+            en_ocultas = set(EjercicioUnidad.objects.filter(unidad_id__in=ocultas)
+                             .values_list('ejercicio_id', flat=True))
+            en_visibles = set(EjercicioUnidad.objects.filter(unidad__curso=curso)
+                              .exclude(unidad_id__in=ocultas).values_list('ejercicio_id', flat=True))
+            acotado = qs.exclude(id__in=en_ocultas - en_visibles)
+            if acotado.count() >= SIZES['completa']:
+                return acotado
+    return qs
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +174,19 @@ def generar_quiz_unidad(estudiante, leccion, categoria_id=None):
     return prueba, ejercicios
 
 
-def total_preguntas_examen_final(curso) -> int:
+def total_preguntas_examen_final(curso, escuela_id=None) -> int:
     """Nº real de preguntas que tendrá el examen final (tope SIZES['completa'])."""
-    return min(SIZES['completa'], _ejercicios_de_curso_qs(curso).count())
+    return min(SIZES['completa'], _ejercicios_de_curso_qs(curso, escuela_id).count())
 
 
-def seleccionar_ejercicios_de_curso(curso, total_needed: int = SIZES['completa']):
+def seleccionar_ejercicios_de_curso(curso, total_needed: int = SIZES['completa'], escuela_id=None):
     """Selecciona preguntas SOLO del curso, para el examen final.
 
     Si el curso tiene menos de `total_needed`, usa todas las disponibles (el
     examen se ajusta al tamaño real y el % se calcula sobre ese total).
     Devuelve (ejercicios, error).
     """
-    qs = _ejercicios_de_curso_qs(curso)
+    qs = _ejercicios_de_curso_qs(curso, escuela_id)
     total_disp = qs.count()
     if total_disp == 0:
         return None, ServiceError(
@@ -522,10 +540,15 @@ def elegibilidad_examen_final(user, curso) -> dict:
     if ec and ec.access_key_id:
         expira_en = ec.access_key_id.valid_until
 
-    lecciones_total = Leccion.objects.filter(curso=curso).count()
+    # Lecciones del curso tal como lo ve el alumno (plan de estudio de su
+    # escuela, si tiene uno activo). Solo cuentan las completadas de ese set:
+    # una lección oculta ya vista no suma.
+    from schools.plan_estudio import lecciones_visibles_ids
+    visibles = lecciones_visibles_ids(getattr(curso, 'id', curso), user.escuela_id)
+    lecciones_total = len(visibles)
     lecciones_completadas = (
         EstudianteLeccion.objects
-        .filter(estudiante=user, leccion__curso=curso)
+        .filter(estudiante=user, leccion_id__in=visibles)
         .values('leccion_id').distinct().count()
     )
 
@@ -536,7 +559,7 @@ def elegibilidad_examen_final(user, curso) -> dict:
         'ultimo_intento': None,
         'lecciones_total': lecciones_total,
         'lecciones_completadas': lecciones_completadas,
-        'total_preguntas': total_preguntas_examen_final(curso),
+        'total_preguntas': total_preguntas_examen_final(curso, user.escuela_id),
     }
 
     # Curso ya aprobado (certificado emitido) → finalizado.

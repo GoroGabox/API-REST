@@ -1,6 +1,7 @@
 ﻿import secrets
 import string
 
+from django.conf import settings
 from django.db import models
 
 
@@ -210,6 +211,12 @@ class Leccion(models.Model):
     url_video = models.URLField(default="http://placeholder.url")
     url_audio = models.URLField(default="http://placeholder.url")
     url_pdf = models.URLField(blank=True, default='')
+    # Lección propia de una escuela (plan de estudio personalizado). Null = lección
+    # de la plataforma. Las propias van con `unidad=None` y solo las agrega el
+    # resolver `schools.plan_estudio` al plan de su escuela.
+    escuela = models.ForeignKey(
+        Escuela, on_delete=models.CASCADE, null=True, blank=True, related_name='lecciones_propias',
+    )
 
     class Meta:
         ordering = ['curso', 'posicion', 'id']
@@ -378,5 +385,183 @@ class EjercicioUnidad(models.Model):
 
     def __str__(self):
         return f"{self.ejercicio_id} → {self.unidad}"
+
+
+# ---------------------------------------------------------------------------
+# Planes de estudio por escuela (curso base + capa de la escuela)
+# ---------------------------------------------------------------------------
+
+class PlanEstudio(models.Model):
+    """Versión de un curso de la plataforma adaptada al plan de estudio legal de
+    una escuela. Es una CAPA sobre el curso base (orden, ocultas, nombres y
+    lecciones propias); el contenido del base se hereda. Lógica en
+    ``schools.plan_estudio``.
+    """
+    ESTADO_CHOICES = [('borrador', 'Borrador'), ('activo', 'Activo')]
+
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='planes_estudio')
+    curso = models.ForeignKey(Curso, on_delete=models.CASCADE, related_name='planes_estudio')
+    nombre = models.CharField(max_length=150, blank=True, default='')
+    codigo_resolucion = models.CharField(max_length=100, blank=True, default='')
+    estado = models.CharField(max_length=10, choices=ESTADO_CHOICES, default='borrador')
+    activado_en = models.DateTimeField(null=True, blank=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['escuela', 'curso']
+        constraints = [
+            models.UniqueConstraint(fields=['escuela', 'curso'], name='uniq_plan_estudio_escuela_curso'),
+        ]
+
+    def __str__(self):
+        return f"{self.escuela} · {self.curso}"
+
+
+class PlanUnidad(models.Model):
+    """Unidad del plan: una del curso base (``unidad_base``) o propia (sin base)."""
+    plan = models.ForeignKey(PlanEstudio, on_delete=models.CASCADE, related_name='unidades')
+    unidad_base = models.ForeignKey(
+        Unidad, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    # Foto del nombre del base: si el base borra la unidad, el plan la conserva.
+    nombre_base = models.CharField(max_length=100, blank=True, default='')
+    propia = models.BooleanField(default=False)
+    nombre_propio = models.CharField(max_length=100, blank=True, default='')
+    descripcion_propia = models.CharField(max_length=255, blank=True, default='')
+    orden = models.IntegerField(default=0)
+    oculta = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['plan', 'orden', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['plan', 'unidad_base'], condition=models.Q(unidad_base__isnull=False),
+                name='uniq_plan_unidad_base',
+            ),
+        ]
+
+    def nombre_efectivo(self):
+        if self.nombre_propio:
+            return self.nombre_propio
+        if self.unidad_base_id:
+            return self.unidad_base.nombre
+        return self.nombre_base
+
+    def descripcion_efectiva(self):
+        if self.descripcion_propia:
+            return self.descripcion_propia
+        return self.unidad_base.descripcion if self.unidad_base_id else ''
+
+    def __str__(self):
+        return f"{self.plan_id} / {self.orden} - {self.nombre_efectivo()}"
+
+
+class PlanLeccion(models.Model):
+    """Lección (base o propia de la escuela) ubicada en una unidad del plan."""
+    plan = models.ForeignKey(PlanEstudio, on_delete=models.CASCADE, related_name='lecciones')
+    plan_unidad = models.ForeignKey(PlanUnidad, on_delete=models.CASCADE, related_name='lecciones')
+    leccion = models.ForeignKey(Leccion, on_delete=models.CASCADE, related_name='en_planes')
+    orden = models.IntegerField(default=0)
+    oculta = models.BooleanField(default=False)
+    nombre_propio = models.CharField(max_length=100, blank=True, default='')
+
+    class Meta:
+        ordering = ['plan_unidad', 'orden', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['plan', 'leccion'], name='uniq_plan_leccion'),
+        ]
+
+    def __str__(self):
+        return f"{self.plan_id} / {self.leccion_id}"
+
+
+class CambioPlanEstudio(models.Model):
+    """Registro append-only de cada modificación a un plan de estudio, con su
+    costo ponderado (``puntos``, congelado al registrar). Base del reporte de
+    costo de mantención por escuela."""
+    TIPO_CHOICES = [
+        ('crear_plan', 'Crear plan'),
+        ('editar_plan', 'Editar datos del plan'),
+        ('activar', 'Activar plan'),
+        ('desactivar', 'Desactivar plan'),
+        ('reordenar_unidades', 'Reordenar unidades'),
+        ('reordenar_lecciones', 'Reordenar lecciones'),
+        ('mover_leccion', 'Mover lección de unidad'),
+        ('ocultar', 'Ocultar'),
+        ('mostrar', 'Mostrar'),
+        ('renombrar', 'Renombrar'),
+        ('agregar_unidad', 'Agregar unidad propia'),
+        ('quitar_unidad', 'Quitar unidad propia'),
+        ('agregar_leccion', 'Agregar lección propia'),
+        ('editar_leccion', 'Editar lección propia'),
+        ('eliminar_leccion', 'Eliminar lección propia'),
+        ('agregar_recurso', 'Agregar recurso'),
+        ('quitar_recurso', 'Quitar recurso'),
+        ('aceptar_novedad', 'Aceptar novedad del curso base'),
+        ('base_eliminada', 'Lección del curso base eliminada'),
+    ]
+    ORIGEN_CHOICES = [('director', 'Director'), ('admin', 'Admin'), ('sistema', 'Sistema')]
+
+    plan = models.ForeignKey(
+        PlanEstudio, on_delete=models.SET_NULL, null=True, blank=True, related_name='cambios',
+    )
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='cambios_plan_estudio')
+    curso = models.ForeignKey(Curso, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES)
+    origen = models.CharField(max_length=10, choices=ORIGEN_CHOICES, default='director')
+    objeto_tipo = models.CharField(max_length=20, blank=True, default='')  # plan|unidad|leccion|recurso
+    objeto_id = models.IntegerField(null=True, blank=True)
+    antes = models.JSONField(null=True, blank=True)
+    despues = models.JSONField(null=True, blank=True)
+    caracteres = models.IntegerField(default=0)
+    puntos = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    fecha = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+        indexes = [models.Index(fields=['escuela', 'fecha'], name='idx_cambio_plan_esc_fecha')]
+
+    def __str__(self):
+        return f"{self.escuela_id} · {self.tipo} · {self.fecha:%Y-%m-%d}"
+
+
+class CostoMantencion(models.Model):
+    """Costo de mantener los cursos de una escuela que no sale del log de
+    cambios: horas de staff, medios (almacenamiento, TTS) o IA. Lo anota el
+    admin (o un servicio)."""
+    TIPO_CHOICES = [
+        ('horas_staff', 'Horas de staff'),
+        ('medios', 'Medios / almacenamiento'),
+        ('ia', 'IA'),
+        ('otro', 'Otro'),
+    ]
+    escuela = models.ForeignKey(Escuela, on_delete=models.CASCADE, related_name='costos_mantencion')
+    plan = models.ForeignKey(
+        PlanEstudio, on_delete=models.SET_NULL, null=True, blank=True, related_name='costos',
+    )
+    cambio = models.ForeignKey(
+        CambioPlanEstudio, on_delete=models.SET_NULL, null=True, blank=True, related_name='costos',
+    )
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    minutos = models.IntegerField(default=0)
+    monto_clp = models.IntegerField(default=0)
+    descripcion = models.CharField(max_length=255, blank=True, default='')
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    fecha = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+    def __str__(self):
+        return f"{self.escuela_id} · {self.tipo} · {self.monto_clp}"
 
 
